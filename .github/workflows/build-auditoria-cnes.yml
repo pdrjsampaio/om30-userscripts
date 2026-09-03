@@ -1,0 +1,58 @@
+name: Build Auditoria CNES userscript
+
+on:
+  push:
+    paths:
+      - 'om30-scripts/auditoria-cnes/build-*.b64'
+      - '.github/workflows/build-auditoria-cnes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Montar userscript
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64, gzip
+
+          root = Path('om30-scripts/auditoria-cnes')
+          partes = sorted(root.glob('build-*.b64'))
+          if not partes:
+              raise SystemExit('Nenhum bloco build-*.b64 encontrado.')
+          dados_b64 = ''.join(p.read_text(encoding='utf-8').strip() for p in partes)
+          dados = gzip.decompress(base64.b64decode(dados_b64))
+          texto = dados.decode('utf-8')
+          if not texto.startswith('// ==UserScript=='):
+              raise SystemExit('Userscript inválido: cabeçalho ausente.')
+          if '// @version      2.1.5' not in texto:
+              raise SystemExit('Versão esperada 2.1.5 não encontrada.')
+          destino = root / 'OM30-Auditoria-CNES.user.js'
+          destino.write_text(texto, encoding='utf-8')
+          print(f'Gerado {destino} ({len(dados)} bytes)')
+          PY
+
+      - name: Validar JavaScript
+        run: node --check om30-scripts/auditoria-cnes/OM30-Auditoria-CNES.user.js
+
+      - name: Publicar arquivo final
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add om30-scripts/auditoria-cnes/OM30-Auditoria-CNES.user.js
+          if git diff --cached --quiet; then
+            echo 'Arquivo final já está atualizado.'
+            exit 0
+          fi
+          git commit -m 'Publica Auditoria CNES v2.1.5'
+          git push

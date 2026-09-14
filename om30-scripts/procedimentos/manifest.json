@@ -1,9 +1,24 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "OM30 - Procedimentos",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "published_at": "2026-09-14",
-  "app_url": "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.js",
-  "sha256": "12ca6ac9467dc3eca4a9fcc4f810cba532bd612595117cb0d709b2d81596d98f",
-  "minimum_loader_version": "1.0.0"
+  "format": "gzip-base64-parts",
+  "parts": [
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part01a.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part01b.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part02a.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part02b.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.part03.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.part04.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part05a.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part05b1.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/v062/app.part05b2.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.part06.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.part07.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.part08.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.part09.b64"
+  ],
+  "sha256": "7928ebb247cf2b785ba57d0a40781b3dc4581fbe357b573fb8c5c5364025556d",
+  "minimum_loader_version": "1.1.0"
 }

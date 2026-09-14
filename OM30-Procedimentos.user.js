@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos
 // @namespace    https://om30.com.br/
-// @version      1.0.0
+// @version      1.2.0
 // @description  Carregador automático e silencioso do OM30 - Procedimentos.
 // @author       Pedro Sampaio - Samp
 // @match        https://guarujahomolog.saudesimples.net/ambulatorial/atencao_basica/atendimentos/*
@@ -18,7 +18,7 @@
 (() => {
   'use strict';
 
-  const LOADER_VERSION = '1.0.0';
+  const LOADER_VERSION = '1.2.0';
 
   const MANIFEST_URL =
     'https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/manifest.json';
@@ -29,7 +29,6 @@
     SHA256: 'OM30_PROCEDIMENTOS_REMOTE_APP_SHA256'
   };
 
-  // Impede duas inicializações no mesmo carregamento.
   if (globalThis.__OM30_PROCEDIMENTOS_LOADER_STARTED__) return;
   globalThis.__OM30_PROCEDIMENTOS_LOADER_STARTED__ = true;
 
@@ -64,6 +63,31 @@
       .join('');
   }
 
+  async function decodeRemotePayload(payload, encoding) {
+    if (!encoding || encoding === 'plain') return payload;
+
+    if (encoding !== 'gzip-base64') {
+      throw new Error(`Codificação remota não suportada: ${encoding}`);
+    }
+
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('Este navegador não suporta descompactação automática.');
+    }
+
+    const binary = atob(payload.trim());
+    const bytes = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    const stream = new Blob([bytes])
+      .stream()
+      .pipeThrough(new DecompressionStream('gzip'));
+
+    return await new Response(stream).text();
+  }
+
   function parseManifest(text) {
     const m = JSON.parse(text);
 
@@ -75,7 +99,16 @@
       throw new Error('Versão remota inválida.');
     }
 
-    if (!/^https:\/\/raw\.githubusercontent\.com\//.test(String(m.app_url || ''))) {
+    const urls = Array.isArray(m.app_parts) && m.app_parts.length
+      ? m.app_parts
+      : [m.app_url];
+
+    if (
+      !urls.length ||
+      urls.some(url =>
+        !/^https:\/\/raw\.githubusercontent\.com\//.test(String(url || ''))
+      )
+    ) {
       throw new Error('URL do aplicativo remoto inválida.');
     }
 
@@ -87,7 +120,6 @@
   }
 
   function compileApp(code) {
-    // Compilar antes de substituir o cache evita gravar JS com erro de sintaxe.
     return new Function('unsafeWindow', 'OM30_RUNTIME', code);
   }
 
@@ -140,7 +172,6 @@
     const cachedSha = await GM_getValue(STORE.SHA256, '');
 
     try {
-      // Cache-busting só no manifesto. app.js só baixa quando a versão/hash muda.
       const manifestText = await requestText(
         `${MANIFEST_URL}?t=${Date.now()}`,
         4000
@@ -158,9 +189,26 @@
         return;
       }
 
-      const remoteCode = await requestText(
-        `${manifest.app_url}?v=${encodeURIComponent(manifest.version)}`,
-        8000
+      const urls = Array.isArray(manifest.app_parts) && manifest.app_parts.length
+        ? manifest.app_parts
+        : [manifest.app_url];
+
+      const payloads = [];
+
+      for (let i = 0; i < urls.length; i++) {
+        payloads.push(
+          await requestText(
+            `${urls[i]}?v=${encodeURIComponent(manifest.version)}`,
+            8000
+          )
+        );
+      }
+
+      const remotePayload = payloads.join('');
+
+      const remoteCode = await decodeRemotePayload(
+        remotePayload,
+        manifest.encoding || 'plain'
       );
 
       const remoteSha = await sha256(remoteCode);
@@ -171,14 +219,9 @@
         );
       }
 
-      // Sintaxe é verificada antes de mexer no armazenamento.
       compileApp(remoteCode);
-
-      // Executa a nova versão primeiro.
       runApp(remoteCode, manifest.version, 'GitHub');
 
-      // Só depois de carregada com sucesso substitui a cópia anterior.
-      // As mesmas chaves são sobrescritas: NÃO acumula versões antigas.
       await GM_setValue(STORE.CODE, remoteCode);
       await GM_setValue(STORE.VERSION, manifest.version);
       await GM_setValue(STORE.SHA256, manifest.sha256);
@@ -189,7 +232,6 @@
         err
       );
 
-      // Sem internet/GitHub: usa SOMENTE a cópia atual salva.
       if (cachedCode) {
         try {
           runApp(cachedCode, cachedVersion || 'cache', 'fallback local');

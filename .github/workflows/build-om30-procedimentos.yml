@@ -26,43 +26,64 @@ jobs:
           cd om30-scripts/procedimentos
           python - <<'PY'
           from pathlib import Path
-          import base64, gzip, hashlib, json, re, sys
+          import base64, gzip, hashlib, json, re
 
           parts = sorted(Path('.').glob('app.part*.b64'))
           if not parts:
               raise SystemExit('Nenhuma parte encontrada')
 
-          cleaned_parts = []
-          print('Partes encontradas:', len(parts))
+          clean_parts = []
+          boundaries = []
+          total = 0
+
           for p in parts:
               raw = p.read_text(encoding='utf-8', errors='ignore')
               clean = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
-              cleaned_parts.append(clean)
-              print(f'{p.name}: raw={len(raw)} clean={len(clean)} eq={clean.count("=")} ini={clean[:8]} fim={clean[-8:]}')
+              clean_parts.append(clean)
+              total += len(clean)
+              boundaries.append(total)
+              print(f'{p.name}: {len(clean)} chars | ini={clean[:8]} | fim={clean[-8:]}')
 
-          data = ''.join(cleaned_parts)
-          # padding somente no final
-          data = data.rstrip('=')
-          data += '=' * ((4 - len(data) % 4) % 4)
+          data = ''.join(clean_parts).rstrip('=')
+          expected = json.loads(Path('manifest.json').read_text(encoding='utf-8'))['sha256']
 
-          try:
-              packed = base64.b64decode(data, validate=True)
-          except Exception as e:
-              raise SystemExit(f'Base64 inválido após limpeza: {e}')
+          def try_data(candidate, label):
+              padded = candidate + '=' * ((4 - len(candidate) % 4) % 4)
+              try:
+                  packed = base64.b64decode(padded, validate=True)
+                  app = gzip.decompress(packed)
+              except Exception:
+                  return None
+              actual = hashlib.sha256(app).hexdigest()
+              print(f'Candidato gzip válido: {label} | sha={actual}')
+              if actual == expected:
+                  return app
+              return None
 
-          try:
-              app = gzip.decompress(packed)
-          except Exception as e:
-              raise SystemExit(f'Gzip inválido: {e}')
+          app = try_data(data, 'sem reparo')
+
+          # A publicação anterior foi quebrada nas divisões dos arquivos.
+          # Testa remoção de 1 caractere perto de cada junção e nas extremidades.
+          if app is None and len(data) % 4 == 1:
+              points = {0, len(data)-1}
+              for b in boundaries[:-1]:
+                  for d in range(-16, 17):
+                      pos = b + d
+                      if 0 <= pos < len(data):
+                          points.add(pos)
+
+              for pos in sorted(points):
+                  candidate = data[:pos] + data[pos+1:]
+                  app = try_data(candidate, f'remove pos {pos}')
+                  if app is not None:
+                      print('Reparo encontrado na posição', pos)
+                      break
+
+          if app is None:
+              raise SystemExit('Não foi possível reconstruir um app com o SHA esperado.')
 
           Path('app.js').write_bytes(app)
-
-          actual = hashlib.sha256(app).hexdigest()
-          expected = json.loads(Path('manifest.json').read_text(encoding='utf-8'))['sha256']
-          print('Actual:  ', actual)
-          print('Expected:', expected)
-          if actual != expected:
-              raise SystemExit('SHA-256 não confere; app.js NÃO será publicado')
+          print('SHA validado:', expected)
           PY
           node --check app.js
 

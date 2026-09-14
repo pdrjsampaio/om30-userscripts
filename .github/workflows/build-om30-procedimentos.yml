@@ -24,16 +24,46 @@ jobs:
         run: |
           set -euo pipefail
           cd om30-scripts/procedimentos
-          cat app.part*.b64 | tr -d '\r\n\t ' | base64 -d | gzip -dc > app.js
-          ACTUAL="$(sha256sum app.js | awk '{print $1}')"
-          EXPECTED="$(python - <<'PY'
-          import json
-          print(json.load(open('manifest.json', encoding='utf-8'))['sha256'])
+          python - <<'PY'
+          from pathlib import Path
+          import base64, gzip, hashlib, json, re, sys
+
+          parts = sorted(Path('.').glob('app.part*.b64'))
+          if not parts:
+              raise SystemExit('Nenhuma parte encontrada')
+
+          cleaned_parts = []
+          print('Partes encontradas:', len(parts))
+          for p in parts:
+              raw = p.read_text(encoding='utf-8', errors='ignore')
+              clean = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
+              cleaned_parts.append(clean)
+              print(f'{p.name}: raw={len(raw)} clean={len(clean)} eq={clean.count("=")} ini={clean[:8]} fim={clean[-8:]}')
+
+          data = ''.join(cleaned_parts)
+          # padding somente no final
+          data = data.rstrip('=')
+          data += '=' * ((4 - len(data) % 4) % 4)
+
+          try:
+              packed = base64.b64decode(data, validate=True)
+          except Exception as e:
+              raise SystemExit(f'Base64 inválido após limpeza: {e}')
+
+          try:
+              app = gzip.decompress(packed)
+          except Exception as e:
+              raise SystemExit(f'Gzip inválido: {e}')
+
+          Path('app.js').write_bytes(app)
+
+          actual = hashlib.sha256(app).hexdigest()
+          expected = json.loads(Path('manifest.json').read_text(encoding='utf-8'))['sha256']
+          print('Actual:  ', actual)
+          print('Expected:', expected)
+          if actual != expected:
+              raise SystemExit('SHA-256 não confere; app.js NÃO será publicado')
           PY
-          )"
-          echo "Actual:   $ACTUAL"
-          echo "Expected: $EXPECTED"
-          test "$ACTUAL" = "$EXPECTED"
           node --check app.js
 
       - name: Publish app.js

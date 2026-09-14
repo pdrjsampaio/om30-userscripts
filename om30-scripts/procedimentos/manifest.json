@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "name": "OM30 - Procedimentos",
+  "version": "0.6.1",
+  "published_at": "2026-09-14",
+  "app_url": "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos/app.js",
+  "sha256": "12ca6ac9467dc3eca4a9fcc4f810cba532bd612595117cb0d709b2d81596d98f",
+  "minimum_loader_version": "1.0.0"
+}

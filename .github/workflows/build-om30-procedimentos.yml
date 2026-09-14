@@ -1,0 +1,50 @@
+name: Build OM30 Procedimentos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-om30-procedimentos.yml'
+      - 'om30-scripts/procedimentos/app.part*.b64'
+      - 'om30-scripts/procedimentos/manifest.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rebuild app.js and validate hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd om30-scripts/procedimentos
+          cat app.part*.b64 | tr -d '\r\n\t ' | base64 -d | gzip -dc > app.js
+          ACTUAL="$(sha256sum app.js | awk '{print $1}')"
+          EXPECTED="$(python - <<'PY'
+          import json
+          print(json.load(open('manifest.json', encoding='utf-8'))['sha256'])
+          PY
+          )"
+          echo "Actual:   $ACTUAL"
+          echo "Expected: $EXPECTED"
+          test "$ACTUAL" = "$EXPECTED"
+          node --check app.js
+
+      - name: Publish app.js
+        shell: bash
+        run: |
+          if git diff --quiet -- om30-scripts/procedimentos/app.js; then
+            echo 'app.js already up to date.'
+            exit 0
+          fi
+          git config user.name 'OM30 Bot'
+          git config user.email 'om30-bot@users.noreply.github.com'
+          git add om30-scripts/procedimentos/app.js
+          git commit -m 'build: publicar OM30 Procedimentos app.js'
+          git push

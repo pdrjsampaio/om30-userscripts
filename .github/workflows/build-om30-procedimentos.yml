@@ -26,64 +26,86 @@ jobs:
           cd om30-scripts/procedimentos
           python - <<'PY'
           from pathlib import Path
-          import base64, gzip, hashlib, json, re
+          import base64, gzip, hashlib, json, re, zlib
 
           parts = sorted(Path('.').glob('app.part*.b64'))
-          if not parts:
-              raise SystemExit('Nenhuma parte encontrada')
-
           clean_parts = []
-          boundaries = []
-          total = 0
-
           for p in parts:
               raw = p.read_text(encoding='utf-8', errors='ignore')
               clean = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
               clean_parts.append(clean)
-              total += len(clean)
-              boundaries.append(total)
               print(f'{p.name}: {len(clean)} chars | ini={clean[:8]} | fim={clean[-8:]}')
 
           data = ''.join(clean_parts).rstrip('=')
           expected = json.loads(Path('manifest.json').read_text(encoding='utf-8'))['sha256']
+          print('Total base64 chars:', len(data), 'mod4=', len(data) % 4)
 
-          def try_data(candidate, label):
+          def decode_candidate(candidate):
               padded = candidate + '=' * ((4 - len(candidate) % 4) % 4)
               try:
                   packed = base64.b64decode(padded, validate=True)
                   app = gzip.decompress(packed)
+                  return app
               except Exception:
                   return None
+
+          def valid(candidate, label):
+              app = decode_candidate(candidate)
+              if app is None:
+                  return None
               actual = hashlib.sha256(app).hexdigest()
-              print(f'Candidato gzip válido: {label} | sha={actual}')
-              if actual == expected:
-                  return app
-              return None
+              print('GZIP válido:', label, 'sha=', actual)
+              return app if actual == expected else None
 
-          app = try_data(data, 'sem reparo')
+          app = valid(data, 'sem reparo')
 
-          # A publicação anterior foi quebrada nas divisões dos arquivos.
-          # Testa remoção de 1 caractere perto de cada junção e nas extremidades.
           if app is None and len(data) % 4 == 1:
-              points = {0, len(data)-1}
-              for b in boundaries[:-1]:
-                  for d in range(-16, 17):
-                      pos = b + d
-                      if 0 <= pos < len(data):
-                          points.add(pos)
+              # Remove provisoriamente o último char apenas para tornar o Base64 decodificável
+              probe = data[:-1]
+              packed = base64.b64decode(probe + '=' * ((4-len(probe)%4)%4), validate=True)
+              d = zlib.decompressobj(31)
+              fail_at = None
+              out_len = 0
+              step = 256
+              for off in range(0, len(packed), step):
+                  chunk = packed[off:off+step]
+                  try:
+                      out_len += len(d.decompress(chunk))
+                  except zlib.error as e:
+                      fail_at = off
+                      print('Falha gzip aproximada em compressed byte', off, '| saída parcial', out_len, '|', e)
+                      break
 
-              for pos in sorted(points):
-                  candidate = data[:pos] + data[pos+1:]
-                  app = try_data(candidate, f'remove pos {pos}')
+              if fail_at is None:
+                  fail_at = max(0, len(packed)-step)
+
+              estimate = int(fail_at * 4 / 3)
+              print('Posição Base64 estimada:', estimate)
+
+              # Busca progressiva ao redor do ponto onde o gzip deixou de ser válido.
+              searched = set()
+              for radius in (256, 1024, 4096, 12000):
+                  lo = max(0, estimate-radius)
+                  hi = min(len(data), estimate+radius+1)
+                  print('Buscando remoção em', lo, '..', hi-1)
+                  for pos in range(lo, hi):
+                      if pos in searched:
+                          continue
+                      searched.add(pos)
+                      candidate = data[:pos] + data[pos+1:]
+                      result = valid(candidate, f'remove pos {pos}')
+                      if result is not None:
+                          app = result
+                          print('REPARO ENCONTRADO na posição', pos, 'char=', data[pos])
+                          break
                   if app is not None:
-                      print('Reparo encontrado na posição', pos)
                       break
 
           if app is None:
               raise SystemExit('Não foi possível reconstruir um app com o SHA esperado.')
 
           Path('app.js').write_bytes(app)
-          print('SHA validado:', expected)
+          print('SHA VALIDADO:', expected)
           PY
           node --check app.js
 

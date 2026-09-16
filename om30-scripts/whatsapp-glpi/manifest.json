@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "product": "OM30 - WhatsApp → GLPI",
+  "version": "0.9.6",
+  "format": "gzip-base64-parts",
+  "sha256": "e0f8f7bb892ba95eaf304891413b26d084a4102c5a408895c2c1936ecfde1e21",
+  "parts": [
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/whatsapp-glpi/app.part01.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/whatsapp-glpi/app.part02.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/whatsapp-glpi/app.part03.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/whatsapp-glpi/app.part04.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/whatsapp-glpi/app.part05.b64",
+    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/whatsapp-glpi/app.part06.b64"
+  ]
+}

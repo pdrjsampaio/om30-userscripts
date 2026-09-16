@@ -1,42 +1,11 @@
-[README-WHATSAPP-GLPI.txt](https://github.com/user-attachments/files/31807440/README-WHATSAPP-GLPI.txt)
-# OM30 • WhatsApp → GLPI
+# OM30 - WhatsApp → GLPI
 
-Userscript interno da OM30 para criar chamados no GLPI diretamente a partir do WhatsApp Web.
+Aplicação remota do userscript `OM30-WhatsApp-GLPI.user.js`.
 
-## O que ele faz
+- Loader instalado no Tampermonkey: `/OM30-WhatsApp-GLPI.user.js`
+- Versão remota atual: `0.9.6`
+- Manifesto: `manifest.json`
+- Formato: `gzip-base64-parts`
+- SHA-256 do código: `e0f8f7bb892ba95eaf304891413b26d084a4102c5a408895c2c1936ecfde1e21`
 
-- Permite selecionar mensagens do WhatsApp como evidência;
-- Permite usar Print ou Mensagens + Print;
-- Identifica a unidade do atendimento;
-- Suporta Guarujá e Jales;
-- Permite salvar a operação padrão no navegador;
-- Preenche título, descrição, datas, tipo, sistema e categoria;
-- Cria o chamado no GLPI sem abrir abas automaticamente;
-- Direciona o chamado para o grupo Sistemas da operação;
-- Mantém histórico dos chamados criados;
-- Permite preparar outro chamado enquanto o anterior é processado;
-- Recebe novas versões automaticamente pelo Tampermonkey.
-
-## Operações homologadas
-
-- Guarujá
-- Jales
-
-## Instalação
-
-1. Instale o Tampermonkey no navegador.
-2. Abra o arquivo `OM30-WhatsApp-GLPI.user.js`.
-3. Clique em **Instalar**.
-4. Acesse o WhatsApp Web.
-
-## Atualização automática
-
-O arquivo oficial deste projeto é:
-
-`om30-scripts/whatsapp-glpi/OM30-WhatsApp-GLPI.user.js`
-
-Sempre que a versão for atualizada no GitHub, o Tampermonkey poderá detectar a nova versão automaticamente.
-
----
-
-**Uso interno OM30**
+O loader consulta o manifesto ao abrir/recarregar as páginas compatíveis. Quando a versão/hash mudam, baixa a nova aplicação, valida o SHA-256 e atualiza o cache local automaticamente. Se o GitHub estiver indisponível, usa a última versão válida em cache.

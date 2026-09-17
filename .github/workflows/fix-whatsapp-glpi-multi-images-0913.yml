@@ -1,0 +1,33 @@
+name: Publicar WhatsApp GLPI 0.9.13
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-whatsapp-glpi-multi-images-0913.yml'
+      - '.github/scripts/fix_whatsapp_glpi_multi_images_0913.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aplicar patch multi-imagens
+        run: python3 .github/scripts/fix_whatsapp_glpi_multi_images_0913.py
+      - name: Validar sintaxe
+        run: node --check OM30-WhatsApp-GLPI.user.js
+      - name: Validar versão e funções
+        run: |
+          grep -q '@version      0.9.13' OM30-WhatsApp-GLPI.user.js
+          grep -q 'collectEvidenceImages' OM30-WhatsApp-GLPI.user.js
+          grep -q 'glpi.images.uploaded' OM30-WhatsApp-GLPI.user.js
+          ! grep -q 'composeEvidenceImageDataUrl' OM30-WhatsApp-GLPI.user.js
+      - name: Publicar
+        run: |
+          git config user.name "pdrjsampaio"
+          git config user.email "pdrjustinosampaio@gmail.com"
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m "fix: enviar imagens separadas na ordem das mensagens v0.9.13"
+          git push

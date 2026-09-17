@@ -1,0 +1,61 @@
+name: Publish Preencher v422 meta
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-preencher-v422-meta.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ajustar updateURL e criar meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('OM30-Preencher-Profissional.user.js')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('// @version      4.21', '// @version      4.22', 1)
+          s = s.replace(
+              '// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js',
+              '// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js',
+              1
+          )
+          s = s.replace('Ficha PDF · CNES · v4.21', 'Ficha PDF · CNES · v4.22')
+          p.write_text(s, encoding='utf-8')
+
+          meta = '''// ==UserScript==
+// @name         Preencher Profissional - Saúde Simples
+// @namespace    saudesimples-guaruja
+// @version      4.22
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
+// ==/UserScript==
+'''
+          Path('OM30-Preencher-Profissional.meta.js').write_text(meta, encoding='utf-8')
+          PY
+          node --check OM30-Preencher-Profissional.user.js
+          grep -q '^// @version      4.22$' OM30-Preencher-Profissional.user.js
+          grep -q 'OM30-Preencher-Profissional.meta.js' OM30-Preencher-Profissional.user.js
+          grep -q '^// @version      4.22$' OM30-Preencher-Profissional.meta.js
+
+      - name: Publicar e remover workflow temporário
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/publish-preencher-v422-meta.yml
+          git config user.name 'OM30 Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Preencher Profissional v4.22: manifest de atualizacao separado' || exit 0
+          git push

@@ -59,10 +59,15 @@ jobs:
           PY
 
           node --check OM30-Preencher-Profissional.user.js
+          head -20 OM30-Preencher-Profissional.user.js
+          grep -q '^// @version      4.19$' OM30-Preencher-Profissional.user.js
+          grep -q '^// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js$' OM30-Preencher-Profissional.user.js
+          grep -q '^// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js$' OM30-Preencher-Profissional.user.js
 
       - name: Commit da correção
         shell: bash
         run: |
+          set -euo pipefail
           git config user.name "OM30 Automation"
           git config user.email "actions@users.noreply.github.com"
           git add OM30-Preencher-Profissional.user.js
@@ -72,3 +77,5 @@ jobs:
           fi
           git commit -m "Preencher Profissional v4.19: restaura cabeçalho Tampermonkey"
           git push
+
+# trigger: 2026-09-17

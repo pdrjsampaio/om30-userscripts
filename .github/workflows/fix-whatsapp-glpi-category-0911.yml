@@ -1,0 +1,77 @@
+name: Corrigir categoria GLPI WhatsApp 0.9.11
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-whatsapp-glpi-category-0911.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Aplicar correção de categoria
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('OM30-WhatsApp-GLPI.user.js')
+          s = p.read_text(encoding='utf-8')
+
+          old = """    function cleanCategoryText(text) {
+        return glpiNormalize(
+            String(text || '')
+                .replace(/^[\\s»›>·\\-]+/g, '')
+                .trim()
+        );
+    }
+"""
+
+          new = """    function cleanCategoryText(text) {
+        return glpiNormalize(
+            String(text || '')
+                .replace(/^[\\s»›>·\\-]+/g, '')
+                // O Select2 desta instalação pode devolver a folha como
+                // \"Erro (109)\", onde 109 é o ID da própria categoria.
+                // Para comparar semanticamente com \"Erro\", ignoramos
+                // somente esse sufixo numérico final; o ID real continua
+                // sendo preservado no objeto e usado na seleção.
+                .replace(/\\s*\\(\\d+\\)\\s*$/g, '')
+                .trim()
+        );
+    }
+"""
+
+          if old not in s:
+              raise SystemExit('ERRO: cleanCategoryText alvo não encontrado')
+
+          s = s.replace(old, new, 1)
+          s = s.replace('// @version      0.9.10', '// @version      0.9.11', 1)
+          s = s.replace("const OM30_VERSION =\n        '0.9.10';", "const OM30_VERSION =\n        '0.9.11';", 1)
+
+          if '// @version      0.9.11' not in s:
+              raise SystemExit('ERRO: versão pública não atualizada')
+          if "const OM30_VERSION =\n        '0.9.11';" not in s:
+              raise SystemExit('ERRO: versão interna não atualizada')
+          if ".replace(/\\s*\\(\\d+\\)\\s*$/g, '')" not in s:
+              raise SystemExit('ERRO: normalização do ID da categoria não inserida')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validar sintaxe
+        run: node --check OM30-WhatsApp-GLPI.user.js
+
+      - name: Publicar
+        shell: bash
+        run: |
+          git config user.name "pdrjsampaio"
+          git config user.email "pdrjustinosampaio@gmail.com"
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m "fix: aceitar categoria GLPI com ID no rótulo v0.9.11"
+          git push

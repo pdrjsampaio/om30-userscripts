@@ -1,0 +1,34 @@
+name: Publicar WhatsApp GLPI 0.9.10
+
+on:
+  push:
+    paths:
+      - '.github/scripts/fix_whatsapp_glpi_0910.py'
+      - '.github/workflows/fix-whatsapp-glpi-0910.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Aplicar patch
+        run: python3 .github/scripts/fix_whatsapp_glpi_0910.py
+
+      - name: Validar sintaxe
+        run: |
+          node --check OM30-WhatsApp-GLPI.user.js
+          grep -n "@version      0.9.10" OM30-WhatsApp-GLPI.user.js
+          grep -n "messageDisplayedTime" OM30-WhatsApp-GLPI.user.js
+          grep -n "selected.size === 0" OM30-WhatsApp-GLPI.user.js
+
+      - name: Publicar
+        run: |
+          git config user.name "pdrjsampaio"
+          git config user.email "pdrjustinosampaio@gmail.com"
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m "fix: seleção contínua e horário de imagem v0.9.10"
+          git push

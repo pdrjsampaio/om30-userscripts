@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Preencher Profissional - Saúde Simples
 // @namespace    saudesimples-guaruja
-// @version      4.21
-// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
+// @version      4.22
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
 // @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF. Atualização automática via GitHub.
 // @author       Pedro Sampaio
@@ -1348,7 +1348,7 @@
     '<div class="hd">'+
       '<div class="brand"><img class="brand-logo" src="'+OM30_LOGO+'" alt="OM30">'+
         '<div class="brand-copy"><span class="brand-kicker">OM30 · Saúde Simples</span>'+
-        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.21</small></div></div>'+
+        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.22</small></div></div>'+
       '<button class="x" id="ps-close" title="Fechar">×</button>'+
     '</div>'+
     '<div class="brand-line"></div>'+

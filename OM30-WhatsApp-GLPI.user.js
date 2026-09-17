@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.10
+// @version      0.9.11
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
@@ -1102,6 +1102,10 @@
         return glpiNormalize(
             String(text || '')
                 .replace(/^[\s»›>·\-]+/g, '')
+                // O GLPI pode devolver a folha como "Erro (109)".
+                // O número entre parênteses é o ID da própria categoria;
+                // ignoramos somente esse sufixo para comparar com "Erro".
+                .replace(/\s*\(\d+\)\s*$/g, '')
                 .trim()
         );
     }
@@ -4047,7 +4051,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.10';
+        '0.9.11';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';

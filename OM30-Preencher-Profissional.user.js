@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Preencher Profissional - Saúde Simples
 // @namespace    saudesimples-guaruja
-// @version      4.24
+// @version      4.25
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
-// @description  Lê a Ficha de Cadastro (AcroForm ou PDF assinado/achatado), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.
+// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/profissionais/new*
 // @match        https://*.saudesimples.net/profissionais/new*
@@ -103,256 +103,42 @@
     });
   }
 
-  /* ---------- pdf.js worker (estável, carregado uma vez) ---------- */
-  let workerPdfPromise = null;
+  /* ---------- pdf.js worker (dribla CSP) ---------- */
   async function prepararWorker() {
     if (typeof pdfjsLib === 'undefined')
-      throw new Error('pdf.js NÃO carregou. Recarregue a página e tente novamente.');
-
-    if (pdfjsLib.GlobalWorkerOptions.workerSrc) return;
-    if (workerPdfPromise) return workerPdfPromise;
-
+      throw new Error('pdf.js NÃO carregou (a página pode bloquear o @require). Me avise.');
     const w = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    workerPdfPromise = (async () => {
-      try {
-        const code = await new Promise((res, rej) => GM_xmlhttpRequest({
-          method:'GET', url:w, timeout:20000,
-          onload:r => (r.status >= 200 && r.status < 300) ? res(r.responseText) : rej(new Error('HTTP '+r.status)),
-          onerror:rej, ontimeout:()=>rej(new Error('Timeout do pdf.worker'))
-        }));
-        pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type:'application/javascript' }));
-      } catch (e) {
-        console.warn('[Preencher] Worker por Blob falhou; usando CDN.', e);
-        pdfjsLib.GlobalWorkerOptions.workerSrc = w;
-      }
-    })();
-    return workerPdfPromise;
+    try {
+      const code = await new Promise((res, rej) => GM_xmlhttpRequest({ method:'GET', url:w,
+        onload:r=>res(r.responseText), onerror:rej, ontimeout:rej, timeout:20000 }));
+      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code],{type:'application/javascript'}));
+    } catch (e) { pdfjsLib.GlobalWorkerOptions.workerSrc = w; }
   }
 
-  /* ---------- fallback para ficha ASSINADA/ACHATADA ---------- */
-  function agruparLinhasPdf(textos) {
-    const linhas = [];
-    const itens = (textos || [])
-      .filter(t => t && String(t.s || '').trim())
-      .map(t => ({
-        s: String(t.s || '').trim(),
-        x: Number(t.x || 0),
-        y: Number(t.y || 0),
-        w: Number(t.w || 0)
-      }))
-      .sort((a,b) => (b.y - a.y) || (a.x - b.x));
-
-    for (const t of itens) {
-      let linha = linhas.find(l => Math.abs(l.y - t.y) <= 3.5);
-      if (!linha) {
-        linha = { y:t.y, items:[] };
-        linhas.push(linha);
-      }
-      linha.items.push(t);
-      linha.y = linha.items.reduce((acc,i) => acc + i.y, 0) / linha.items.length;
-    }
-
-    for (const l of linhas) {
-      l.items.sort((a,b) => a.x - b.x);
-      l.text = l.items.map(i => i.s).join(' ').replace(/\s+/g,' ').trim();
-    }
-    return linhas;
-  }
-
-  function ehMarcaPdf(s) {
-    s = String(s || '').trim();
-    if (!s) return false;
-    if (/^[✓✔☑]$/.test(s)) return true;
-    return s.length === 1 && s.charCodeAt(0) >= 0xE000 && s.charCodeAt(0) <= 0xF8FF;
-  }
-
-  function extrairFichaAchatada(textos, campos, marcados) {
-    const linhas = agruparLinhasPdf(textos);
-    const temItem = (l, re) => !!l && l.items.some(i => re.test(i.s));
-    const achar = fn => linhas.find(fn) || null;
-    const item = (l, re, depoisX=-Infinity) => l ? (l.items.find(i => i.x >= depoisX && re.test(i.s)) || null) : null;
-    const util = i => {
-      const x = String((i && i.s) || '').trim();
-      return !!x && !ehMarcaPdf(x) && !/^[_\s/.-]+$/.test(x);
-    };
-    const entre = (l, reEsq, reDir) => {
-      if (!l) return '';
-      const esq = item(l, reEsq);
-      if (!esq) return '';
-      const inicio = esq.x + Math.max(0, esq.w || 0) - 1;
-      let fim = Infinity;
-      if (reDir) {
-        const dir = item(l, reDir, esq.x + 0.1);
-        if (dir) fim = dir.x - 1;
-      }
-      return l.items
-        .filter(i => i.x >= inicio && i.x < fim && util(i))
-        .map(i => i.s)
-        .join(' ')
-        .replace(/\s+/g,' ')
-        .trim();
-    };
-    const digitosEntre = (l, reEsq, reDir) => entre(l, reEsq, reDir).match(/\d+/g) || [];
-    const set = (k,v) => {
-      v = String(v == null ? '' : v).replace(/\s+/g,' ').trim();
-      if (v && !String(campos[k] || '').trim()) campos[k] = v;
-    };
-    const setPartes = (ks, partes) => ks.forEach((k,i) => { if (partes[i]) set(k, partes[i]); });
-    const marcar = label => {
-      if (!label) return;
-      if (!marcados.some(x => norm(x.label) === norm(label))) marcados.push({ label });
-    };
-
-    let l;
-
-    // CNES da unidade.
-    l = achar(r => temItem(r,/^ESTABELECIMENTO$/i) && temItem(r,/^SA[ÚU]DE:$/i));
-    if (l) {
-      const cnes = soDig(entre(l,/^SA[ÚU]DE:$/i));
-      if (cnes) set('UNIDADES1', nomeDaUnidade(cnes) || cnes);
-    }
-
-    // Data de entrada — somente a linha do cabeçalho, nunca a data de assinatura do rodapé.
-    l = achar(r => temItem(r,/^ENTRADA$/i) && temItem(r,/^ESTABELECIMENTO:$/i));
-    if (l) setPartes(['ENTRADA1','ENTRADA2','ENTRADA3'], digitosEntre(l,/^ESTABELECIMENTO:$/i));
-
-    // CPF e sexo.
-    l = achar(r => temItem(r,/^CPF:$/i) && temItem(r,/^Sexo:$/i));
-    if (l) {
-      setPartes(['CPF1','CPF2','CPF3','CPF4'], digitosEntre(l,/^CPF:$/i,/^Sexo:$/i));
-      const marca = l.items.find(i => ehMarcaPdf(i.s));
-      if (marca) {
-        const opcoes = [
-          ['M', item(l,/^M$/i)],
-          ['F', item(l,/^F$/i)],
-          ['OUTRO', item(l,/^OUTRO:$/i)]
-        ].filter(x => x[1])
-          .map(([label,it]) => ({ label, dist:Math.abs(it.x - marca.x) }))
-          .sort((a,b) => a.dist - b.dist);
-        if (opcoes[0]) marcar(opcoes[0].label);
-      }
-    }
-
-    l = achar(r => temItem(r,/^Nome$/i) && temItem(r,/^Completo:$/i));
-    if (l) set('Nome Completo', entre(l,/^Completo:$/i));
-
-    l = achar(r => temItem(r,/^Nome$/i) && temItem(r,/^Mãe:$/i));
-    if (l) set('Nome da Mãe', entre(l,/^Mãe:$/i));
-
-    l = achar(r => temItem(r,/^Nome$/i) && temItem(r,/^Pai:$/i));
-    if (l) set('Nome do Pai', entre(l,/^Pai:$/i));
-
-    l = achar(r => temItem(r,/^Nascimento:$/i) && temItem(r,/^Raça\/Cor:$/i));
-    if (l) {
-      setPartes(['NASC1','NASC2','NASC3'], digitosEntre(l,/^Nascimento:$/i,/^Raça\/Cor:$/i));
-      set('RAÇA/COR', entre(l,/^Raça\/Cor:$/i));
-    }
-
-    l = achar(r => temItem(r,/^Município$/i) && temItem(r,/^Nascimento:$/i) && temItem(r,/^Estado:$/i) && temItem(r,/^Nacionalidade:$/i));
-    if (l) {
-      set('Município de Nascimento', entre(l,/^Nascimento:$/i,/^Estado:$/i));
-      set('UF1', entre(l,/^Estado:$/i,/^Nacionalidade:$/i));
-      set('Nacionalidade', entre(l,/^Nacionalidade:$/i));
-    }
-
-    l = achar(r => temItem(r,/^E-mail:$/i) && temItem(r,/^Celular:$/i));
-    if (l) {
-      set('Email', entre(l,/^E-mail:$/i,/^Celular:$/i));
-      set('CELULAR', entre(l,/^Celular:$/i));
-    }
-
-    l = achar(r => temItem(r,/^RG:$/i) && temItem(r,/^UF:$/i) && temItem(r,/^Emissão:$/i));
-    if (l) {
-      set('RG', entre(l,/^RG:$/i,/^UF:$/i));
-      set('UF2', entre(l,/^UF:$/i,/^Emissão:$/i));
-    }
-
-    l = achar(r => temItem(r,/^Endereço$/i) && temItem(r,/^Completo:$/i));
-    if (l) set('Endereço Completo', entre(l,/^Completo:$/i));
-
-    l = achar(r => temItem(r,/^Bairro:$/i) && temItem(r,/^Cidade:$/i) && temItem(r,/^CEP:$/i));
-    if (l) {
-      set('Bairro', entre(l,/^Bairro:$/i,/^Cidade:$/i));
-      set('Cidade', entre(l,/^Cidade:$/i,/^CEP:$/i));
-      setPartes(['CEP1','CEP2'], digitosEntre(l,/^CEP:$/i));
-    }
-
-    l = achar(r => temItem(r,/^Função$/i) && temItem(r,/^\(CBO\):$/i) && temItem(r,/^Conselho:$/i) && temItem(r,/^UF:$/i));
-    if (l) {
-      set('Função CBO', entre(l,/^\(CBO\):$/i,/^N[º°o]$/i));
-      set('N do Conselho', entre(l,/^Conselho:$/i,/^UF:$/i));
-      set('UF3', entre(l,/^UF:$/i));
-    }
-
-    l = achar(r => temItem(r,/^Grau$/i) && temItem(r,/^Escolaridade:$/i));
-    if (l) set('Grau de Escolaridade', entre(l,/^Escolaridade:$/i,/^Médico$/i));
-
-    // Para vínculo, só precisamos distinguir Autônomo. Qualquer outro vínculo segue como "Com Vínculo".
-    l = achar(r => temItem(r,/^Autônomo$/i) && temItem(r,/^Terceirizado$/i));
-    if (l) {
-      const aut = item(l,/^Autônomo$/i);
-      const marcado = aut && l.items.some(i => ehMarcaPdf(i.s) && i.x < aut.x && (aut.x - i.x) <= 45);
-      if (marcado) marcar('Autônomo');
-    }
-  }
-
-  /* ---------- lê AcroForm normal; fallback só se a ficha foi achatada pela assinatura ---------- */
+  /* ---------- lê os CAMPOS do AcroForm + caixas marcadas ---------- */
   async function lerFormulario(file) {
     await prepararWorker();
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-    const campos = {}, marcados = [];
-    let teveCampoUtil = false;
-    let textosFallback = [];
-
+    const campos = {}, marcados = []; let teveWidget = false;
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const anns = await page.getAnnotations();
       const tc = await page.getTextContent();
-      const textos = tc.items.map(it => ({
-        s: it.str,
-        x: it.transform[4],
-        y: it.transform[5],
-        w: Number(it.width || 0)
-      }));
-      textosFallback = textosFallback.concat(textos);
-
+      const textos = tc.items.map(it => ({ s: it.str, x: it.transform[4], y: it.transform[5] }));
       anns.filter(a => a.subtype === 'Widget').forEach(a => {
+        teveWidget = true;
         const nome = (a.fieldName || '').trim();
         if (a.fieldType === 'Tx' || a.fieldType === 'Ch') {
-          if (a.fieldValue != null && a.fieldValue !== '') {
-            campos[nome] = String(a.fieldValue).trim();
-            teveCampoUtil = true;
-          }
+          if (a.fieldValue != null && a.fieldValue !== '') campos[nome] = String(a.fieldValue).trim();
         } else if (a.fieldType === 'Btn') {
-          const fv = a.fieldValue;
-          const on = fv && fv !== 'Off' && (a.buttonValue === fv || a.exportValue === fv || a.checkBox);
-          if (on) {
-            marcados.push({ label: rotuloMaisProximo(a.rect, textos) });
-            teveCampoUtil = true;
-          }
+          const fv = a.fieldValue, on = fv && fv !== 'Off' && (a.buttonValue === fv || a.exportValue === fv || a.checkBox);
+          if (on) marcados.push({ label: rotuloMaisProximo(a.rect, textos) });
         }
-        // fieldType === 'Sig' NÃO conta como formulário de cadastro útil.
       });
     }
-
-    // A assinatura digital costuma deixar apenas um Widget /Sig e achatar os demais valores.
-    // Nessa situação o AcroForm vem vazio, então lemos o texto posicionado da ficha padrão.
-    const temDadosPrincipais = !!(
-      campos['Nome Completo'] || campos['CPF1'] || campos['RG'] || campos['Função CBO'] || campos['Função CBO'.normalize('NFC')]
-    );
-    if (!teveCampoUtil || !temDadosPrincipais) {
-      extrairFichaAchatada(textosFallback, campos, marcados);
-      if (campos['Nome Completo'] || campos['CPF1']) {
-        console.log('[Preencher] Ficha assinada/achatada: fallback de texto utilizado.');
-      }
-    }
-
-    if (!Object.keys(campos).length) {
-      throw new Error('Não consegui ler os dados da ficha. Selecione a Ficha de Cadastro de Profissional original ou assinada em PDF.');
-    }
+    if (!teveWidget) throw new Error('Este PDF não é um formulário preenchível (AcroForm).');
     return { campos, marcados };
   }
-
   function rotuloMaisProximo(rect, textos) {
     const cy = (rect[1] + rect[3]) / 2, x2 = rect[2]; let melhor = null, dist = 1e9;
     textos.forEach(t => { if (!t.s.trim()) return; if (Math.abs(t.y - cy) > 7) return;
@@ -1553,7 +1339,7 @@
     '<div class="hd">'+
       '<div class="brand"><img class="brand-logo" src="'+OM30_LOGO+'" alt="OM30">'+
         '<div class="brand-copy"><span class="brand-kicker">OM30 · Saúde Simples</span>'+
-        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.24</small></div></div>'+
+        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.25</small></div></div>'+
       '<button class="x" id="ps-close" title="Fechar">×</button>'+
     '</div>'+
     '<div class="brand-line"></div>'+

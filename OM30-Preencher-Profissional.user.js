@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Preencher Profissional - Saúde Simples
 // @namespace    saudesimples-guaruja
-// @version      4.25
+// @version      4.26
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
-// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.
+// @description  Lê a Ficha de Cadastro (AcroForm ou PDF assinado/achatado), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/profissionais/new*
 // @match        https://*.saudesimples.net/profissionais/new*
@@ -75,11 +75,17 @@
   function aliasGet(nomeFicha){ const a=lerAlias(); return a[norm(nomeFicha)] || null; }
   function aliasSet(nomeFicha, nome, cnes){ const a=lerAlias(); a[norm(nomeFicha)] = { nome, cnes }; gravarAlias(a); }
 
+  const UNIDADES_ALIAS_FIXOS = Object.freeze({
+    'farmacia do jayro graciola': '9353151'
+  });
+
   // resolve o nome da ficha -> {nome canônico, cnes}; null se desconhecida
   function resolverUnidade(nomeFicha){
     if (!nomeFicha) return null;
     const al = aliasGet(nomeFicha);
     if (al && al.nome) return { nome: al.nome, cnes: al.cnes || UnidadeCnes.porNome(al.nome) };
+    const fixo = UNIDADES_ALIAS_FIXOS[norm(nomeFicha)] || '';
+    if (fixo) return { nome: nomeDaUnidade(fixo) || nomeFicha, cnes: fixo };
     const cod = UnidadeCnes.porNome(nomeFicha);
     if (cod) return { nome: nomeDaUnidade(cod) || nomeFicha, cnes: cod };
     return null;
@@ -103,42 +109,164 @@
     });
   }
 
-  /* ---------- pdf.js worker (dribla CSP) ---------- */
+  /* ---------- pdf.js worker (estável, carregado uma vez) ---------- */
+  let workerPdfPromise = null;
   async function prepararWorker() {
     if (typeof pdfjsLib === 'undefined')
-      throw new Error('pdf.js NÃO carregou (a página pode bloquear o @require). Me avise.');
+      throw new Error('pdf.js NÃO carregou. Recarregue a página e tente novamente.');
+
+    if (pdfjsLib.GlobalWorkerOptions.workerSrc) return;
+    if (workerPdfPromise) return workerPdfPromise;
+
     const w = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    try {
-      const code = await new Promise((res, rej) => GM_xmlhttpRequest({ method:'GET', url:w,
-        onload:r=>res(r.responseText), onerror:rej, ontimeout:rej, timeout:20000 }));
-      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code],{type:'application/javascript'}));
-    } catch (e) { pdfjsLib.GlobalWorkerOptions.workerSrc = w; }
+    workerPdfPromise = (async () => {
+      try {
+        const code = await new Promise((res, rej) => GM_xmlhttpRequest({
+          method:'GET', url:w, timeout:20000,
+          onload:r => (r.status >= 200 && r.status < 300) ? res(r.responseText) : rej(new Error('HTTP '+r.status)),
+          onerror:rej, ontimeout:()=>rej(new Error('Timeout do pdf.worker'))
+        }));
+        pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type:'application/javascript' }));
+      } catch (e) {
+        console.warn('[Preencher] Worker por Blob falhou; usando CDN.', e);
+        pdfjsLib.GlobalWorkerOptions.workerSrc = w;
+      }
+    })();
+    return workerPdfPromise;
   }
 
-  /* ---------- lê os CAMPOS do AcroForm + caixas marcadas ---------- */
+  /* ---------- fallback para ficha ASSINADA/ACHATADA ---------- */
+  function agruparLinhasPdf(textos) {
+    const linhas = [];
+    const itens = (textos || [])
+      .filter(t => t && String(t.s || '').trim())
+      .map(t => ({
+        s: String(t.s || '').trim(),
+        x: Number(t.x || 0),
+        y: Number(t.y || 0),
+        w: Number(t.w || 0)
+      }))
+      .sort((a,b) => (b.y - a.y) || (a.x - b.x));
+
+    for (const t of itens) {
+      let linha = linhas.find(l => Math.abs(l.y - t.y) <= 3.5);
+      if (!linha) {
+        linha = { y:t.y, items:[] };
+        linhas.push(linha);
+      }
+      linha.items.push(t);
+      linha.y = linha.items.reduce((acc,i) => acc + i.y, 0) / linha.items.length;
+    }
+
+    for (const l of linhas) {
+      l.items.sort((a,b) => a.x - b.x);
+      l.text = l.items.map(i => i.s).join(' ').replace(/\s+/g,' ').trim();
+    }
+    return linhas;
+  }
+
+  function ehMarcaPdf(s) {
+    s = String(s || '').trim();
+    if (!s) return false;
+    if (/^[✓✔☑]$/.test(s)) return true;
+    return s.length === 1 && s.charCodeAt(0) >= 0xE000 && s.charCodeAt(0) <= 0xF8FF;
+  }
+
+  function extrairFichaAchatada(textos, campos, marcados) {
+    const linhas = agruparLinhasPdf(textos);
+    const linha = re => linhas.find(l => re.test(String(l.text || ''))) || null;
+    const it = (l,re) => l ? (l.items.find(i => re.test(String(i.s||'').trim())) || null) : null;
+    const ok = i => { const s=String(i&&i.s||'').trim(); return s && !ehMarcaPdf(s) && !/^[_\s/.,-]+$/.test(s); };
+    const faixa = (l,a,b) => {
+      if(!l) return [];
+      const ia=it(l,a), ib=b?it(l,b):null, x1=ia?ia.x:-Infinity, x2=ib?ib.x:Infinity;
+      return l.items.filter(i=>i.x>=x1&&i.x<x2&&ok(i)&&!a.test(String(i.s||'').trim())&&!(b&&b.test(String(i.s||'').trim())));
+    };
+    const txt=(l,a,b)=>faixa(l,a,b).map(i=>String(i.s).trim()).join(' ').replace(/\s+/g,' ').trim();
+    const nums=(l,a,b)=>faixa(l,a,b).flatMap(i=>String(i.s||'').match(/\d+/g)||[]);
+    const set=(k,v)=>{v=String(v??'').replace(/\s+/g,' ').trim(); if(v&&!String(campos[k]||'').trim()) campos[k]=v;};
+    const parts=(ks,v)=>ks.forEach((k,i)=>v[i]&&set(k,v[i]));
+    const mark=l=>{if(l&&!marcados.some(x=>norm(x.label)===norm(l))) marcados.push({label:l});};
+    let l,n;
+
+    l=linha(/ESTABELECIMENTO\s+DE\s+SA[ÚU]DE:/i); n=nums(l,/ESTABELECIMENTO\s+DE\s+SA[ÚU]DE:/i); if(n.length){const c=n.find(x=>/^\d{7}$/.test(x))||n.join('');set('UNIDADES1',nomeDaUnidade(c)||c);}
+    l=linha(/ENTRADA\s+NO\s+ESTABELECIMENTO:/i); n=nums(l,/ENTRADA\s+NO\s+ESTABELECIMENTO:/i); if(n.length>=3) parts(['ENTRADA1','ENTRADA2','ENTRADA3'],n.slice(0,3));
+
+    l=linha(/CPF:/i); n=nums(l,/^CPF:/i,/^Sexo:/i); if(n.length>=4) parts(['CPF1','CPF2','CPF3','CPF4'],n.slice(0,4));
+    if(l){const m=l.items.find(i=>ehMarcaPdf(i.s)); if(m){const o=[['M',it(l,/^M$/i)],['F',it(l,/^F$/i)],['OUTRO',it(l,/^OUTRO:$/i)]].filter(x=>x[1]).sort((a,b)=>Math.abs(a[1].x-m.x)-Math.abs(b[1].x-m.x)); if(o[0]) mark(o[0][0]);}}
+
+    l=linha(/Nome\s+Completo:/i); set('Nome Completo',txt(l,/Nome\s+Completo:/i));
+    l=linha(/Nome\s+da\s+M[ãa]e:/i); set('Nome da Mãe',txt(l,/Nome\s+da\s+M[ãa]e:/i));
+    l=linha(/Nome\s+do\s+Pai:/i); set('Nome do Pai',txt(l,/Nome\s+do\s+Pai:/i));
+
+    l=linha(/Data\s+de\s+Nascimento:/i); n=nums(l,/Data\s+de\s+Nascimento:/i,/Ra[çc]a\/Cor:/i); if(n.length>=3) parts(['NASC1','NASC2','NASC3'],n.slice(0,3)); set('RAÇA/COR',txt(l,/Ra[çc]a\/Cor:/i));
+    l=linha(/Munic[ií]pio\s+de\s+Nascimento:/i); set('Município de Nascimento',txt(l,/Munic[ií]pio\s+de\s+Nascimento:/i,/^Estado:/i)); set('UF1',txt(l,/^Estado:/i,/^Nacionalidade:/i)); set('Nacionalidade',txt(l,/^Nacionalidade:/i));
+    l=linha(/E-?mail:/i); set('Email',txt(l,/E-?mail:/i,/^Celular:/i)); set('CELULAR',txt(l,/^Celular:/i));
+    l=linha(/\bRG:/i); set('RG',txt(l,/^RG:/i,/^UF:/i)); set('UF2',txt(l,/^UF:/i,/^Emiss[ãa]o:/i));
+    l=linha(/Endere[çc]o\s+Completo:/i); set('Endereço Completo',txt(l,/Endere[çc]o\s+Completo:/i));
+    l=linha(/\bBairro:/i); set('Bairro',txt(l,/^Bairro:/i,/^Cidade:/i)); set('Cidade',txt(l,/^Cidade:/i,/^CEP:/i)); n=nums(l,/^CEP:/i); if(n.length>=2) parts(['CEP1','CEP2'],n.slice(0,2)); else if(n.length===1&&n[0].length>=8){set('CEP1',n[0].slice(0,5));set('CEP2',n[0].slice(5,8));}
+    l=linha(/Fun[çc][ãa]o\s*\(CBO\):/i); set('Função CBO',txt(l,/Fun[çc][ãa]o\s*\(CBO\):/i,/^N[º°o]?\s*do\s*Conselho:/i)); set('N do Conselho',txt(l,/^N[º°o]?\s*do\s*Conselho:/i,/^UF:/i)); set('UF3',txt(l,/^UF:/i));
+    l=linha(/Grau\s+de\s+Escolaridade:/i); set('Grau de Escolaridade',txt(l,/Grau\s+de\s+Escolaridade:/i,/^M[ée]dico\s+Preceptor$/i));
+    l=linha(/Aut[oô]nomo/i); if(l){const a=it(l,/^Aut[oô]nomo$/i); if(a&&l.items.some(i=>ehMarcaPdf(i.s)&&i.x<a.x&&(a.x-i.x)<=35)) mark('Autônomo');}
+  }
+
+  /* ---------- lê AcroForm normal; fallback só se a ficha foi achatada pela assinatura ---------- */
   async function lerFormulario(file) {
     await prepararWorker();
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-    const campos = {}, marcados = []; let teveWidget = false;
+    const campos = {}, marcados = [];
+    let teveCampoUtil = false;
+    let textosFallback = [];
+
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const anns = await page.getAnnotations();
       const tc = await page.getTextContent();
-      const textos = tc.items.map(it => ({ s: it.str, x: it.transform[4], y: it.transform[5] }));
+      const textos = tc.items.map(it => ({
+        s: it.str,
+        x: it.transform[4],
+        y: it.transform[5],
+        w: Number(it.width || 0)
+      }));
+      textosFallback = textosFallback.concat(textos);
+
       anns.filter(a => a.subtype === 'Widget').forEach(a => {
-        teveWidget = true;
         const nome = (a.fieldName || '').trim();
         if (a.fieldType === 'Tx' || a.fieldType === 'Ch') {
-          if (a.fieldValue != null && a.fieldValue !== '') campos[nome] = String(a.fieldValue).trim();
+          if (a.fieldValue != null && a.fieldValue !== '') {
+            campos[nome] = String(a.fieldValue).trim();
+            teveCampoUtil = true;
+          }
         } else if (a.fieldType === 'Btn') {
-          const fv = a.fieldValue, on = fv && fv !== 'Off' && (a.buttonValue === fv || a.exportValue === fv || a.checkBox);
-          if (on) marcados.push({ label: rotuloMaisProximo(a.rect, textos) });
+          const fv = a.fieldValue;
+          const on = fv && fv !== 'Off' && (a.buttonValue === fv || a.exportValue === fv || a.checkBox);
+          if (on) {
+            marcados.push({ label: rotuloMaisProximo(a.rect, textos) });
+            teveCampoUtil = true;
+          }
         }
+        // fieldType === 'Sig' NÃO conta como formulário de cadastro útil.
       });
     }
-    if (!teveWidget) throw new Error('Este PDF não é um formulário preenchível (AcroForm).');
+
+    // A assinatura digital costuma deixar apenas um Widget /Sig e achatar os demais valores.
+    // Nessa situação o AcroForm vem vazio, então lemos o texto posicionado da ficha padrão.
+    const temDadosPrincipais = !!(
+      campos['Nome Completo'] || campos['CPF1'] || campos['RG'] || campos['Função CBO'] || campos['Função CBO'.normalize('NFC')]
+    );
+    if (!teveCampoUtil || !temDadosPrincipais) {
+      extrairFichaAchatada(textosFallback, campos, marcados);
+      if (campos['Nome Completo'] || campos['CPF1']) {
+        console.log('[Preencher] Ficha assinada/achatada: fallback de texto utilizado.');
+      }
+    }
+
+    if (!Object.keys(campos).length) {
+      throw new Error('Não consegui ler os dados da ficha. Selecione a Ficha de Cadastro de Profissional original ou assinada em PDF.');
+    }
     return { campos, marcados };
   }
+
   function rotuloMaisProximo(rect, textos) {
     const cy = (rect[1] + rect[3]) / 2, x2 = rect[2]; let melhor = null, dist = 1e9;
     textos.forEach(t => { if (!t.s.trim()) return; if (Math.abs(t.y - cy) > 7) return;
@@ -1339,7 +1467,7 @@
     '<div class="hd">'+
       '<div class="brand"><img class="brand-logo" src="'+OM30_LOGO+'" alt="OM30">'+
         '<div class="brand-copy"><span class="brand-kicker">OM30 · Saúde Simples</span>'+
-        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.25</small></div></div>'+
+        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.26</small></div></div>'+
       '<button class="x" id="ps-close" title="Fechar">×</button>'+
     '</div>'+
     '<div class="brand-line"></div>'+

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.6
+// @version      0.9.7
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático

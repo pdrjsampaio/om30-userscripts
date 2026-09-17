@@ -1,0 +1,63 @@
+name: Publicar Preencher Profissional legível
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publicar-preencher-profissional.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruir script legível
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat om30-scripts/preencher-profissional/core.part*.b64 | tr -d '\r\n ' | base64 -d | gzip -d > /tmp/preencher.js
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/preencher.js')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('// @version      4.17', '// @version      4.19', 1)
+          marker = '// @version      4.19\n'
+          urls = (
+              '// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js\n'
+              '// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js\n'
+          )
+          if '@updateURL' not in s:
+              s = s.replace(marker, marker + urls, 1)
+          s = s.replace(
+              '// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.',
+              '// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF. Atualização automática via GitHub.',
+              1
+          )
+          s = s.replace('Ficha PDF · CNES · v4.17', 'Ficha PDF · CNES · v4.19')
+          Path('OM30-Preencher-Profissional.user.js').write_text(s, encoding='utf-8')
+          PY
+
+      - name: Remover pacote antigo e validar
+        shell: bash
+        run: |
+          rm -rf om30-scripts/preencher-profissional
+          node --check OM30-Preencher-Profissional.user.js
+
+      - name: Commit da versão 4.19
+        shell: bash
+        run: |
+          git config user.name "OM30 Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add OM30-Preencher-Profissional.user.js om30-scripts/preencher-profissional
+          if git diff --cached --quiet; then
+            echo "Nada para publicar"
+            exit 0
+          fi
+          git commit -m "Preencher Profissional v4.19: código legível e auto-update"
+          git push

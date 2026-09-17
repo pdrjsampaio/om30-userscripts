@@ -17,20 +17,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restaurar base 4.24 e aplicar correcoes 4.26
+      - name: Restaurar base 4.24 e aplicar v4.26
         shell: bash
         run: |
           set -euo pipefail
           git show f3069988f92bc38b7178ee5c6c9dd7d4a7fe5377:OM30-Preencher-Profissional.user.js > OM30-Preencher-Profissional.user.js
-          git apply --whitespace=nowarn .github/v426.patch
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('OM30-Preencher-Profissional.meta.js')
-          s=p.read_text(encoding='utf-8')
-          import re
-          s=re.sub(r'^// @version\s+\S+', '// @version      4.26', s, count=1, flags=re.M)
-          p.write_text(s,encoding='utf-8')
-          PY
+          python3 .github/patch_v426.py
 
       - name: Validar
         shell: bash
@@ -40,15 +32,15 @@ jobs:
           grep -q '^// @version      4.26$' OM30-Preencher-Profissional.user.js
           grep -q '^// @version      4.26$' OM30-Preencher-Profissional.meta.js
           grep -q "farmacia do jayro graciola.*9353151" OM30-Preencher-Profissional.user.js
-          grep -q 'Ficha assinada/achatada' OM30-Preencher-Profissional.user.js
+          grep -q 'function extrairFichaAchatada' OM30-Preencher-Profissional.user.js
 
       - name: Publicar
         shell: bash
         run: |
           set -euo pipefail
-          rm -f .github/v426.patch .github/workflows/publish-preencher-v426.yml
+          rm -f .github/v426.patch .github/patch_v426.py .github/workflows/publish-preencher-v426.yml
           git config user.name 'OM30 Automation'
           git config user.email 'actions@users.noreply.github.com'
           git add -A
-          git commit -m 'Preencher Profissional v4.26: ficha assinada e Farmacia Jayro Graciola'
+          git commit -m 'Preencher Profissional v4.26: ficha diferente e Farmacia Jayro Graciola'
           git push

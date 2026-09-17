@@ -1,0 +1,42 @@
+name: Publicar WhatsApp GLPI 0.9.13 corrigido
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-whatsapp-glpi-multi-images-0913b.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aplicar patch corrigido em memória
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          patch = Path('.github/scripts/fix_whatsapp_glpi_multi_images_0913.py').read_text(encoding='utf-8')
+          patch = patch.replace("new_selected_media + '    async function mediaSourceToDataUrl('", "new_selected_media")
+          patch = patch.replace("new_collect + '    async function validateTicket() {'", "new_collect")
+          patch = patch.replace("new_description + '    function silentExpectedActors(userId) {'", "new_description")
+          exec(compile(patch, 'fix_whatsapp_glpi_multi_images_0913.py', 'exec'), {})
+          PY
+      - name: Validar sintaxe
+        run: node --check OM30-WhatsApp-GLPI.user.js
+      - name: Validar comportamento estrutural
+        run: |
+          grep -q '@version      0.9.13' OM30-WhatsApp-GLPI.user.js
+          grep -q 'collectEvidenceImages' OM30-WhatsApp-GLPI.user.js
+          grep -q 'glpi.images.uploaded' OM30-WhatsApp-GLPI.user.js
+          grep -q 'evidenceImages' OM30-WhatsApp-GLPI.user.js
+          ! grep -q 'composeEvidenceImageDataUrl' OM30-WhatsApp-GLPI.user.js
+          ! grep -q 'mediaSourceToDataUrl(    async function' OM30-WhatsApp-GLPI.user.js
+      - name: Publicar
+        run: |
+          git config user.name "pdrjsampaio"
+          git config user.email "pdrjustinosampaio@gmail.com"
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m "fix: imagens separadas na sequência das mensagens v0.9.13"
+          git push

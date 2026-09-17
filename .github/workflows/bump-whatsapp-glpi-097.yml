@@ -1,0 +1,39 @@
+name: Publicar WhatsApp GLPI 0.9.7 completo
+
+on:
+  push:
+    paths:
+      - '.github/workflows/bump-whatsapp-glpi-097.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Atualizar versão
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('OM30-WhatsApp-GLPI.user.js')
+          text = p.read_text(encoding='utf-8')
+          old = '// @version      0.9.6'
+          new = '// @version      0.9.7'
+          if old not in text:
+              raise SystemExit('Versão 0.9.6 não encontrada')
+          text = text.replace(old, new, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+          node --check OM30-WhatsApp-GLPI.user.js
+          grep -F '// @version      0.9.7' OM30-WhatsApp-GLPI.user.js
+          grep -F '// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js' OM30-WhatsApp-GLPI.user.js
+          grep -F '// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js' OM30-WhatsApp-GLPI.user.js
+      - name: Commitar
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m 'Publica WhatsApp GLPI completo v0.9.7'
+          git push

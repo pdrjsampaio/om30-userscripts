@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.8
+// @version      0.9.9
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
@@ -4047,7 +4047,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.6';
+        '0.9.9';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -9397,8 +9397,8 @@
             }
         });
 
-        const shellHtml = shell.responseText || '';
-        const shellFinal = shell.finalUrl || ticketUrl;
+        let shellHtml = shell.responseText || '';
+        let shellFinal = shell.finalUrl || ticketUrl;
 
         if (silentLooksLikeLogin(shellHtml, shellFinal)) {
             return {
@@ -9407,6 +9407,56 @@
                 status: shell.status,
                 rawHtml: shellHtml
             };
+        }
+
+        const profileState = await silentEnsureTiAtendimentoProfile(
+            shellHtml,
+            readGlpiJob()
+        );
+
+        if (profileState.changed) {
+            const refreshedShell = await silentRequest({
+                method: 'GET',
+                url:
+                    `${ticketUrl}${ticketUrl.includes('?') ? '&' : '?'}` +
+                    `om30_profile_ready=${Date.now()}`,
+                headers: {
+                    'Accept':
+                        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            });
+
+            shellHtml = refreshedShell.responseText || '';
+            shellFinal = refreshedShell.finalUrl || ticketUrl;
+
+            if (silentLooksLikeLogin(shellHtml, shellFinal)) {
+                return {
+                    authenticated: false,
+                    phase: 'shell-after-profile',
+                    status: refreshedShell.status,
+                    rawHtml: shellHtml
+                };
+            }
+
+            const confirmedProfile = silentDetectCurrentProfile(shellHtml);
+
+            om30Log('glpi.profile.after-refresh', {
+                job_id: readGlpiJob()?.id || '',
+                current_profile_id: confirmedProfile.id,
+                current_profile: confirmedProfile.name,
+                source: confirmedProfile.source
+            });
+
+            if (
+                confirmedProfile.id &&
+                confirmedProfile.id !== '6' &&
+                glpiNormalize(confirmedProfile.name) !== 'TI ATENDIMENTO'
+            ) {
+                throw new Error(
+                    `Perfil TI | Atendimento não permaneceu ativo após a troca. ` +
+                    `Perfil atual: ${confirmedProfile.name || confirmedProfile.id}.`
+                );
+            }
         }
 
         let parsed = silentFormFromHTML(shellHtml);
@@ -13323,7 +13373,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI v0.9.6',
+                'OM30 WhatsApp → GLPI v0.9.9',
                 {
                     job:
                         job.id,
@@ -13509,7 +13559,7 @@
 
         if (errors.length) {
             console.error(
-                '❌ OM30 v0.9.6 self-check:',
+                '❌ OM30 v0.9.9 self-check:',
                 errors
             );
 
@@ -13517,7 +13567,7 @@
         }
 
         console.log(
-            '✅ OM30 v0.9.6 self-check OK',
+            '✅ OM30 v0.9.9 self-check OK',
             {
                 unitsInUi:
                     UNITS.length,
@@ -13533,5 +13583,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp v0.9.6 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp v0.9.9 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

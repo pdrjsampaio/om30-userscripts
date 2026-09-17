@@ -2,9 +2,10 @@ name: Rollback Preencher v425
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - '.github/workflows/rollback-preencher-v425.yml'
+      - .github/workflows/rollback-preencher-v425.yml
 
 permissions:
   contents: write
@@ -16,91 +17,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Restaurar leitor estável da v4.17
+      - name: Restore stable reader
         shell: bash
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('OM30-Preencher-Profissional.user.js')
-          s = p.read_text(encoding='utf-8')
-
-          start = s.index('  /* ---------- pdf.js worker (estável, carregado uma vez) ---------- */')
-          end = s.index('  /* ---------- AcroForm -> dados ---------- */', start)
-
-          stable = r'''  /* ---------- pdf.js worker (dribla CSP) ---------- */
-  async function prepararWorker() {
-    if (typeof pdfjsLib === 'undefined')
-      throw new Error('pdf.js NÃO carregou (a página pode bloquear o @require). Me avise.');
-    const w = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    try {
-      const code = await new Promise((res, rej) => GM_xmlhttpRequest({ method:'GET', url:w,
-        onload:r=>res(r.responseText), onerror:rej, ontimeout:rej, timeout:20000 }));
-      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code],{type:'application/javascript'}));
-    } catch (e) { pdfjsLib.GlobalWorkerOptions.workerSrc = w; }
-  }
-
-  /* ---------- lê os CAMPOS do AcroForm + caixas marcadas ---------- */
-  async function lerFormulario(file) {
-    await prepararWorker();
-    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-    const campos = {}, marcados = []; let teveWidget = false;
-    for (let p = 1; p <= pdf.numPages; p++) {
-      const page = await pdf.getPage(p);
-      const anns = await page.getAnnotations();
-      const tc = await page.getTextContent();
-      const textos = tc.items.map(it => ({ s: it.str, x: it.transform[4], y: it.transform[5] }));
-      anns.filter(a => a.subtype === 'Widget').forEach(a => {
-        teveWidget = true;
-        const nome = (a.fieldName || '').trim();
-        if (a.fieldType === 'Tx' || a.fieldType === 'Ch') {
-          if (a.fieldValue != null && a.fieldValue !== '') campos[nome] = String(a.fieldValue).trim();
-        } else if (a.fieldType === 'Btn') {
-          const fv = a.fieldValue, on = fv && fv !== 'Off' && (a.buttonValue === fv || a.exportValue === fv || a.checkBox);
-          if (on) marcados.push({ label: rotuloMaisProximo(a.rect, textos) });
-        }
-      });
-    }
-    if (!teveWidget) throw new Error('Este PDF não é um formulário preenchível (AcroForm).');
-    return { campos, marcados };
-  }
-  function rotuloMaisProximo(rect, textos) {
-    const cy = (rect[1] + rect[3]) / 2, x2 = rect[2]; let melhor = null, dist = 1e9;
-    textos.forEach(t => { if (!t.s.trim()) return; if (Math.abs(t.y - cy) > 7) return;
-      const dx = t.x - x2; if (dx < -3) return; if (dx < dist) { dist = dx; melhor = t.s.trim(); } });
-    return melhor || '';
-  }
-
-'''
-
-          s = s[:start] + stable + s[end:]
-          s = s.replace('// @version      4.24', '// @version      4.25', 1)
-          s = s.replace('// @description  Lê a Ficha de Cadastro (AcroForm ou PDF assinado/achatado), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.',
-                        '// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.', 1)
-          s = s.replace('Ficha PDF · CNES · v4.24', 'Ficha PDF · CNES · v4.25')
-          p.write_text(s, encoding='utf-8')
-
-          meta = Path('OM30-Preencher-Profissional.meta.js')
-          ms = meta.read_text(encoding='utf-8')
-          ms = ms.replace('// @version      4.24', '// @version      4.25', 1)
-          meta.write_text(ms, encoding='utf-8')
-          PY
-
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnA9UGF0aCgiT00zMC1QcmVlbmNoZXItUHJvZmlzc2lvbmFsLnVzZXIuanMiKQpzPXAucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCnN0YXJ0PXMuaW5kZXgoIiAgLyogLS0tLS0tLS0tLSBwZGYuanMgd29ya2VyIChlc3TDoXZlbCwgY2FycmVnYWRvIHVtYSB2ZXopIC0tLS0tLS0tLS0gKi8iKQplbmQ9cy5pbmRleCgiICAvKiAtLS0tLS0tLS0tIEFjcm9Gb3JtIC0+IGRhZG9zIC0tLS0tLS0tLS0gKi8iLCBzdGFydCkKc3RhYmxlPSIgIC8qIC0tLS0tLS0tLS0gcGRmLmpzIHdvcmtlciAoZHJpYmxhIENTUCkgLS0tLS0tLS0tLSAqL1xuICBhc3luYyBmdW5jdGlvbiBwcmVwYXJhcldvcmtlcigpIHtcbiAgICBpZiAodHlwZW9mIHBkZmpzTGliID09PSAndW5kZWZpbmVkJylcbiAgICAgIHRocm93IG5ldyBFcnJvcigncGRmLmpzIE7Dg08gY2FycmVnb3UgKGEgcMOhZ2luYSBwb2RlIGJsb3F1ZWFyIG8gQHJlcXVpcmUpLiBNZSBhdmlzZS4nKTtcbiAgICBjb25zdCB3ID0gJ2h0dHBzOi8vY2RuanMuY2xvdWRmbGFyZS5jb20vYWpheC9saWJzL3BkZi5qcy8zLjExLjE3NC9wZGYud29ya2VyLm1pbi5qcyc7XG4gICAgdHJ5IHtcbiAgICAgIGNvbnN0IGNvZGUgPSBhd2FpdCBuZXcgUHJvbWlzZSgocmVzLCByZWopID0+IEdNX3htbGh0dHBSZXF1ZXN0KHsgbWV0aG9kOidHRVQnLCB1cmw6dyxcbiAgICAgICAgb25sb2FkOnI9PnJlcyhyLnJlc3BvbnNlVGV4dCksIG9uZXJyb3I6cmVqLCBvbnRpbWVvdXQ6cmVqLCB0aW1lb3V0OjIwMDAwIH0pKTtcbiAgICAgIHBkZmpzTGliLkdsb2JhbFdvcmtlck9wdGlvbnMud29ya2VyU3JjID0gVVJMLmNyZWF0ZU9iamVjdFVSTChuZXcgQmxvYihbY29kZV0se3R5cGU6J2FwcGxpY2F0aW9uL2phdmFzY3JpcHQnfSkpO1xuICAgIH0gY2F0Y2ggKGUpIHsgcGRmanNMaWIuR2xvYmFsV29ya2VyT3B0aW9ucy53b3JrZXJTcmMgPSB3OyB9XG4gIH1cblxuICAvKiAtLS0tLS0tLS0tIGzDqiBvcyBDQU1QT1MgZG8gQWNyb0Zvcm0gKyBjYWl4YXMgbWFyY2FkYXMgLS0tLS0tLS0tLSAqL1xuICBhc3luYyBmdW5jdGlvbiBsZXJGb3JtdWxhcmlvKGZpbGUpIHtcbiAgICBhd2FpdCBwcmVwYXJhcldvcmtlcigpO1xuICAgIGNvbnN0IHBkZiA9IGF3YWl0IHBkZmpzTGliLmdldERvY3VtZW50KHsgZGF0YTogYXdhaXQgZmlsZS5hcnJheUJ1ZmZlcigpIH0pLnByb21pc2U7XG4gICAgY29uc3QgY2FtcG9zID0ge30sIG1hcmNhZG9zID0gW107IGxldCB0ZXZlV2lkZ2V0ID0gZmFsc2U7XG4gICAgZm9yIChsZXQgcCA9IDE7IHAgPD0gcGRmLm51bVBhZ2VzOyBwKyspIHtcbiAgICAgIGNvbnN0IHBhZ2UgPSBhd2FpdCBwZGYuZ2V0UGFnZShwKTtcbiAgICAgIGNvbnN0IGFubnMgPSBhd2FpdCBwYWdlLmdldEFubm90YXRpb25zKCk7XG4gICAgICBjb25zdCB0YyA9IGF3YWl0IHBhZ2UuZ2V0VGV4dENvbnRlbnQoKTtcbiAgICAgIGNvbnN0IHRleHRvcyA9IHRjLml0ZW1zLm1hcChpdCA9PiAoeyBzOiBpdC5zdHIsIHg6IGl0LnRyYW5zZm9ybVs0XSwgeTogaXQudHJhbnNmb3JtWzVdIH0pKTtcbiAgICAgIGFubnMuZmlsdGVyKGEgPT4gYS5zdWJ0eXBlID09PSAnV2lkZ2V0JykuZm9yRWFjaChhID0+IHtcbiAgICAgICAgdGV2ZVdpZGdldCA9IHRydWU7XG4gICAgICAgIGNvbnN0IG5vbWUgPSAoYS5maWVsZE5hbWUgfHwgJycpLnRyaW0oKTtcbiAgICAgICAgaWYgKGEuZmllbGRUeXBlID09PSAnVHgnIHx8IGEuZmllbGRUeXBlID09PSAnQ2gnKSB7XG4gICAgICAgICAgaWYgKGEuZmllbGRWYWx1ZSAhPSBudWxsICYmIGEuZmllbGRWYWx1ZSAhPT0gJycpIGNhbXBvc1tub21lXSA9IFN0cmluZyhhLmZpZWxkVmFsdWUpLnRyaW0oKTtcbiAgICAgICAgfSBlbHNlIGlmIChhLmZpZWxkVHlwZSA9PT0gJ0J0bicpIHtcbiAgICAgICAgICBjb25zdCBmdiA9IGEuZmllbGRWYWx1ZSwgb24gPSBmdiAmJiBmdiAhPT0gJ09mZicgJiYgKGEuYnV0dG9uVmFsdWUgPT09IGZ2IHx8IGEuZXhwb3J0VmFsdWUgPT09IGZ2IHx8IGEuY2hlY2tCb3gpO1xuICAgICAgICAgIGlmIChvbikgbWFyY2Fkb3MucHVzaCh7IGxhYmVsOiByb3R1bG9NYWlzUHJveGltbyhhLnJlY3QsIHRleHRvcykgfSk7XG4gICAgICAgIH1cbiAgICAgIH0pO1xuICAgIH1cbiAgICBpZiAoIXRldmVXaWRnZXQpIHRocm93IG5ldyBFcnJvcignRXN0ZSBQREYgbsOjbyDDqSB1bSBmb3JtdWzDoXJpbyBwcmVlbmNow612ZWwgKEFjcm9Gb3JtKS4nKTtcbiAgICByZXR1cm4geyBjYW1wb3MsIG1hcmNhZG9zIH07XG4gIH1cbiAgZnVuY3Rpb24gcm90dWxvTWFpc1Byb3hpbW8ocmVjdCwgdGV4dG9zKSB7XG4gICAgY29uc3QgY3kgPSAocmVjdFsxXSArIHJlY3RbM10pIC8gMiwgeDIgPSByZWN0WzJdOyBsZXQgbWVsaG9yID0gbnVsbCwgZGlzdCA9IDFlOTtcbiAgICB0ZXh0b3MuZm9yRWFjaCh0ID0+IHsgaWYgKCF0LnMudHJpbSgpKSByZXR1cm47IGlmIChNYXRoLmFicyh0LnkgLSBjeSkgPiA3KSByZXR1cm47XG4gICAgICBjb25zdCBkeCA9IHQueCAtIHgyOyBpZiAoZHggPCAtMykgcmV0dXJuOyBpZiAoZHggPCBkaXN0KSB7IGRpc3QgPSBkeDsgbWVsaG9yID0gdC5zLnRyaW0oKTsgfSB9KTtcbiAgICByZXR1cm4gbWVsaG9yIHx8ICcnO1xuICB9XG5cbiIKcz1zWzpzdGFydF0rc3RhYmxlK3NbZW5kOl0Kcz1zLnJlcGxhY2UoIi8vIEB2ZXJzaW9uICAgICAgNC4yNCIsIi8vIEB2ZXJzaW9uICAgICAgNC4yNSIsMSkKcz1zLnJlcGxhY2UoIi8vIEBkZXNjcmlwdGlvbiAgTMOqIGEgRmljaGEgZGUgQ2FkYXN0cm8gKEFjcm9Gb3JtIG91IFBERiBhc3NpbmFkby9hY2hhdGFkbyksIHByZWVuY2hlIG8gcHJvZmlzc2lvbmFsLCBkZWR1eiDDs3Jnw6NvIGRlIGNsYXNzZSBwZWxvIENCTyBlIGNvbnN1bHRhIENOUy9DTkVTIHBlbG8gQ1BGLiIsIi8vIEBkZXNjcmlwdGlvbiAgTMOqIGEgRmljaGEgZGUgQ2FkYXN0cm8gKFBERiBBY3JvRm9ybSksIHByZWVuY2hlIG8gcHJvZmlzc2lvbmFsLCBkZWR1eiDDs3Jnw6NvIGRlIGNsYXNzZSBwZWxvIENCTyBlIGNvbnN1bHRhIENOUy9DTkVTIHBlbG8gQ1BGLiIsMSkKcz1zLnJlcGxhY2UoIkZpY2hhIFBERiDCtyBDTkVTIMK3IHY0LjI0IiwiRmljaGEgUERGIMK3IENORVMgwrcgdjQuMjUiKQpwLndyaXRlX3RleHQocyxlbmNvZGluZz0idXRmLTgiKQptZXRhPVBhdGgoIk9NMzAtUHJlZW5jaGVyLVByb2Zpc3Npb25hbC5tZXRhLmpzIikKbXM9bWV0YS5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikucmVwbGFjZSgiLy8gQHZlcnNpb24gICAgICA0LjI0IiwiLy8gQHZlcnNpb24gICAgICA0LjI1IiwxKQptZXRhLndyaXRlX3RleHQobXMsZW5jb2Rpbmc9InV0Zi04IikK' | base64 -d > /tmp/rollback425.py
+          python3 /tmp/rollback425.py
           node --check OM30-Preencher-Profissional.user.js
           grep -q '^// @version      4.25$' OM30-Preencher-Profissional.user.js
-          grep -q 'pdf.js worker (dribla CSP)' OM30-Preencher-Profissional.user.js
-          ! grep -q 'fallback para ficha ASSINADA/ACHATADA' OM30-Preencher-Profissional.user.js
-          ! grep -q 'extrairFichaAchatada' OM30-Preencher-Profissional.user.js
           grep -q '^// @version      4.25$' OM30-Preencher-Profissional.meta.js
-
-      - name: Publicar rollback
+          if grep -q 'extrairFichaAchatada' OM30-Preencher-Profissional.user.js; then exit 1; fi
+      - name: Publish rollback
         shell: bash
         run: |
-          set -euo pipefail
           rm -f .github/workflows/rollback-preencher-v425.yml
           git config user.name 'OM30 Automation'
           git config user.email 'actions@users.noreply.github.com'
           git add -A
-          git commit -m 'Preencher Profissional v4.25: rollback para leitor estável v4.17' || exit 0
+          git commit -m 'Preencher Profissional v4.25 rollback stable reader' || exit 0
           git push

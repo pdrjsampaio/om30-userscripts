@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.12
+// @version      0.9.13
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
@@ -4051,7 +4051,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.12';
+        '0.9.13';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -11140,6 +11140,69 @@
     }
 
     async function silentUploadPrint(ctx, job) {
+        const evidenceImages =
+            Array.isArray(job.evidenceImages)
+                ? job.evidenceImages.filter(item => item?.dataUrl)
+                : [];
+
+        if (
+            evidenceImages.length &&
+            !job.__singleEvidenceUpload
+        ) {
+            const uploads = [];
+            const preparedImages = [];
+
+            job.__singleEvidenceUpload = true;
+
+            try {
+                for (let index = 0; index < evidenceImages.length; index++) {
+                    const evidence = evidenceImages[index];
+
+                    job.printDataUrl = evidence.dataUrl;
+
+                    const uploaded =
+                        await silentUploadPrint(
+                            ctx,
+                            job
+                        );
+
+                    if (!uploaded) continue;
+
+                    const preparedEvidence = {
+                        ...evidence,
+                        dataUrl: job.printDataUrl,
+                        upload_index: index
+                    };
+
+                    preparedImages.push(preparedEvidence);
+                    uploads.push({
+                        ...uploaded,
+                        evidence: preparedEvidence,
+                        index
+                    });
+                }
+            } finally {
+                delete job.__singleEvidenceUpload;
+            }
+
+            job.evidenceImages = preparedImages;
+            job.printDataUrl = preparedImages[0]?.dataUrl || '';
+
+            saveGlpiJob(job);
+
+            om30Log(
+                'glpi.images.uploaded',
+                {
+                    job_id: job.id,
+                    count: uploads.length,
+                    messages: uploads.map(item => item.evidence?.message_id || ''),
+                    kinds: uploads.map(item => item.evidence?.kind || '')
+                }
+            );
+
+            return uploads;
+        }
+
         if (!job.printDataUrl) {
             return null;
         }
@@ -11386,23 +11449,102 @@
         };
     }
 
-    function silentDescriptionHTML(job, imageId = '') {
+    function silentDescriptionHTML(job, uploadInput = []) {
+        const uploads =
+            Array.isArray(uploadInput)
+                ? uploadInput
+                : (uploadInput ? [uploadInput] : []);
+
+        const imageHtml = upload => {
+            const src =
+                upload?.evidence?.dataUrl ||
+                '';
+
+            if (!src) return '';
+
+            const imageId =
+                upload?.imageId ||
+                '';
+
+            return (
+                `<p><img` +
+                `${imageId ? ` id="${directEscapeHtml(imageId)}"` : ''}` +
+                ` src="${src}"></p>`
+            );
+        };
+
+        const messages =
+            Array.isArray(job.data?.messages)
+                ? job.data.messages
+                : [];
+
+        // Na descrição automática conseguimos preservar exatamente a ordem
+        // da conversa: linha da mensagem -> foto daquela mensagem -> próxima.
+        if (
+            !job.data?.description_manual &&
+            messages.length
+        ) {
+            const parts = [];
+            const used = new Set();
+
+            for (const msg of messages) {
+                let head = '';
+                if (msg.time) head += `[${msg.time}]`;
+                if (msg.sender) head += `${head ? ' ' : ''}${msg.sender}:`;
+
+                const text =
+                    String(msg.text || '')
+                        .replace(/\s*\n+\s*/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+
+                const line =
+                    [head, text]
+                        .filter(Boolean)
+                        .join(' ');
+
+                if (line) {
+                    parts.push(
+                        `<p>${directEscapeHtml(line)}</p>`
+                    );
+                }
+
+                for (let index = 0; index < uploads.length; index++) {
+                    const upload = uploads[index];
+
+                    if (
+                        String(upload?.evidence?.message_id || '') ===
+                        String(msg.id || '')
+                    ) {
+                        const html = imageHtml(upload);
+                        if (html) parts.push(html);
+                        used.add(index);
+                    }
+                }
+            }
+
+            // Print manual ou qualquer imagem sem mensagem vinculada fica ao final.
+            for (let index = 0; index < uploads.length; index++) {
+                if (used.has(index)) continue;
+                const html = imageHtml(uploads[index]);
+                if (html) parts.push(html);
+            }
+
+            return parts.join('');
+        }
+
+        // Se o atendente alterou a descrição manualmente, não reescrevemos o texto;
+        // apenas colocamos as imagens separadas depois dele.
         const text =
             directEscapeHtml(
                 job.data?.description || ''
             )
                 .replace(/\r?\n/g, '<br>');
 
-        const image =
-            job.printDataUrl
-                ? (
-                    `<p><img` +
-                    `${imageId ? ` id="${directEscapeHtml(imageId)}"` : ''}` +
-                    ` src="${job.printDataUrl}"></p>`
-                )
-                : '';
-
-        return `<p>${text}</p>${image}`;
+        return (
+            `<p>${text}</p>` +
+            uploads.map(imageHtml).join('')
+        );
     }
 
     function silentExpectedActors(userId) {
@@ -11498,41 +11640,33 @@
             '1'
         );
 
-        if (upload) {
-            fd.set(
-                'content',
-                silentDescriptionHTML(
-                    job,
-                    upload.imageId
-                )
-            );
+        const uploads =
+            Array.isArray(upload)
+                ? upload
+                : (upload ? [upload] : []);
 
+        fd.set(
+            'content',
+            silentDescriptionHTML(
+                job,
+                uploads
+            )
+        );
+
+        uploads.forEach((item, index) => {
             fd.set(
-                '_filename[0]',
-                String(
-                    upload.fileData.name
-                )
+                `_filename[${index}]`,
+                String(item.fileData?.name || '')
             );
             fd.set(
-                '_prefix_filename[0]',
-                String(
-                    upload.fileData.prefix || ''
-                )
+                `_prefix_filename[${index}]`,
+                String(item.fileData?.prefix || '')
             );
             fd.set(
-                '_tag_filename[0]',
-                String(
-                    upload.tagData.name
-                )
+                `_tag_filename[${index}]`,
+                String(item.tagData?.name || '')
             );
-        } else {
-            fd.set(
-                'content',
-                silentDescriptionHTML(
-                    job
-                )
-            );
-        }
+        });
 
         const add =
             ctx.form.querySelector(
@@ -12945,39 +13079,39 @@
         const seen = new Set();
         const out = [];
 
-        for (
-            const msg of
-            orderedEvidence()
-        ) {
-            for (
-                const media of
-                msg.media ||
-                []
-            ) {
-                const src =
-                    String(
-                        media?.src ||
-                        ''
-                    );
+        for (const msg of orderedEvidence()) {
+            const mediaList =
+                (msg.media || [])
+                    .filter(item => String(item?.src || '').trim());
 
-                if (
-                    !src ||
-                    seen.has(src)
-                ) {
-                    continue;
-                }
+            if (!mediaList.length) continue;
 
+            // O WhatsApp costuma expor a mesma foto duas vezes:
+            // uma miniatura data: e a imagem real blob:. Quando existir
+            // blob:, usamos somente blob:; isso também preserva álbuns,
+            // pois cada foto real terá seu próprio blob.
+            const blobItems =
+                mediaList.filter(item =>
+                    /^blob:/i.test(String(item?.src || ''))
+                );
+
+            const preferred =
+                blobItems.length
+                    ? blobItems
+                    : mediaList;
+
+            for (const media of preferred) {
+                const src = String(media?.src || '').trim();
+
+                if (!src || seen.has(src)) continue;
                 seen.add(src);
 
                 out.push({
                     ...media,
                     message_id: msg.id,
-                    message_meta:
-                        msg.meta || '',
-                    message_time:
-                        msg.time || '',
-                    message_date:
-                        msg.date || ''
+                    message_meta: msg.meta || '',
+                    message_time: msg.time || '',
+                    message_date: msg.date || ''
                 });
             }
         }
@@ -13061,85 +13195,54 @@
         );
     }
 
-    async function composeEvidenceImageDataUrl(
-        basePrintBlob
-    ) {
-        const media =
-            selectedMediaItems();
-
-        const dataUrls = [];
-
-        if (basePrintBlob) {
-            dataUrls.push(
-                await blobToDataURL(
-                    basePrintBlob
-                )
-            );
-        }
-
+    async function collectEvidenceImages(basePrintBlob) {
+        const result = [];
+        const media = selectedMediaItems();
         const mediaErrors = [];
 
-        for (
-            const item of
-            media
-        ) {
-            try {
-                const dataUrl =
-                    await mediaSourceToDataUrl(
-                        item
-                    );
+        for (let index = 0; index < media.length; index++) {
+            const item = media[index];
 
-                dataUrls.push(
+            try {
+                const dataUrl = await mediaSourceToDataUrl(item);
+
+                result.push({
+                    id: `message-${item.message_id || index}-${index}`,
+                    kind: 'message',
+                    message_id: item.message_id || '',
+                    message_meta: item.message_meta || '',
+                    message_time: item.message_time || '',
+                    message_date: item.message_date || '',
                     dataUrl
-                );
+                });
 
                 om30Log(
                     'image.captured',
                     {
-                        message_id:
-                            item.message_id,
-                        meta:
-                            item.message_meta,
-                        width:
-                            item.width,
-                        height:
-                            item.height,
-                        source:
-                            String(
-                                item.src
-                            )
-                                .split(':')[0]
+                        message_id: item.message_id,
+                        meta: item.message_meta,
+                        width: item.width,
+                        height: item.height,
+                        source: String(item.src).split(':')[0],
+                        separate: true
                     }
                 );
             } catch (error) {
                 mediaErrors.push({
-                    message_id:
-                        item.message_id,
-                    meta:
-                        item.message_meta,
-                    error:
-                        String(
-                            error?.message ||
-                            error
-                        )
+                    message_id: item.message_id,
+                    meta: item.message_meta,
+                    error: String(error?.message || error)
                 });
 
                 om30Log(
                     'image.capture-error',
-                    {
-                        item,
-                        error
-                    },
+                    { item, error },
                     'error'
                 );
             }
         }
 
-        if (
-            media.length &&
-            dataUrls.length ===
-                (basePrintBlob ? 1 : 0)
-        ) {
+        if (media.length && result.length === 0) {
             throw new Error(
                 'Você selecionou imagem(ns) do WhatsApp, mas não consegui capturá-las para anexar ao chamado. Baixe o LOG e me envie.'
             );
@@ -13151,180 +13254,25 @@
             );
         }
 
-        if (!dataUrls.length) {
-            return '';
+        // O print manual, quando existir, continua sendo uma evidência separada.
+        if (basePrintBlob) {
+            result.push({
+                id: 'manual-print',
+                kind: 'print',
+                message_id: '',
+                message_meta: '',
+                message_time: '',
+                message_date: '',
+                dataUrl: await blobToDataURL(basePrintBlob)
+            });
         }
-
-        if (
-            dataUrls.length === 1
-        ) {
-            return dataUrls[0];
-        }
-
-        const images = [];
-
-        for (
-            const dataUrl of
-            dataUrls
-        ) {
-            images.push(
-                await dataUrlToLoadedImage(
-                    dataUrl
-                )
-            );
-        }
-
-        const maxWidth = 1600;
-        const gap = 14;
-
-        const rows =
-            images.map(
-                img => {
-                    const naturalWidth =
-                        img.naturalWidth ||
-                        img.width ||
-                        1;
-
-                    const naturalHeight =
-                        img.naturalHeight ||
-                        img.height ||
-                        1;
-
-                    const scale =
-                        Math.min(
-                            1,
-                            maxWidth /
-                            naturalWidth
-                        );
-
-                    return {
-                        img,
-                        width:
-                            Math.max(
-                                1,
-                                Math.round(
-                                    naturalWidth *
-                                    scale
-                                )
-                            ),
-                        height:
-                            Math.max(
-                                1,
-                                Math.round(
-                                    naturalHeight *
-                                    scale
-                                )
-                            )
-                    };
-                }
-            );
-
-        const canvas =
-            document.createElement(
-                'canvas'
-            );
-
-        canvas.width =
-            Math.max(
-                1,
-                ...rows.map(
-                    row =>
-                        row.width
-                )
-            );
-
-        canvas.height =
-            rows.reduce(
-                (total, row) =>
-                    total +
-                    row.height,
-                0
-            ) +
-            gap *
-            (
-                rows.length -
-                1
-            );
-
-        const ctx =
-            canvas.getContext(
-                '2d'
-            );
-
-        ctx.fillStyle =
-            '#ffffff';
-
-        ctx.fillRect(
-            0,
-            0,
-            canvas.width,
-            canvas.height
-        );
-
-        let y = 0;
-
-        for (
-            const row of
-            rows
-        ) {
-            const x =
-                Math.round(
-                    (
-                        canvas.width -
-                        row.width
-                    ) /
-                    2
-                );
-
-            ctx.drawImage(
-                row.img,
-                x,
-                y,
-                row.width,
-                row.height
-            );
-
-            y +=
-                row.height +
-                gap;
-        }
-
-        const blob =
-            await new Promise(
-                resolve =>
-                    canvas.toBlob(
-                        resolve,
-                        'image/png',
-                        0.95
-                    )
-            );
-
-        if (!blob) {
-            throw new Error(
-                'Não consegui montar a imagem final das evidências.'
-            );
-        }
-
-        const result =
-            await blobToDataURL(
-                blob
-            );
 
         om30Log(
-            'image.composite',
+            'image.separate-list',
             {
-                sources:
-                    dataUrls.length,
-                selected_images:
-                    media.length,
-                includes_print:
-                    !!basePrintBlob,
-                width:
-                    canvas.width,
-                height:
-                    canvas.height,
-                bytes:
-                    blob.size
+                selected_images: media.length,
+                includes_print: !!basePrintBlob,
+                total_images: result.length
             }
         );
 
@@ -13384,6 +13332,8 @@
                 document.getElementById(
                     'om30-description'
                 ).value.trim(),
+            description_manual:
+                !!descriptionManual,
             evidence_mode:
                 getMode(),
 
@@ -13407,6 +13357,8 @@
                 orderedEvidence()
                     .map(
                         msg => ({
+                            id:
+                                msg.id || '',
                             meta:
                                 msg.meta || '',
                             time:
@@ -13536,10 +13488,16 @@
         scrollPanelToProcess('smooth');
 
         try {
-            const printDataUrl =
-                await composeEvidenceImageDataUrl(
+            const evidenceImages =
+                await collectEvidenceImages(
                     printBlob
                 );
+
+            // Mantido para compatibilidade com partes antigas do motor.
+            // A fonte oficial das imagens na v0.9.13 é evidenceImages.
+            const printDataUrl =
+                evidenceImages[0]?.dataUrl ||
+                '';
 
             om30Log(
                 'ticket.prepare',
@@ -13568,6 +13526,8 @@
                         selectedMediaItems().length,
                     includes_print:
                         !!printBlob,
+                    evidence_image_count:
+                        evidenceImages.length,
                     final_evidence_image:
                         !!printDataUrl
                 }
@@ -13585,6 +13545,7 @@
                 created_at:
                     new Date().toISOString(),
                 data,
+                evidenceImages,
                 printDataUrl,
                 completed: {}
             };
@@ -13604,7 +13565,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI v0.9.9',
+                'OM30 WhatsApp → GLPI v0.9.13',
                 {
                     job:
                         job.id,
@@ -13790,7 +13751,7 @@
 
         if (errors.length) {
             console.error(
-                '❌ OM30 v0.9.9 self-check:',
+                '❌ OM30 v0.9.13 self-check:',
                 errors
             );
 
@@ -13798,7 +13759,7 @@
         }
 
         console.log(
-            '✅ OM30 v0.9.9 self-check OK',
+            '✅ OM30 v0.9.13 self-check OK',
             {
                 unitsInUi:
                     UNITS.length,
@@ -13814,5 +13775,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp v0.9.9 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp v0.9.13 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

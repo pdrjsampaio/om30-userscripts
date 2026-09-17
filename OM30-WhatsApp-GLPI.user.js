@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.9
+// @version      0.9.10
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
@@ -4047,7 +4047,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.9';
+        '0.9.10';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -5978,6 +5978,70 @@
         return out;
     }
 
+    function messageDisplayedTime(bubble) {
+        if (!bubble) return '';
+
+        const preferred = [
+            ...bubble.querySelectorAll(
+                '[data-testid="msg-meta"], [aria-label], time, span'
+            )
+        ];
+
+        for (const el of preferred) {
+            const values = [
+                clean(el.getAttribute?.('aria-label') || ''),
+                clean(el.getAttribute?.('title') || ''),
+                clean(el.textContent || '')
+            ].filter(Boolean);
+
+            for (const value of values) {
+                const exact = value.match(/^(\d{1,2}:\d{2})(?::\d{2})?$/);
+                if (exact) return exact[1];
+            }
+        }
+
+        const raw = clean(bubble.innerText || bubble.textContent || '');
+        const matches = [
+            ...raw.matchAll(/(?:^|\s)(\d{1,2}:\d{2})(?::\d{2})?(?=$|\s)/g)
+        ];
+
+        return matches.length
+            ? matches[matches.length - 1][1]
+            : '';
+    }
+
+    function messageNeighborDate(bubble) {
+        if (!bubble) return '';
+
+        const main = document.querySelector('#main');
+        if (!main) return '';
+
+        const messages = [
+            ...main.querySelectorAll('[data-id]')
+        ];
+        const index = messages.indexOf(bubble);
+        if (index < 0) return '';
+
+        for (let distance = 1; distance <= 20; distance++) {
+            for (const pos of [index - distance, index + distance]) {
+                const candidate = messages[pos];
+                if (!candidate) continue;
+
+                const meta = clean(
+                    candidate
+                        .querySelector('[data-pre-plain-text]')
+                        ?.getAttribute('data-pre-plain-text') ||
+                    ''
+                );
+
+                const date = parseMeta(meta).date;
+                if (date) return date;
+            }
+        }
+
+        return '';
+    }
+
     function messageHighlightElement(content, bubble) {
         if (!content) return bubble;
 
@@ -6122,6 +6186,17 @@
             parseMeta(
                 meta
             );
+
+        // Mensagens só de imagem nem sempre expõem data-pre-plain-text.
+        // Nesses casos, lê a hora que o WhatsApp mostra na própria bolha
+        // e usa a data da mensagem vizinha mais próxima do mesmo bloco.
+        if (!parsed.time) {
+            parsed.time = messageDisplayedTime(bubble);
+        }
+
+        if (!parsed.date && parsed.time) {
+            parsed.date = messageNeighborDate(bubble);
+        }
 
         const highlightElement =
             messageHighlightElement(
@@ -6711,9 +6786,20 @@
     document.addEventListener(
         'click',
         event => {
+            const ctrlSelection =
+                !!(
+                    event.ctrlKey ||
+                    om30CtrlPressed
+                );
+
+            // Para INICIAR uma seleção ainda é Ctrl + clique.
+            // Depois da primeira mensagem marcada, o modo fica ativo e
+            // basta clicar normalmente nas próximas mensagens para alternar.
+            // Quando a última mensagem for desmarcada, o modo encerra e
+            // um novo bloco volta a exigir Ctrl + clique.
             if (
-                !om30CtrlPressed ||
-                !event.ctrlKey
+                !ctrlSelection &&
+                selected.size === 0
             ) {
                 return;
             }
@@ -6736,7 +6822,9 @@
                     'selection.not-found',
                     {
                         ctrl:
-                            event.ctrlKey,
+                            ctrlSelection,
+                        selection_active:
+                            selected.size > 0,
                         target:
                             event.target
                     },

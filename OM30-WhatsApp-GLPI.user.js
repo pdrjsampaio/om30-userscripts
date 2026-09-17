@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.7
+// @version      0.9.8
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
@@ -9233,6 +9233,111 @@
         );
     }
 
+    function silentDetectCurrentProfile(html) {
+        try {
+            const doc = silentParseHTML(html);
+
+            const active = [
+                ...doc.querySelectorAll('a[href*="newprofile="]')
+            ].find(a => a.classList.contains('active'));
+
+            if (active) {
+                const href = String(active.getAttribute('href') || '');
+                const id = href.match(/[?&]newprofile=(\d+)/)?.[1] || '';
+                const name = String(active.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+
+                return { id, name, source: 'active-link' };
+            }
+
+            const header = doc.querySelector(
+                '.user-menu-dropdown-toggle .pe-2 > div:first-child'
+            );
+
+            const name = String(header?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (name) {
+                return {
+                    id: glpiNormalize(name) === 'TI ATENDIMENTO' ? '6' : '',
+                    name,
+                    source: 'user-menu'
+                };
+            }
+        } catch (error) {
+            console.warn('OM30: não consegui identificar o perfil GLPI atual.', error);
+        }
+
+        return { id: '', name: '', source: 'unknown' };
+    }
+
+    async function silentEnsureTiAtendimentoProfile(shellHtml, job) {
+        const current = silentDetectCurrentProfile(shellHtml);
+
+        om30Log('glpi.profile.check', {
+            job_id: job?.id || '',
+            current_profile_id: current.id,
+            current_profile: current.name,
+            source: current.source
+        });
+
+        if (
+            current.id === '6' ||
+            glpiNormalize(current.name) === 'TI ATENDIMENTO'
+        ) {
+            return { changed: false, profile: current };
+        }
+
+        const response = await silentRequest({
+            method: 'GET',
+            url:
+                `${GLPI_TEST.base}/front/helpdesk.public.php` +
+                `?newprofile=6&om30_profile=${Date.now()}`,
+            headers: {
+                'Accept':
+                    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            }
+        });
+
+        const html = response.responseText || '';
+
+        if (silentLooksLikeLogin(html, response.finalUrl || '')) {
+            throw new Error('LOGIN_REQUIRED');
+        }
+
+        const confirmed = silentDetectCurrentProfile(html);
+
+        if (
+            confirmed.id &&
+            confirmed.id !== '6' &&
+            glpiNormalize(confirmed.name) !== 'TI ATENDIMENTO'
+        ) {
+            throw new Error(
+                `Não foi possível ativar o perfil TI | Atendimento. ` +
+                `Perfil atual: ${confirmed.name || confirmed.id}.`
+            );
+        }
+
+        om30Log('glpi.profile.changed', {
+            job_id: job?.id || '',
+            from_profile_id: current.id,
+            from_profile: current.name,
+            to_profile_id: '6',
+            to_profile: 'TI | Atendimento'
+        });
+
+        return {
+            changed: true,
+            profile: {
+                id: '6',
+                name: 'TI | Atendimento',
+                source: 'forced'
+            }
+        };
+    }
+
     function silentRequest(details) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -9320,6 +9425,7 @@
                 doc: parsed.doc,
                 form: parsed.form,
                 rawHtml: shellHtml,
+                shellHtml,
                 source: 'ticket.form.php',
                 ticketUrl
             };
@@ -9371,6 +9477,7 @@
             doc: parsed.doc,
             form: parsed.form,
             rawHtml: tabHtml,
+            shellHtml,
             source: 'common.tabs.php',
             ticketUrl
         };
@@ -12031,7 +12138,7 @@
 
         saveGlpiJob(job);
 
-        const ctx =
+        let ctx =
             await silentGetTicketForm(0);
 
         if (!ctx.authenticated) {
@@ -12044,6 +12151,54 @@
             return {
                 waitingLogin: true
             };
+        }
+
+        job.stage =
+            'silent-profile';
+
+        saveGlpiJob(job);
+
+        try {
+            const profileResult =
+                await silentEnsureTiAtendimentoProfile(
+                    ctx.shellHtml || ctx.rawHtml || '',
+                    job
+                );
+
+            if (profileResult.changed) {
+                ctx = await silentGetTicketForm(0);
+
+                if (!ctx.authenticated) {
+                    throw new Error('LOGIN_REQUIRED');
+                }
+
+                const verified = silentDetectCurrentProfile(
+                    ctx.shellHtml || ctx.rawHtml || ''
+                );
+
+                if (
+                    verified.id &&
+                    verified.id !== '6' &&
+                    glpiNormalize(verified.name) !== 'TI ATENDIMENTO'
+                ) {
+                    throw new Error(
+                        `O GLPI não permaneceu no perfil TI | Atendimento. ` +
+                        `Perfil atual: ${verified.name || verified.id}.`
+                    );
+                }
+            }
+        } catch (error) {
+            if (error?.message === 'LOGIN_REQUIRED') {
+                silentRequireLogin(
+                    job,
+                    'silent-profile',
+                    'Faça login no GLPI para a OM30 ativar o perfil TI | Atendimento.'
+                );
+
+                return { waitingLogin: true };
+            }
+
+            throw error;
         }
 
         job.stage =

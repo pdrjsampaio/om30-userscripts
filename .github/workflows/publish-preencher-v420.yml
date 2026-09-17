@@ -1,0 +1,74 @@
+name: Publicar Preencher Profissional v4.20
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-preencher-v420.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gerar userscript completo em arquivo único
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          core_path = Path('om30-scripts/preencher-profissional/OM30-Preencher-Profissional.core.js')
+          if not core_path.exists():
+              raise SystemExit('Core não encontrado')
+
+          s = core_path.read_text(encoding='utf-8')
+          s = s.replace('Ficha PDF · CNES · v4.17', 'Ficha PDF · CNES · v4.20')
+          s = s.replace('Ficha PDF · CNES · v4.18', 'Ficha PDF · CNES · v4.20')
+          s = s.replace('Ficha PDF · CNES · v4.19', 'Ficha PDF · CNES · v4.20')
+
+          header = '''// ==UserScript==
+// @name         Preencher Profissional - Saúde Simples
+// @namespace    saudesimples-guaruja
+// @version      4.20
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
+// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF. Atualização automática via GitHub.
+// @author       Pedro Sampaio
+// @match        https://guaruja.saudesimples.net/profissionais/new*
+// @match        https://*.saudesimples.net/profissionais/new*
+// @run-at       document-idle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @connect      cnes.datasus.gov.br
+// @connect      cdnjs.cloudflare.com
+// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
+// ==/UserScript=='''
+
+          Path('OM30-Preencher-Profissional.user.js').write_text(header + '\n\n' + s, encoding='utf-8')
+          PY
+
+          node --check OM30-Preencher-Profissional.user.js
+          grep -q '^// @version      4.20$' OM30-Preencher-Profissional.user.js
+          ! grep -q 'OM30-Preencher-Profissional.core.js' OM30-Preencher-Profissional.user.js
+          ! grep -q 'core.part' OM30-Preencher-Profissional.user.js
+          ! grep -q 'DecompressionStream' OM30-Preencher-Profissional.user.js
+
+      - name: Remover core separado e publicar
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f om30-scripts/preencher-profissional/OM30-Preencher-Profissional.core.js
+          rmdir om30-scripts/preencher-profissional 2>/dev/null || true
+          git config user.name "OM30 Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add OM30-Preencher-Profissional.user.js om30-scripts/preencher-profissional || true
+          git commit -m "Preencher Profissional v4.20: arquivo único sem loader" || exit 0
+          git push

@@ -1,0 +1,92 @@
+name: Corrigir WhatsApp GLPI 0.9.14
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-wa-glpi-0914.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aplicar correções 0.9.14
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('OM30-WhatsApp-GLPI.user.js')
+          s = p.read_text(encoding='utf-8')
+
+          if s.count('// ==UserScript==') != 1:
+              raise SystemExit(f'ERRO: esperado 1 cabeçalho, encontrado {s.count("// ==UserScript==")}')
+
+          s = s.replace('// @version      0.9.13', '// @version      0.9.14', 1)
+          s = s.replace("const OM30_VERSION =\n        '0.9.13';", "const OM30_VERSION =\n        '0.9.14';", 1)
+          s = s.replace('OM30 WhatsApp → GLPI v0.9.13', 'OM30 WhatsApp → GLPI v0.9.14')
+          s = s.replace('OM30 v0.9.13 self-check', 'OM30 v0.9.14 self-check')
+          s = s.replace('OM30 WhatsApp v0.9.13 carregado', 'OM30 WhatsApp v0.9.14 carregado')
+
+          old_brand = '''                    <div><b>Abrir chamado</b><small>WhatsApp → GLPI</small></div>'''
+          new_brand = '''                    <div><b>Abrir chamado</b><small>WhatsApp → GLPI • v${OM30_VERSION}</small></div>'''
+          if old_brand not in s:
+              raise SystemExit('ERRO: cabeçalho da janela não encontrado')
+          s = s.replace(old_brand, new_brand, 1)
+
+          old_buttons = '''                    <button type="button" id="om30-history" title="Histórico de chamados">↺</button>\n                    <button type="button" id="om30-settings" title="Configurações">⚙</button>'''
+          new_buttons = '''                    <button type="button" id="om30-history" title="Histórico de chamados">↺</button>\n                    <button type="button" id="om30-header-log" title="Baixar log de diagnóstico">LOG</button>\n                    <button type="button" id="om30-settings" title="Configurações">⚙</button>'''
+          if old_buttons not in s:
+              raise SystemExit('ERRO: botões do cabeçalho não encontrados')
+          s = s.replace(old_buttons, new_buttons, 1)
+
+          anchor = '''        panel.querySelector('#om30-settings-download-log').onclick = () => {\n            om30DownloadLogs();\n            renderSettingsMenu();\n        };'''
+          addition = anchor + '''\n\n        const headerLogButton = panel.querySelector('#om30-header-log');\n        if (headerLogButton) {\n            headerLogButton.onclick = event => {\n                event.stopPropagation();\n                om30DownloadLogs();\n                renderSettingsMenu();\n            };\n        }'''
+          if anchor not in s:
+              raise SystemExit('ERRO: binding do download de log não encontrado')
+          s = s.replace(anchor, addition, 1)
+
+          old_stale = '''        if (\n            job.stage ===\n            'silent-publishing' ||\n            job.stage ===\n            'silent-publish-unknown'\n        ) {\n            silentSaveError(\n                job,\n                'Publicação',\n                new Error(\n                    'Há um POST anterior com resultado ainda não confirmado. A OM30 não repetirá a criação.'\n                )\n            );\n\n            return;\n        }'''
+          new_stale = '''        if (\n            job.stage ===\n            'silent-publishing' ||\n            job.stage ===\n            'silent-publish-unknown'\n        ) {\n            silentSaveError(\n                job,\n                'Publicação',\n                new Error(\n                    'Há um POST anterior com resultado ainda não confirmado. A OM30 não repetirá a criação.'\n                )\n            );\n\n            // Esse job não pode ser reenviado por segurança, mas também não pode\n            // bloquear todos os chamados seguintes para sempre. O erro fica salvo\n            // para o usuário conferir e o slot ativo é liberado; a fila continua\n            // no próximo ciclo sem repetir o POST incerto.\n            om30Log(\n                'glpi.job.release-uncertain',\n                {\n                    job_id: job.id,\n                    stage: job.stage,\n                    ticket_id: job.ticket_id || null\n                },\n                'warn'\n            );\n\n            GM_deleteValue(\n                GLPI_TEST.jobKey\n            );\n\n            return;\n        }'''
+          if old_stale not in s:
+              raise SystemExit('ERRO: bloco de job incerto não encontrado')
+          s = s.replace(old_stale, new_stale, 1)
+
+          version_anchor = '''    const OM30_VERSION =\n        '0.9.14';'''
+          version_expose = version_anchor + '''\n\n    try {\n        pageWindow().__OM30_VERSION = OM30_VERSION;\n    } catch {}'''
+          if version_anchor not in s:
+              raise SystemExit('ERRO: OM30_VERSION 0.9.14 não encontrado')
+          s = s.replace(version_anchor, version_expose, 1)
+
+          checks = {
+              'header_count': s.count('// ==UserScript==') == 1,
+              'version_header': s.count('// @version      0.9.14') == 1,
+              'runtime_version': "'0.9.14';" in s,
+              'log_header_button': 'id="om30-header-log"' in s,
+              'existing_log_button': 'id="om30-settings-download-log"' in s,
+              'release_uncertain': "'glpi.job.release-uncertain'" in s,
+              'multi_images': 'collectEvidenceImages' in s and "'glpi.images.uploaded'" in s,
+              'profile6': 'newprofile=6' in s,
+          }
+          print(checks)
+          if not all(checks.values()):
+              raise SystemExit('ERRO: validação estrutural falhou')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validar JavaScript
+        run: node --check OM30-WhatsApp-GLPI.user.js
+
+      - name: Publicar
+        shell: bash
+        run: |
+          git config user.name 'OM30 Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m 'fix: liberar fila presa e expor log v0.9.14'
+          git push

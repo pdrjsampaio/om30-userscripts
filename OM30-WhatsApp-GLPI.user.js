@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.13
+// @version      0.9.14
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
@@ -4051,7 +4051,11 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.13';
+        '0.9.14';
+
+    try {
+        pageWindow().__OM30_VERSION = OM30_VERSION;
+    } catch {}
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -8435,10 +8439,11 @@
             <div class="om30-head">
                 <div class="om30-brand">
                     <div class="om30-logo">OM30</div>
-                    <div><b>Abrir chamado</b><small>WhatsApp → GLPI</small></div>
+                    <div><b>Abrir chamado</b><small>WhatsApp → GLPI • v${OM30_VERSION}</small></div>
                 </div>
                 <div class="om30-window">
                     <button type="button" id="om30-history" title="Histórico de chamados">↺</button>
+                    <button type="button" id="om30-header-log" title="Baixar log de diagnóstico">LOG</button>
                     <button type="button" id="om30-settings" title="Configurações">⚙</button>
                     <button type="button" id="om30-min">−</button>
                     <button type="button" id="om30-close">×</button>
@@ -8696,6 +8701,15 @@
             om30DownloadLogs();
             renderSettingsMenu();
         };
+
+        const headerLogButton = panel.querySelector('#om30-header-log');
+        if (headerLogButton) {
+            headerLogButton.onclick = event => {
+                event.stopPropagation();
+                om30DownloadLogs();
+                renderSettingsMenu();
+            };
+        }
 
         panel.querySelector('#om30-settings-clear-log').onclick = () => {
             if (
@@ -12960,6 +12974,24 @@
                 )
             );
 
+            // Esse job não pode ser reenviado por segurança, mas também não pode
+            // bloquear todos os chamados seguintes para sempre. O erro fica salvo
+            // para o usuário conferir e o slot ativo é liberado; a fila continua
+            // no próximo ciclo sem repetir o POST incerto.
+            om30Log(
+                'glpi.job.release-uncertain',
+                {
+                    job_id: job.id,
+                    stage: job.stage,
+                    ticket_id: job.ticket_id || null
+                },
+                'warn'
+            );
+
+            GM_deleteValue(
+                GLPI_TEST.jobKey
+            );
+
             return;
         }
 
@@ -13565,7 +13597,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI v0.9.13',
+                'OM30 WhatsApp → GLPI v0.9.14',
                 {
                     job:
                         job.id,
@@ -13751,7 +13783,7 @@
 
         if (errors.length) {
             console.error(
-                '❌ OM30 v0.9.13 self-check:',
+                '❌ OM30 v0.9.14 self-check:',
                 errors
             );
 
@@ -13759,7 +13791,7 @@
         }
 
         console.log(
-            '✅ OM30 v0.9.13 self-check OK',
+            '✅ OM30 v0.9.14 self-check OK',
             {
                 unitsInUi:
                     UNITS.length,
@@ -13775,5 +13807,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp v0.9.13 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp v0.9.14 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

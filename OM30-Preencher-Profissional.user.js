@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Preencher Profissional - Saúde Simples
 // @namespace    saudesimples-guaruja
-// @version      4.20
+// @version      4.21
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
 // @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF. Atualização automática via GitHub.
@@ -15,6 +15,7 @@
 // @connect      cnes.datasus.gov.br
 // @connect      cdnjs.cloudflare.com
 // @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
+// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js
 // ==/UserScript==
 
 (function () {
@@ -103,22 +104,30 @@
     });
   }
 
-  /* ---------- pdf.js worker (dribla CSP) ---------- */
+  /* ---------- pdf.js worker ---------- */
+  // O worker também é carregado por @require. Assim a leitura do PDF não precisa
+  // baixar código via GM_xmlhttpRequest toda vez que o usuário clica em ler.
   async function prepararWorker() {
     if (typeof pdfjsLib === 'undefined')
-      throw new Error('pdf.js NÃO carregou (a página pode bloquear o @require). Me avise.');
+      throw new Error('PDF.js não carregou. Reinstale/atualize o script e recarregue a página.');
+
     const w = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    try {
-      const code = await new Promise((res, rej) => GM_xmlhttpRequest({ method:'GET', url:w,
-        onload:r=>res(r.responseText), onerror:rej, ontimeout:rej, timeout:20000 }));
-      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code],{type:'application/javascript'}));
-    } catch (e) { pdfjsLib.GlobalWorkerOptions.workerSrc = w; }
+    pdfjsLib.GlobalWorkerOptions.workerSrc = w;
+
+    if (typeof globalThis.pdfjsWorker === 'undefined') {
+      console.warn('[Preencher] pdf.worker não apareceu no sandbox; PDF.js tentará o worker pela URL.');
+    }
   }
 
   /* ---------- lê os CAMPOS do AcroForm + caixas marcadas ---------- */
   async function lerFormulario(file) {
     await prepararWorker();
-    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const bytes = await file.arrayBuffer();
+    const tarefaPdf = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await Promise.race([
+      tarefaPdf.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('A leitura do PDF demorou mais de 20 segundos. Feche e abra a ficha novamente ou recarregue a página.')), 20000))
+    ]);
     const campos = {}, marcados = []; let teveWidget = false;
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
@@ -1339,7 +1348,7 @@
     '<div class="hd">'+
       '<div class="brand"><img class="brand-logo" src="'+OM30_LOGO+'" alt="OM30">'+
         '<div class="brand-copy"><span class="brand-kicker">OM30 · Saúde Simples</span>'+
-        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.20</small></div></div>'+
+        '<b>Preencher Profissional</b><small>Ficha PDF · CNES · v4.21</small></div></div>'+
       '<button class="x" id="ps-close" title="Fechar">×</button>'+
     '</div>'+
     '<div class="brand-line"></div>'+

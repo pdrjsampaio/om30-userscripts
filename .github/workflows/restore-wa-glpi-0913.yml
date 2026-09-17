@@ -1,0 +1,24 @@
+name: Restaurar WhatsApp GLPI 0.9.13
+on:
+  push:
+    paths:
+      - '.github/workflows/restore-wa-glpi-0913.yml'
+permissions:
+  contents: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restaurar arquivo exato 0.9.13
+        run: |
+          git config user.name 'OM30 Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git checkout d5323e2d6b8e9bd4655ca3689c968c110497f77e -- OM30-WhatsApp-GLPI.user.js
+          grep -q '@version      0.9.13' OM30-WhatsApp-GLPI.user.js
+          node --check OM30-WhatsApp-GLPI.user.js
+          git add OM30-WhatsApp-GLPI.user.js
+          git commit -m 'revert: restaurar WhatsApp GLPI v0.9.13'
+          git push

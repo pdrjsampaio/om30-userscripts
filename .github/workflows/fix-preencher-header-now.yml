@@ -1,0 +1,70 @@
+name: Fix Preencher Profissional header now
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-preencher-header-now.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fixar cabeçalho e validar
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('OM30-Preencher-Profissional.user.js')
+          s = p.read_text(encoding='utf-8')
+          if s.lstrip().startswith('// ==UserScript=='):
+              ini = s.find('// ==UserScript==')
+              fim = s.find('// ==/UserScript==', ini)
+              if fim != -1:
+                  fim += len('// ==/UserScript==')
+                  s = s[fim:].lstrip('\r\n')
+          s = s.replace('Ficha PDF · CNES · v4.17', 'Ficha PDF · CNES · v4.19')
+          s = s.replace('Ficha PDF · CNES · v4.18', 'Ficha PDF · CNES · v4.19')
+          header = '''// ==UserScript==
+// @name         Preencher Profissional - Saúde Simples
+// @namespace    saudesimples-guaruja
+// @version      4.19
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
+// @description  Lê a Ficha de Cadastro (PDF AcroForm), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF. Atualização automática via GitHub.
+// @author       Pedro Sampaio
+// @match        https://guaruja.saudesimples.net/profissionais/new*
+// @match        https://*.saudesimples.net/profissionais/new*
+// @run-at       document-idle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @connect      cnes.datasus.gov.br
+// @connect      cdnjs.cloudflare.com
+// @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
+// ==/UserScript=='''
+          p.write_text(header + '\n\n' + s, encoding='utf-8')
+          PY
+          node --check OM30-Preencher-Profissional.user.js
+          grep -q '^// ==UserScript==$' OM30-Preencher-Profissional.user.js
+          grep -q '^// @version      4.19$' OM30-Preencher-Profissional.user.js
+          grep -q '^// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js$' OM30-Preencher-Profissional.user.js
+          grep -q '^// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js$' OM30-Preencher-Profissional.user.js
+
+      - name: Publicar
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OM30 Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add OM30-Preencher-Profissional.user.js
+          git commit -m "Preencher Profissional v4.19: cabeçalho Tampermonkey e auto-update" || exit 0
+          git push

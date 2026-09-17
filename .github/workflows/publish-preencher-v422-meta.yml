@@ -21,29 +21,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('OM30-Preencher-Profissional.user.js')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace('// @version      4.21', '// @version      4.22', 1)
-          s = s.replace(
-              '// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js',
-              '// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js',
-              1
-          )
-          s = s.replace('Ficha PDF · CNES · v4.21', 'Ficha PDF · CNES · v4.22')
-          p.write_text(s, encoding='utf-8')
-
-          meta = '''// ==UserScript==
-// @name         Preencher Profissional - Saúde Simples
-// @namespace    saudesimples-guaruja
-// @version      4.22
-// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js
-// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
-// ==/UserScript==
-'''
-          Path('OM30-Preencher-Profissional.meta.js').write_text(meta, encoding='utf-8')
-          PY
+          python3 -c "from pathlib import Path; p=Path('OM30-Preencher-Profissional.user.js'); s=p.read_text(encoding='utf-8'); s=s.replace('// @version      4.21','// @version      4.22',1).replace('// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js','// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js',1).replace('Ficha PDF · CNES · v4.21','Ficha PDF · CNES · v4.22'); p.write_text(s,encoding='utf-8')"
+          printf '%s' 'Ly8gPT1Vc2VyU2NyaXB0PT0KLy8gQG5hbWUgICAgICAgICBQcmVlbmNoZXIgUHJvZmlzc2lvbmFsIC0gU2HDumRlIFNpbXBsZXMKLy8gQG5hbWVzcGFjZSAgICBzYXVkZXNpbXBsZXMtZ3VhcnVqYQovLyBAdmVyc2lvbiAgICAgIDQuMjIKLy8gQHVwZGF0ZVVSTCAgICBodHRwczovL3Jhdy5naXRodWJ1c2VyY29udGVudC5jb20vcGRyanNhbXBhaW8vb20zMC11c2Vyc2NyaXB0cy9tYWluL09NMzAtUHJlZW5jaGVyLVByb2Zpc3Npb25hbC5tZXRhLmpzCi8vIEBkb3dubG9hZFVSTCAgaHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL3BkcmpzYW1wYWlvL29tMzAtdXNlcnNjcmlwdHMvbWFpbi9PTTMwLVByZWVuY2hlci1Qcm9maXNzaW9uYWwudXNlci5qcwovLyA9PS9Vc2VyU2NyaXB0PT0K' | base64 -d > OM30-Preencher-Profissional.meta.js
           node --check OM30-Preencher-Profissional.user.js
           grep -q '^// @version      4.22$' OM30-Preencher-Profissional.user.js
           grep -q 'OM30-Preencher-Profissional.meta.js' OM30-Preencher-Profissional.user.js

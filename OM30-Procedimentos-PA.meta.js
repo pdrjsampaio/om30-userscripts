@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         OM30 - Controle de Salas - Procedimentos
+// @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
 // @version      1.0.0
 // @description  Carregador automático do Controle de Salas - Procedimentos.

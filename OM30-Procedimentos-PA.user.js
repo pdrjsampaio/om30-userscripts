@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      0.2.0
+// @version      0.2.1
 // @description  Busca rápida de Exames, Procedimentos/CIDs e Medicamentos no Pronto Atendimento.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -13,8 +13,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V020__) return;
-  window.__OM30_PA_V020__ = true;
+  if (window.__OM30_PA_V021__) return;
+  window.__OM30_PA_V021__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -173,16 +173,16 @@
 
   const css=document.createElement('style');
   css.textContent=`
-  #om30pa{position:fixed;right:18px;bottom:18px;width:min(760px,calc(100vw - 36px));max-height:86vh;background:#fff;border:1px solid #d9e2e7;border-radius:16px;box-shadow:0 20px 60px rgba(10,30,45,.28);z-index:2147483646;font-family:Segoe UI,Arial,sans-serif;color:#243640;overflow:hidden}
-  #om30pa *{box-sizing:border-box}.oh{background:#123f68;color:#fff;padding:15px 17px;display:flex;justify-content:space-between}.ot{font-size:16px;font-weight:750}.os{font-size:11px;opacity:.82;margin-top:3px}.ox{border:0;background:transparent;color:#fff;font-size:24px;cursor:pointer}
-  .oinfo{padding:8px 12px;background:#f3f7f9;border-bottom:1px solid #e1e8ec;font-size:11px;color:#5d7481}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;padding:9px 12px;border-bottom:1px solid #e5ebee}.tab{border:0;background:#edf3f6;color:#496473;padding:9px 8px;border-radius:9px;font-weight:700;cursor:pointer;text-align:left}.tab b{display:block;font-size:12px}.tab small{display:block;font-size:9px;font-weight:500;opacity:.78;margin-top:2px;line-height:1.2}.tab.on{background:#123f68;color:#fff}
-  .obody{padding:12px;overflow:auto;max-height:calc(86vh - 145px)}.searchrow{display:grid;grid-template-columns:1fr auto;gap:8px}.search{padding:11px 12px;border:1px solid #cbd7dd;border-radius:9px;font-size:14px;outline:none}.btn{border:0;border-radius:9px;background:#176aa7;color:#fff;padding:0 14px;font-weight:750;cursor:pointer}.hint{font-size:11px;color:#758995;margin:7px 0 10px}
-  .sect{margin-top:13px}.stitle{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:800;color:#415b69;margin-bottom:7px}.muted{font-weight:500;color:#85959d}.chips{display:flex;flex-wrap:wrap;gap:7px}.chip{border:1px solid #d4e0e6;background:#fff;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:700;color:#365b70;cursor:pointer}
-  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.fav{display:flex;gap:8px;align-items:center;border:1px solid #dce5e9;border-radius:9px;padding:8px;background:#fff}.fmain{flex:1;min-width:0}.fcode{font:700 11px Consolas,monospace;color:#46677a}.fname{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fuse{border:0;background:#edf4f7;color:#285a76;border-radius:7px;padding:7px 9px;font-weight:700;cursor:pointer}
-  .wrap{border:1px solid #dce5e9;border-radius:10px;overflow:auto}.tbl{width:100%;border-collapse:collapse;font-size:12px}.tbl th{background:#f2f6f8;padding:8px;text-align:left;position:sticky;top:0}.tbl td{padding:8px;border-top:1px solid #edf1f3}.code{font:700 11px Consolas,monospace;color:#355c74;white-space:nowrap}.nm{font-weight:650}.star{border:0;background:transparent;font-size:19px;color:#aab7bd;cursor:pointer}.star.on{color:#d49b00}.use{border:0;background:#176aa7;color:#fff;border-radius:7px;padding:7px 9px;font-size:11px;font-weight:750;cursor:pointer}
-  .status{margin-top:10px;padding:8px 10px;border-radius:8px;background:#f2f6f8;color:#5e7380;font-size:11px}.status.ok{background:#e8f5ed;color:#2f7148}.status.err{background:#fdecec;color:#a23939}.empty{padding:16px;text-align:center;color:#7b8d96;font-size:12px}
-  .med{border:1px solid #d8e2e7;background:#f9fbfc;border-radius:11px;padding:11px}.medname{font-size:13px;font-weight:800;color:#264e66;margin-bottom:9px}.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.field label{display:block;font-size:11px;font-weight:750;margin-bottom:4px;color:#4d6573}.field select,.field input,.field textarea{width:100%;border:1px solid #cbd7dd;border-radius:8px;padding:9px;font:13px Segoe UI}.field textarea{min-height:64px}.mactions{text-align:right;margin-top:9px}.launch{position:fixed;right:18px;bottom:18px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;padding:11px 14px;font-weight:800;cursor:pointer;display:none}
-  @media(max-width:650px){.tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{grid-template-columns:1fr}.mgrid{grid-template-columns:1fr}}
+  #om30pa{position:fixed;right:16px;bottom:16px;width:440px;max-width:calc(100vw - 32px);max-height:74vh;background:#fff;border:1px solid #d9e2e7;border-radius:12px;box-shadow:0 12px 34px rgba(10,30,45,.22);z-index:2147483646;font-family:Segoe UI,Arial,sans-serif;color:#243640;overflow:hidden}
+  #om30pa *{box-sizing:border-box}.oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;justify-content:space-between;align-items:center}.ot{font-size:14px;font-weight:750}.os{font-size:10px;opacity:.8;margin-top:2px}.ox{border:0;background:transparent;color:#fff;font-size:20px;cursor:pointer;line-height:1}
+  .oinfo{padding:5px 10px;background:#f5f8fa;border-bottom:1px solid #e4eaee;font-size:10px;color:#607784}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding:6px 8px;border-bottom:1px solid #e5ebee}.tab{border:0;background:#edf3f6;color:#496473;padding:6px 6px;border-radius:7px;font-weight:700;cursor:pointer;text-align:center;min-width:0}.tab b{display:block;font-size:11px;white-space:nowrap}.tab small{display:block;font-size:8px;font-weight:500;opacity:.72;margin-top:1px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tab.on{background:#123f68;color:#fff}
+  .obody{padding:8px;overflow:auto;max-height:calc(74vh - 112px)}.searchrow{display:grid;grid-template-columns:1fr auto;gap:5px}.search{padding:8px 9px;border:1px solid #cbd7dd;border-radius:7px;font-size:12px;outline:none}.btn{border:0;border-radius:7px;background:#176aa7;color:#fff;padding:0 10px;font-size:11px;font-weight:750;cursor:pointer}.hint{font-size:9px;color:#7b8d96;margin:5px 1px 7px}
+  .sect{margin-top:8px}.stitle{display:flex;justify-content:space-between;gap:6px;font-size:10px;font-weight:800;color:#415b69;margin-bottom:5px}.muted{font-weight:500;color:#85959d}.chips{display:flex;flex-wrap:wrap;gap:4px}.chip{border:1px solid #d4e0e6;background:#fff;border-radius:999px;padding:5px 8px;font-size:10px;font-weight:700;color:#365b70;cursor:pointer}
+  .grid{display:grid;grid-template-columns:1fr;gap:4px}.fav{display:flex;gap:6px;align-items:center;border:1px solid #dce5e9;border-radius:7px;padding:6px;background:#fff}.fmain{flex:1;min-width:0}.fcode{font:700 9px Consolas,monospace;color:#607784}.fname{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fuse{border:0;background:#edf4f7;color:#285a76;border-radius:6px;padding:5px 7px;font-size:10px;font-weight:700;cursor:pointer}
+  .wrap{border:1px solid #dce5e9;border-radius:8px;overflow:auto;max-height:220px}.tbl{width:100%;border-collapse:collapse;font-size:10px}.tbl th{background:#f2f6f8;padding:6px;text-align:left;position:sticky;top:0}.tbl td{padding:6px;border-top:1px solid #edf1f3}.code{font:700 9px Consolas,monospace;color:#355c74;white-space:nowrap}.nm{font-weight:650;line-height:1.2}.star{border:0;background:transparent;font-size:16px;color:#aab7bd;cursor:pointer;padding:0}.star.on{color:#d49b00}.use{border:0;background:#176aa7;color:#fff;border-radius:6px;padding:5px 7px;font-size:9px;font-weight:750;cursor:pointer;white-space:nowrap}
+  .status{margin-top:7px;padding:6px 8px;border-radius:7px;background:#f2f6f8;color:#5e7380;font-size:9px}.status.ok{background:#e8f5ed;color:#2f7148}.status.err{background:#fdecec;color:#a23939}.empty{padding:10px;text-align:center;color:#7b8d96;font-size:10px}
+  .med{border:1px solid #d8e2e7;background:#f9fbfc;border-radius:8px;padding:8px}.medname{font-size:11px;font-weight:800;color:#264e66;margin-bottom:6px}.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:9px;font-weight:750;margin-bottom:3px;color:#4d6573}.field select,.field input,.field textarea{width:100%;border:1px solid #cbd7dd;border-radius:6px;padding:7px;font:11px Segoe UI}.field textarea{min-height:48px}.mactions{text-align:right;margin-top:6px}.launch{position:fixed;right:16px;bottom:16px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;padding:8px 10px;font-size:10px;font-weight:800;cursor:pointer;display:none}
+  @media(max-width:520px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
 
@@ -190,7 +190,7 @@
   panel.id='om30pa';
   panel.innerHTML=`
   <div class="oh"><div><div class="ot">OM30 — Procedimentos do Pronto Atendimento</div><div class="os">Favoritos da unidade, favoritos deste computador e busca SIGTAP</div></div><button class="ox">×</button></div>
-  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.0</div>
+  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.1</div>
   <div class="tabs"><button class="tab on" data-t="raiox"><b>Raio X</b><small>Radiografias e RX</small></button><button class="tab" data-t="exames"><b>Exames</b><small>Coletas e exames internos</small></button><button class="tab" data-t="medicacao"><b>Medicação</b><small>Aplicação no local</small></button><button class="tab" data-t="enfermagem"><b>Enfermagem</b><small>Procedimentos de enfermagem</small></button></div>
   <div class="obody">
     <div class="searchrow"><input class="search" placeholder="Ex.: tórax, hemograma, hgt, pressão, dipirona..."><button class="btn searchbtn">Pesquisar</button></div>
@@ -285,5 +285,5 @@
   renderFavs();
   renderRX();
   status('Escolha uma região ou pesquise uma radiografia.','ok');
-  console.info('[OM30 PA] v0.2.0 carregada para',UNIT);
+  console.info('[OM30 PA] v0.2.1 carregada para',UNIT);
 })();

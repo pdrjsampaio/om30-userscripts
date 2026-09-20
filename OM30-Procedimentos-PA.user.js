@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V150__) return;
-  window.__OM30_PA_V150__ = true;
+  if (window.__OM30_PA_V151__) return;
+  window.__OM30_PA_V151__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -122,7 +122,7 @@
 
   function logicalFromText(v){
     const n=norm(v);
-    if(/RAIO|RADIOGRAF|\\bRX\\b/.test(n)) return 'raiox';
+    if(/RAIO|RADIOGRAF|\bRX\b/.test(n)) return 'raiox';
     if(/MEDIC/.test(n)) return 'medicacao';
     if(/ENFERMAG|PROCED/.test(n)) return 'enfermagem';
     if(/EXAME|COLETA|LABORAT/.test(n)) return 'exames';
@@ -139,17 +139,17 @@
   function parseUnitTxt(text,hint=''){
     let grupo=logicalFromText(hint);
     const out=[];
-    for(const raw of String(text||'').split(/\\r?\\n/)){
+    for(const raw of String(text||'').split(/\r?\n/)){
       const line=clean(raw);
-      if(!line||/^#|^\\/\\//.test(line)) continue;
-      const heading=line.replace(/^\\[|\\]$/g,'');
+      if(!line||/^#|^\/\//.test(line)) continue;
+      const heading=line.replace(/^\[|\]$/g,'');
       const hg=logicalFromText(heading);
-      if(/^\\[.*\\]$/.test(line)||/^(RAIO X|RX|RADIOGRAFIA|EXAMES?|MEDICA(CAO|ÇÃO)|ENFERMAGEM|PROCEDIMENTOS?)$/i.test(line)){
+      if(/^\[.*\]$/.test(line)||/^(RAIO X|RX|RADIOGRAFIA|EXAMES?|MEDICA(CAO|ÇÃO)|ENFERMAGEM|PROCEDIMENTOS?)$/i.test(line)){
         if(hg) grupo=hg;
         continue;
       }
 
-      let parts=line.split(/\\s*[|;\\t]\\s*/).filter(Boolean);
+      let parts=line.split(/\s*[|;\t]\s*/).filter(Boolean);
       let lineGrupo='';
       if(parts.length>=3){
         const g=logicalFromText(parts[0]);
@@ -161,7 +161,7 @@
       let codigo='',nome='';
       if(parts.length>=2){codigo=clean(parts[0]);nome=clean(parts.slice(1).join(' | '))}
       else {
-        const m=line.match(/^(\\d{3,14})\\s*[-–—:]\\s*(.+)$/);
+        const m=line.match(/^(\d{3,14})\s*[-–—:]\s*(.+)$/);
         if(m){codigo=m[1];nome=clean(m[2])}
         else {nome=line}
       }
@@ -376,7 +376,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.5.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.5.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -763,5 +763,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.5.0 carregada para',UNIT);
+  console.info('[OM30 PA] v1.5.1 carregada para',UNIT);
 })();

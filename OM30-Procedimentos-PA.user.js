@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      0.2.1
+// @version      0.2.2
 // @description  Busca rápida de Exames, Procedimentos/CIDs e Medicamentos no Pronto Atendimento.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -13,8 +13,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V021__) return;
-  window.__OM30_PA_V021__ = true;
+  if (window.__OM30_PA_V022__) return;
+  window.__OM30_PA_V022__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -173,24 +173,74 @@
 
   const css=document.createElement('style');
   css.textContent=`
-  #om30pa{position:fixed;right:16px;bottom:16px;width:440px;max-width:calc(100vw - 32px);max-height:74vh;background:#fff;border:1px solid #d9e2e7;border-radius:12px;box-shadow:0 12px 34px rgba(10,30,45,.22);z-index:2147483646;font-family:Segoe UI,Arial,sans-serif;color:#243640;overflow:hidden}
-  #om30pa *{box-sizing:border-box}.oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;justify-content:space-between;align-items:center}.ot{font-size:14px;font-weight:750}.os{font-size:10px;opacity:.8;margin-top:2px}.ox{border:0;background:transparent;color:#fff;font-size:20px;cursor:pointer;line-height:1}
-  .oinfo{padding:5px 10px;background:#f5f8fa;border-bottom:1px solid #e4eaee;font-size:10px;color:#607784}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding:6px 8px;border-bottom:1px solid #e5ebee}.tab{border:0;background:#edf3f6;color:#496473;padding:6px 6px;border-radius:7px;font-weight:700;cursor:pointer;text-align:center;min-width:0}.tab b{display:block;font-size:11px;white-space:nowrap}.tab small{display:block;font-size:8px;font-weight:500;opacity:.72;margin-top:1px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tab.on{background:#123f68;color:#fff}
-  .obody{padding:8px;overflow:auto;max-height:calc(74vh - 112px)}.searchrow{display:grid;grid-template-columns:1fr auto;gap:5px}.search{padding:8px 9px;border:1px solid #cbd7dd;border-radius:7px;font-size:12px;outline:none}.btn{border:0;border-radius:7px;background:#176aa7;color:#fff;padding:0 10px;font-size:11px;font-weight:750;cursor:pointer}.hint{font-size:9px;color:#7b8d96;margin:5px 1px 7px}
-  .sect{margin-top:8px}.stitle{display:flex;justify-content:space-between;gap:6px;font-size:10px;font-weight:800;color:#415b69;margin-bottom:5px}.muted{font-weight:500;color:#85959d}.chips{display:flex;flex-wrap:wrap;gap:4px}.chip{border:1px solid #d4e0e6;background:#fff;border-radius:999px;padding:5px 8px;font-size:10px;font-weight:700;color:#365b70;cursor:pointer}
-  .grid{display:grid;grid-template-columns:1fr;gap:4px}.fav{display:flex;gap:6px;align-items:center;border:1px solid #dce5e9;border-radius:7px;padding:6px;background:#fff}.fmain{flex:1;min-width:0}.fcode{font:700 9px Consolas,monospace;color:#607784}.fname{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fuse{border:0;background:#edf4f7;color:#285a76;border-radius:6px;padding:5px 7px;font-size:10px;font-weight:700;cursor:pointer}
-  .wrap{border:1px solid #dce5e9;border-radius:8px;overflow:auto;max-height:220px}.tbl{width:100%;border-collapse:collapse;font-size:10px}.tbl th{background:#f2f6f8;padding:6px;text-align:left;position:sticky;top:0}.tbl td{padding:6px;border-top:1px solid #edf1f3}.code{font:700 9px Consolas,monospace;color:#355c74;white-space:nowrap}.nm{font-weight:650;line-height:1.2}.star{border:0;background:transparent;font-size:16px;color:#aab7bd;cursor:pointer;padding:0}.star.on{color:#d49b00}.use{border:0;background:#176aa7;color:#fff;border-radius:6px;padding:5px 7px;font-size:9px;font-weight:750;cursor:pointer;white-space:nowrap}
-  .status{margin-top:7px;padding:6px 8px;border-radius:7px;background:#f2f6f8;color:#5e7380;font-size:9px}.status.ok{background:#e8f5ed;color:#2f7148}.status.err{background:#fdecec;color:#a23939}.empty{padding:10px;text-align:center;color:#7b8d96;font-size:10px}
-  .med{border:1px solid #d8e2e7;background:#f9fbfc;border-radius:8px;padding:8px}.medname{font-size:11px;font-weight:800;color:#264e66;margin-bottom:6px}.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:9px;font-weight:750;margin-bottom:3px;color:#4d6573}.field select,.field input,.field textarea{width:100%;border:1px solid #cbd7dd;border-radius:6px;padding:7px;font:11px Segoe UI}.field textarea{min-height:48px}.mactions{text-align:right;margin-top:6px}.launch{position:fixed;right:16px;bottom:16px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;padding:8px 10px;font-size:10px;font-weight:800;cursor:pointer;display:none}
-  @media(max-width:520px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.mgrid{grid-template-columns:1fr}}
+  #om30pa{
+    position:fixed;right:14px;bottom:14px;width:380px;max-width:calc(100vw - 28px);
+    max-height:68vh;background:#fff;border:1px solid #e5eaee;border-radius:14px;
+    box-shadow:0 14px 36px rgba(20,40,55,.18);z-index:2147483646;
+    font-family:"Segoe UI",Arial,sans-serif;color:#22343e;overflow:hidden
+  }
+  #om30pa *{box-sizing:border-box}
+  .oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;align-items:center;justify-content:space-between}
+  .ot{font-size:13px;font-weight:700;letter-spacing:.1px}
+  .os{font-size:9px;opacity:.76;margin-top:1px}
+  .ox{border:0;background:transparent;color:#fff;font-size:19px;line-height:1;cursor:pointer;padding:2px 4px}
+  .oinfo{padding:4px 10px;background:#f8fafb;border-bottom:1px solid #edf1f3;font-size:9px;color:#73838c}
+  .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;padding:6px;background:#f7f9fa;border-bottom:1px solid #edf1f3}
+  .tab{border:0;background:transparent;color:#61737d;padding:6px 4px;border-radius:8px;cursor:pointer;transition:.15s}
+  .tab:hover{background:#eef3f6}
+  .tab.on{background:#fff;color:#123f68;box-shadow:0 1px 5px rgba(30,55,70,.12)}
+  .tab b{display:block;font-size:10.5px;font-weight:750;white-space:nowrap}
+  .tab small{display:block;font-size:7.5px;font-weight:500;opacity:.7;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .obody{padding:8px;overflow:auto;max-height:calc(68vh - 98px)}
+  .searchrow{display:flex;align-items:center;gap:6px;background:#f7f9fa;border:1px solid #e1e7ea;border-radius:10px;padding:5px 6px}
+  .search{flex:1;border:0;background:transparent;outline:none;padding:5px 4px;font-size:11px;color:#2a3e49;min-width:0}
+  .search::placeholder{color:#98a5ac}
+  .searchbtn{width:30px;height:30px;border:0;border-radius:8px;background:#123f68;color:#fff;cursor:pointer;font-size:0;padding:0;position:relative}
+  .searchbtn:before{content:"⌕";font-size:18px;line-height:30px}
+  .hint{font-size:8.5px;color:#8b989f;margin:5px 2px 7px}
+  .sect{margin-top:7px}
+  .stitle{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:9.5px;font-weight:750;color:#415761;margin-bottom:4px}
+  .muted{font-weight:500;color:#9aa5aa;font-size:8px}
+  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .chip{border:1px solid #e0e7ea;background:#fff;border-radius:8px;padding:5px 7px;font-size:9px;font-weight:650;color:#405f70;cursor:pointer}
+  .chip:hover{background:#f5f8fa}
+  .grid{display:grid;grid-template-columns:1fr;gap:3px}
+  .fav{display:flex;align-items:center;gap:5px;border:1px solid #e6ebee;border-radius:8px;padding:5px 6px;background:#fff}
+  .fmain{flex:1;min-width:0}
+  .fcode{font:700 8.5px Consolas,monospace;color:#7d8d95}
+  .fname{font-size:9.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#2e434e}
+  .fuse{border:0;background:#eef4f7;color:#285970;border-radius:6px;padding:4px 7px;font-size:9px;font-weight:700;cursor:pointer}
+  .wrap{border:1px solid #e4eaed;border-radius:9px;overflow:auto;max-height:205px}
+  .tbl{width:100%;border-collapse:collapse;font-size:9.5px}
+  .tbl th{background:#f7f9fa;padding:5px 6px;text-align:left;position:sticky;top:0;color:#71808a;font-size:8.5px}
+  .tbl td{padding:5px 6px;border-top:1px solid #edf1f3}
+  .code{font:700 8.5px Consolas,monospace;color:#557080;white-space:nowrap}
+  .nm{font-weight:650;line-height:1.15;color:#2d424d}
+  .star{border:0;background:transparent;font-size:15px;color:#bcc5ca;cursor:pointer;padding:0 2px}
+  .star.on{color:#d6a119}
+  .use{border:0;background:#123f68;color:#fff;border-radius:6px;padding:4px 7px;font-size:8.5px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .status{margin-top:6px;padding:5px 7px;border-radius:7px;background:#f5f8fa;color:#6e7e87;font-size:8.5px}
+  .status.ok{background:#eef8f2;color:#3c7250}
+  .status.err{background:#fff0f0;color:#a24343}
+  .empty{padding:8px;text-align:center;color:#9aa6ac;font-size:9px}
+  .med{border:1px solid #e4eaed;background:#fafcfd;border-radius:9px;padding:7px}
+  .medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}
+  .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .field label{display:block;font-size:8.5px;font-weight:700;margin-bottom:3px;color:#60727c}
+  .field select,.field input,.field textarea{width:100%;border:1px solid #dbe3e7;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}
+  .field textarea{min-height:44px;resize:vertical}
+  .mactions{text-align:right;margin-top:6px}
+  .mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}
+  .launch{position:fixed;right:14px;bottom:14px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;padding:7px 10px;font-size:9px;font-weight:750;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.2)}
+  @media(max-width:430px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
 
   const panel=document.createElement('div');
   panel.id='om30pa';
   panel.innerHTML=`
-  <div class="oh"><div><div class="ot">OM30 — Procedimentos do Pronto Atendimento</div><div class="os">Favoritos da unidade, favoritos deste computador e busca SIGTAP</div></div><button class="ox">×</button></div>
-  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.1</div>
+  <div class="oh"><div><div class="ot">OM30 — Procedimentos do Pronto Atendimento</div><div class="os">Busca rápida, favoritos e SIGTAP</div></div><button class="ox">×</button></div>
+  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.2</div>
   <div class="tabs"><button class="tab on" data-t="raiox"><b>Raio X</b><small>Radiografias e RX</small></button><button class="tab" data-t="exames"><b>Exames</b><small>Coletas e exames internos</small></button><button class="tab" data-t="medicacao"><b>Medicação</b><small>Aplicação no local</small></button><button class="tab" data-t="enfermagem"><b>Enfermagem</b><small>Procedimentos de enfermagem</small></button></div>
   <div class="obody">
     <div class="searchrow"><input class="search" placeholder="Ex.: tórax, hemograma, hgt, pressão, dipirona..."><button class="btn searchbtn">Pesquisar</button></div>
@@ -228,14 +278,68 @@
   }
 
   function renderFavs(){
-    const ds=defs();
-    E.uf.innerHTML='<div class="stitle"><span>Favoritos da unidade</span><span class="muted">lista base</span></div>'+(ds.length?'<div class="grid">'+ds.map((d,i)=>'<div class="fav" data-i="'+i+'"><div class="fmain"><div class="fcode">'+esc(d.code||'')+'</div><div class="fname">'+esc(d.name)+'</div></div><button class="fuse">Usar</button></div>').join('')+'</div>':'<div class="empty">Nenhum favorito da unidade configurado.</div>');
-    qa('.fav',E.uf).forEach(c=>q('.fuse',c).onclick=async()=>{try{const d=ds[+c.dataset.i];status('Localizando '+d.name+'...');const it=await resolveDef(d);if(!it)throw new Error('Não localizado.');usar(d.type,it)}catch(e){status(e.message,'err')}});
-
     const nt=tipoNativo();
-    const fs=favLocal(nt).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(name(nt,x))).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(name(nt,x)));
-    E.lf.innerHTML='<div class="stitle"><span>Favoritos deste computador</span><span class="muted">salvos só neste PC</span></div>'+(fs.length?'<div class="grid">'+fs.map((x,i)=>'<div class="fav" data-i="'+i+'"><button class="star on">★</button><div class="fmain"><div class="fcode">'+esc(code(tipo,x))+'</div><div class="fname">'+esc(name(tipo,x))+'</div></div><button class="fuse">Usar</button></div>').join('')+'</div>':'<div class="empty">Nenhum favorito local.</div>');
-    qa('.fav',E.lf).forEach(c=>{const it=fs[+c.dataset.i];q('.star',c).onclick=()=>{toggleFav(nt,it);renderFavs()};q('.fuse',c).onclick=()=>usar(tipo,it)});
+    const base=defs();
+    const locais=favLocal(nt)
+      .filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(name(nt,x)))
+      .filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(name(nt,x)));
+
+    const itens=[];
+    const seen=new Set();
+
+    base.forEach(d=>{
+      const k=(d.code||'')+'|'+d.name;
+      if(!seen.has(k)){seen.add(k);itens.push({kind:'base',data:d})}
+    });
+
+    locais.forEach(x=>{
+      const k=code(nt,x)+'|'+name(nt,x);
+      if(!seen.has(k)){seen.add(k);itens.push({kind:'local',data:x})}
+    });
+
+    if(!itens.length){
+      E.uf.innerHTML='';
+      E.lf.innerHTML='';
+      return;
+    }
+
+    E.uf.innerHTML='<div class="stitle"><span>Favoritos</span></div><div class="grid">'+itens.map((it,i)=>{
+      const d=it.data;
+      const cd=it.kind==='base'?(d.code||''):code(nt,d);
+      const nm=it.kind==='base'?d.name:name(nt,d);
+      return '<div class="fav" data-i="'+i+'"><button class="star '+(it.kind==='local'?'on':'')+'">'+(it.kind==='local'?'★':'☆')+'</button><div class="fmain"><div class="fcode">'+esc(cd)+'</div><div class="fname">'+esc(nm)+'</div></div><button class="fuse">Usar</button></div>'
+    }).join('')+'</div>';
+
+    E.lf.innerHTML='';
+
+    qa('.fav',E.uf).forEach(c=>{
+      const it=itens[+c.dataset.i];
+      const star=q('.star',c);
+      const btn=q('.fuse',c);
+
+      if(it.kind==='base'){
+        star.onclick=async()=>{
+          try{
+            const resolved=await resolveDef(it.data);
+            if(!resolved) throw new Error('Não localizado.');
+            const on=toggleFav(nt,resolved);
+            star.textContent=on?'★':'☆';
+            star.classList.toggle('on',on);
+          }catch(e){status(e.message,'err')}
+        };
+        btn.onclick=async()=>{
+          try{
+            status('Localizando '+it.data.name+'...');
+            const resolved=await resolveDef(it.data);
+            if(!resolved) throw new Error('Não localizado.');
+            usar(tipo,resolved);
+          }catch(e){status(e.message,'err')}
+        };
+      } else {
+        star.onclick=()=>{toggleFav(nt,it.data);renderFavs()};
+        btn.onclick=()=>usar(tipo,it.data);
+      }
+    });
   }
 
   function renderTable(xs){
@@ -285,5 +389,5 @@
   renderFavs();
   renderRX();
   status('Escolha uma região ou pesquise uma radiografia.','ok');
-  console.info('[OM30 PA] v0.2.1 carregada para',UNIT);
+  console.info('[OM30 PA] v0.2.2 carregada para',UNIT);
 })();

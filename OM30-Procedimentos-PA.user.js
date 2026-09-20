@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      0.2.2
+// @version      0.2.3
 // @description  Busca rápida de Exames, Procedimentos/CIDs e Medicamentos no Pronto Atendimento.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -13,8 +13,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V022__) return;
-  window.__OM30_PA_V022__ = true;
+  if (window.__OM30_PA_V023__) return;
+  window.__OM30_PA_V023__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -134,8 +134,67 @@
 
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
+  function targetVisivel(selector){
+    const campo=q(selector);
+    if(!campo) return false;
+    const token=campo.id?q('#token-input-'+campo.id):null;
+    return visible(token||campo);
+  }
+
+  function gatilhosPara(el){
+    const out=[];
+    const id=el?.id;
+    if(id){
+      const eid=CSS.escape(id);
+      out.push(...qa('[href="#'+eid+'"],[data-target="#'+eid+'"],[data-bs-target="#'+eid+'"],[aria-controls="'+eid+'"]'));
+    }
+    if(el?.previousElementSibling) out.push(el.previousElementSibling);
+    return [...new Set(out)].filter(Boolean);
+  }
+
+  async function abrirCampoNativo(selector){
+    const campo=q(selector);
+    if(!campo) throw new Error('Campo nativo não encontrado: '+selector);
+    if(targetVisivel(selector)) return;
+
+    const ancestrais=[];
+    let el=campo.parentElement;
+    while(el&&el!==document.body){ancestrais.push(el);el=el.parentElement}
+
+    for(const a of ancestrais){
+      const cls=a.classList;
+      const oculto=getComputedStyle(a).display==='none'||getComputedStyle(a).visibility==='hidden'||a.hidden;
+      const fechado=cls.contains('collapse')&&!cls.contains('show')||cls.contains('tab-pane')&&!cls.contains('active')||cls.contains('ui-accordion-content')&&oculto;
+      if(!oculto&&!fechado) continue;
+
+      let abriu=false;
+      if(cls.contains('collapse')&&window.jQuery&&typeof window.jQuery(a).collapse==='function'){
+        try{window.jQuery(a).collapse('show');abriu=true}catch{}
+      }
+
+      if(!abriu){
+        const g=gatilhosPara(a).find(x=>visible(x)||x.matches?.('.ui-accordion-header,[data-toggle="collapse"],[data-bs-toggle="collapse"],[role="tab"],a,button'));
+        if(g){try{g.click();abriu=true}catch{}}
+      }
+
+      if(abriu) await sleep(180);
+      if(targetVisivel(selector)) return;
+    }
+
+    // Último recurso: abre a aba/accordion de Evolução caso ela controle a renderização dos campos.
+    const evolucao=qa('a,button,[role="tab"],.ui-accordion-header').find(x=>{
+      const t=norm(x.innerText||x.textContent||'');
+      return t==='EVOLUCAO'||t.startsWith('EVOLUCAO ');
+    });
+    if(evolucao){
+      try{evolucao.click()}catch{}
+      await sleep(220);
+    }
+  }
+
   async function incluirSimples(tipo,item){
     if(tipo==='exame'){
+      await abrirCampoNativo('#prontuario_exame_token');
       const interno=q('#prontuario_exame_externo_false');
       if(interno){interno.checked=true;interno.dispatchEvent(new Event('change',{bubbles:true}))}
       tokenAdd('#prontuario_exame_token',tipo,item);
@@ -144,6 +203,7 @@
       if(!b) throw new Error('Botão + Incluir de Exame não encontrado.');
       b.click(); return;
     }
+    await abrirCampoNativo('#prontuario_procedimento_token');
     tokenAdd('#prontuario_procedimento_token',tipo,item);
     await sleep(180);
     const b=incluirDepois('#prontuario_procedimento_token');
@@ -159,6 +219,7 @@
   async function incluirMedicamento(item,via,pos,obs){
     if(!via) throw new Error('Selecione a via de administração.');
     if(!clean(pos)) throw new Error('Informe a posologia.');
+    await abrirCampoNativo('#prontuario_medicamento_token');
     tokenAdd('#prontuario_medicamento_token','medicamento',item);
     await sleep(100);
     const v=q('#prontuario_tipo_uso_medicamento_id'),p=q('#prontuario_posologia_medicamento'),o=q('#prontuario_observacao_medicamento');
@@ -240,7 +301,7 @@
   panel.id='om30pa';
   panel.innerHTML=`
   <div class="oh"><div><div class="ot">OM30 — Procedimentos do Pronto Atendimento</div><div class="os">Busca rápida, favoritos e SIGTAP</div></div><button class="ox">×</button></div>
-  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.2</div>
+  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.3</div>
   <div class="tabs"><button class="tab on" data-t="raiox"><b>Raio X</b><small>Radiografias e RX</small></button><button class="tab" data-t="exames"><b>Exames</b><small>Coletas e exames internos</small></button><button class="tab" data-t="medicacao"><b>Medicação</b><small>Aplicação no local</small></button><button class="tab" data-t="enfermagem"><b>Enfermagem</b><small>Procedimentos de enfermagem</small></button></div>
   <div class="obody">
     <div class="searchrow"><input class="search" placeholder="Ex.: tórax, hemograma, hgt, pressão, dipirona..."><button class="btn searchbtn">Pesquisar</button></div>
@@ -389,5 +450,5 @@
   renderFavs();
   renderRX();
   status('Escolha uma região ou pesquise uma radiografia.','ok');
-  console.info('[OM30 PA] v0.2.2 carregada para',UNIT);
+  console.info('[OM30 PA] v0.2.3 carregada para',UNIT);
 })();

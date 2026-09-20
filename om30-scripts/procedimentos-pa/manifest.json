@@ -1,12 +1,9 @@
 {
-  "schema": 2,
+  "schema": 1,
   "name": "OM30 - Procedimentos PA",
-  "version": "0.1.0",
+  "version": "0.3.1",
+  "format": "plain-js",
+  "app_url": "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos-pa/app.js",
   "published_at": "2026-09-20",
-  "format": "gzip-base64-parts",
-  "parts": [
-    "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos-pa/v010/app.part01.b64"
-  ],
-  "sha256": "db764f3ab24f181e8fb873617df8a84d9df8c7d3c682478f1a3d0442d0d4722a",
-  "minimum_loader_version": "1.2.0"
+  "note": "Stable app loaded locally first; remote update is cached for next page load."
 }

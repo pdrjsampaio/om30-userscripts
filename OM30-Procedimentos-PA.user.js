@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.2.1
+// @version      1.3.0
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V121__) return;
-  window.__OM30_PA_V121__ = true;
+  if (window.__OM30_PA_V130__) return;
+  window.__OM30_PA_V130__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -24,8 +24,6 @@
   const clean = v => String(v ?? '').replace(/\s+/g,' ').trim();
   const norm = v => clean(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
   const esc = v => String(v ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-
-  if (!q('#prontuario_exame_token') || !q('#prontuario_procedimento_token') || !q('#prontuario_medicamento_token')) return;
 
   const STORE = 'OM30_PA_FAVORITOS_PC_V1';
   const STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2';
@@ -331,6 +329,19 @@
   .om30-cs-body{display:none;border:1px solid #d9dfe2;border-top:0;background:#fff;padding:0}
   .om30-cs-wrap.open .om30-cs-body{display:block}
   .om30-cs-wrap.open .om30-cs-icon{transform:rotate(180deg)}
+  .om30-cs-native-header{
+    height:39px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 10px;margin:0;border:1px solid #c8c8c8;border-top:0;
+    background:linear-gradient(#f4f4f4,#e2e2e2);color:#222;
+    font:700 11px Arial,sans-serif;cursor:pointer;
+    box-shadow:inset 0 1px 0 #fff
+  }
+  .om30-cs-native-header:hover{background:linear-gradient(#fafafa,#e8e8e8)}
+  .om30-cs-native-icon{font-size:9px;color:#777;transition:transform .15s}
+  .om30-cs-native-header.open .om30-cs-native-icon{transform:rotate(180deg)}
+  .om30-cs-native-body{display:none;border:1px solid #d7dde0;border-top:0;background:#fff}
+  .om30-cs-native-body.open{display:block}
+  .om30-cs-native-body #om30pa.om30-inline{display:block!important}
   @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
@@ -365,7 +376,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.2.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.3.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -376,92 +387,163 @@
       .trim();
   }
 
-  function acharCabecalho(texto){
-    const alvo=norm(texto);
-    const candidatos=qa('div,a,span,h1,h2,h3,h4,h5,button')
-      .filter(el=>{
-        const t=textoLimpo(el);
-        return t===alvo || t.startsWith(alvo+' ');
-      })
-      .sort((a,b)=>{
-        const ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
-        const sa=(ra.width>300?0:1000)+(ra.height>18&&ra.height<90?0:500)+(a.innerText||'').length;
-        const sb=(rb.width>300?0:1000)+(rb.height>18&&rb.height<90?0:500)+(b.innerText||'').length;
-        return sa-sb;
-      });
+  function encontrarHeaderPorTexto(textos){
+    const alvos=textos.map(norm);
+
+    const candidatos=qa(
+      '.ui-accordion-header,.accordion-header,.panel-heading,.card-header,h1,h2,h3,h4,h5,a,button,div,span'
+    ).filter(el=>{
+      const t=textoLimpo(el);
+      return alvos.some(a=>t===a || t.startsWith(a+' '));
+    });
 
     if(!candidatos.length) return null;
 
-    let el=candidatos[0];
+    candidatos.sort((a,b)=>{
+      const ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
 
-    // Sobe somente até o bloco visual da seção, sem pegar o accordion inteiro.
-    for(let i=0;i<4&&el?.parentElement;i++){
-      const p=el.parentElement;
+      function score(el,r){
+        let s=0;
+        const cls=String(el.className||'');
+        if(/ui-accordion-header|accordion-header|panel-heading|card-header/i.test(cls)) s-=3000;
+        if(r.width>500) s-=1000;
+        if(r.height>=20 && r.height<=70) s-=800;
+        if(r.top>120) s-=200;
+        s+=(el.innerText||el.textContent||'').length;
+        return s;
+      }
+
+      return score(a,ra)-score(b,rb);
+    });
+
+    return candidatos[0];
+  }
+
+  function headerReal(el){
+    if(!el) return null;
+
+    const conhecido=el.closest?.(
+      '.ui-accordion-header,.accordion-header,.panel-heading,.card-header'
+    );
+    if(conhecido) return conhecido;
+
+    let atual=el;
+    for(let i=0;i<5 && atual?.parentElement;i++){
+      const p=atual.parentElement;
       const r=p.getBoundingClientRect();
       const t=textoLimpo(p);
-      const classe=String(p.className||'');
-      const blocoConhecido=/accordion-group|panel|card|box|fieldset|grupo|secao|section/i.test(classe);
 
-      if(blocoConhecido && t.includes(alvo) && r.width>300 && r.height<180){
-        el=p;
-        break;
-      }
-
-      if(t===alvo && r.width>300 && r.height<90){
-        el=p;
+      if(
+        r.width>500 &&
+        r.height>=22 &&
+        r.height<=80 &&
+        t.length<140
+      ){
+        atual=p;
         continue;
       }
-
       break;
     }
 
-    return el;
+    return atual;
   }
 
-  function montarComoSecao(){
-    if(q('.om30-cs-wrap')) return true;
+  function blocoCompletoDoHeader(header){
+    if(!header) return null;
 
-    const notificacao=acharCabecalho('NOTIFICAÇÃO COMPULSÓRIA');
-    const evolucao=acharCabecalho('EVOLUÇÃO CLÍNICA');
-
-    const wrap=document.createElement('div');
-    wrap.className='om30-cs-wrap';
-    wrap.innerHTML='<div class="om30-cs-head"><span>CONTROLE DE SALAS</span><span class="om30-cs-icon">⌄</span></div><div class="om30-cs-body"></div>';
-
-    if(notificacao){
-      // Mais seguro: entra imediatamente ANTES de Notificação Compulsória.
-      // Na tela do Saúde Simples isso posiciona exatamente depois de Evolução Clínica.
-      notificacao.insertAdjacentElement('beforebegin',wrap);
-    } else if(evolucao){
-      // Fallback caso a unidade não possua o bloco de notificação.
-      let ponto=evolucao;
-      if(evolucao.matches?.('.ui-accordion-header') &&
-         evolucao.nextElementSibling?.classList?.contains('ui-accordion-content')){
-        ponto=evolucao.nextElementSibling;
-      }
-      ponto.insertAdjacentElement('afterend',wrap);
-    } else {
-      console.warn('[OM30 PA] Não localizei Evolução Clínica/Notificação Compulsória para inserir Controle de Salas.');
-      return false;
+    // jQuery UI accordion normalmente usa: HEADER + DIV conteúdo.
+    if(
+      header.classList?.contains('ui-accordion-header') &&
+      header.nextElementSibling?.classList?.contains('ui-accordion-content')
+    ){
+      return {
+        header,
+        content: header.nextElementSibling,
+        last: header.nextElementSibling
+      };
     }
 
-    q('.om30-cs-body',wrap).appendChild(panel);
+    // Outros accordions/painéis: tenta usar o contêiner completo.
+    const box=header.closest?.(
+      '.accordion-item,.panel,.card,.box,.fieldset,.grupo,.secao,.section'
+    );
+    if(box) return {header,content:null,last:box};
+
+    return {header,content:null,last:header};
+  }
+
+  function criarOpcaoControleSalas(){
+    if(q('#om30-controle-salas-header')) return true;
+
+    const notificacaoBruta=encontrarHeaderPorTexto([
+      'NOTIFICAÇÃO COMPULSÓRIA',
+      'NOTIFICACAO COMPULSORIA',
+      'NOTIFICAÇÃO COMPULSORIAS',
+      'NOTIFICACAO COMPULSORIAS'
+    ]);
+
+    const evolucaoBruta=encontrarHeaderPorTexto([
+      'EVOLUÇÃO CLÍNICA',
+      'EVOLUCAO CLINICA'
+    ]);
+
+    const notificacao=headerReal(notificacaoBruta);
+    const evolucao=headerReal(evolucaoBruta);
+
+    if(!notificacao && !evolucao) return false;
+
+    const header=document.createElement('div');
+    header.id='om30-controle-salas-header';
+    header.className='om30-cs-native-header';
+    header.innerHTML='<span>CONTROLE DE SALAS</span><span class="om30-cs-native-icon">▼</span>';
+
+    const body=document.createElement('div');
+    body.id='om30-controle-salas-body';
+    body.className='om30-cs-native-body';
+
+    // REGRA: mesma hierarquia dos outros blocos.
+    // Preferência: imediatamente ANTES de Notificação Compulsória.
+    if(notificacao){
+      notificacao.parentNode.insertBefore(header,notificacao);
+      notificacao.parentNode.insertBefore(body,notificacao);
+    } else {
+      // Fallback: logo APÓS o bloco inteiro de Evolução Clínica.
+      const bloco=blocoCompletoDoHeader(evolucao);
+      bloco.last.insertAdjacentElement('afterend',body);
+      bloco.last.insertAdjacentElement('afterend',header);
+    }
+
+    body.appendChild(panel);
     panel.classList.add('om30-inline');
     panel.style.cssText='';
 
-    const cab=q('.om30-cs-head',wrap);
-    cab.onclick=()=>{
-      wrap.classList.toggle('open');
-      if(wrap.classList.contains('open')){
-        setTimeout(()=>q('.search',panel)?.focus(),60);
-      }
-    };
+    header.addEventListener('click',()=>{
+      const aberto=body.classList.toggle('open');
+      header.classList.toggle('open',aberto);
+      if(aberto) setTimeout(()=>q('.search',panel)?.focus(),50);
+    });
 
-    console.info('[OM30 PA] CONTROLE DE SALAS inserido no prontuário.');
+    console.info('[OM30 PA] Opção CONTROLE DE SALAS criada no mesmo nível das seções do prontuário.');
     return true;
   }
 
-  const INLINE_MODE=montarComoSecao();
+  // Pode haver montagem tardia do formulário. Tenta imediatamente e continua
+  // tentando por alguns segundos até os blocos nativos aparecerem.
+  let INLINE_MODE=criarOpcaoControleSalas();
+
+  if(!INLINE_MODE){
+    let tentativas=0;
+    const timerControleSalas=setInterval(()=>{
+      tentativas++;
+      if(criarOpcaoControleSalas()){
+        INLINE_MODE=true;
+        clearInterval(timerControleSalas);
+      } else if(tentativas>=40){
+        clearInterval(timerControleSalas);
+        console.warn('[OM30 PA] Não foi possível localizar as seções nativas para criar CONTROLE DE SALAS.');
+      }
+    },250);
+  }
 
   function loadPos(){
     try{return JSON.parse(localStorage.getItem(STORE_POS)||'null')}catch{return null}
@@ -708,5 +790,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.2.1 carregada para',UNIT);
+  console.info('[OM30 PA] v1.3.0 carregada para',UNIT);
 })();

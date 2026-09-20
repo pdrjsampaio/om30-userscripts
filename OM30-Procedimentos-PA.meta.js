@@ -1,13 +1,13 @@
 // ==UserScript==
-// @name         OM30 - Procedimentos PA
+// @name         OM30 - Controle de Salas - Procedimentos
 // @namespace    https://om30.com.br/
-// @version      0.4.1
-// @description  Busca rápida de Exames, Procedimentos/CIDs e Medicamentos no Pronto Atendimento.
-// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.meta.js
-// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
+// @version      1.0.0
+// @description  Carregador automático do Controle de Salas - Procedimentos.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
 // @match        https://guarujahomolog.saudesimples.net/prontuarios/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // ==/UserScript==

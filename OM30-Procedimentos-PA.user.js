@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.4.0
+// @version      1.4.1
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V140__) return;
-  window.__OM30_PA_V140__ = true;
+  if (window.__OM30_PA_V141__) return;
+  window.__OM30_PA_V141__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -376,7 +376,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.4.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.4.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -491,7 +491,38 @@
 
   function localizarNotificacao(){
     const rx=/NOTIFICACAO\s+COMPULSORIA(S)?/;
-    return secaoPorCampo('#prontuario_doenca_agravo_id',rx) || secaoPorTexto(rx);
+
+    const direta=
+      secaoPorCampo('#prontuario_doenca_agravo_id',rx) ||
+      secaoPorTexto(rx);
+
+    if(direta?.header) return direta;
+
+    // Fallback estrutural: na tela do prontuário, NOTIFICAÇÃO COMPULSÓRIA
+    // vem imediatamente antes de EXAMES. Usa o campo nativo de Exames para
+    // encontrar esse par de seções sem depender do texto da notificação.
+    const exames=secaoPorCampo('#prontuario_exame_token',/EXAMES?/);
+    if(exames?.header){
+      let cursor=exames.header.previousElementSibling;
+
+      for(let i=0;i<5 && cursor;i++,cursor=cursor.previousElementSibling){
+        const txt=norm(cursor.innerText||cursor.textContent||'');
+        if(rx.test(txt)){
+          const proximo=cursor.nextElementSibling;
+          const content=proximo && proximo!==exames.header ? proximo : null;
+          return {header:cursor,content};
+        }
+      }
+
+      // Último fallback: assume o padrão HEADER+CONTEÚDO imediatamente anterior a EXAMES.
+      const possivelConteudo=exames.header.previousElementSibling;
+      const possivelHeader=possivelConteudo?.previousElementSibling;
+      if(possivelHeader){
+        return {header:possivelHeader,content:possivelConteudo};
+      }
+    }
+
+    return null;
   }
 
   function criarOpcaoControleSalas(){
@@ -810,5 +841,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.4.0 carregada para',UNIT);
+  console.info('[OM30 PA] v1.4.1 carregada para',UNIT);
 })();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Busca rápida de Exames, Procedimentos/CIDs e Medicamentos no Pronto Atendimento.
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V030__) return;
-  window.__OM30_PA_V030__ = true;
+  if (window.__OM30_PA_V031__) return;
+  window.__OM30_PA_V031__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -29,6 +29,7 @@
 
   const STORE = 'OM30_PA_FAVORITOS_PC_V1';
   const STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2';
+  const STORE_POS = 'OM30_PA_POSICAO_V1';
 
   function unitName(){
     return qa('a.nav-link,.navbar a,.navbar-nav a').map(x=>clean(x.innerText)).find(t=>/\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA';
@@ -266,8 +267,8 @@
   .oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;align-items:center;justify-content:space-between}
   .ot{font-size:13px;font-weight:750;letter-spacing:.05px}
   .ha{display:flex;align-items:center;gap:2px}
-  .og,.ox{width:27px;height:27px;border:0;background:transparent;color:#fff;border-radius:7px;cursor:pointer;display:grid;place-items:center;padding:0}
-  .og{font-size:15px}.ox{font-size:18px;line-height:1}.og:hover,.ox:hover{background:rgba(255,255,255,.12)}
+  .oh{cursor:move;user-select:none}.og,.omin,.ox{width:27px;height:27px;border:0;background:transparent;color:#fff;border-radius:7px;cursor:pointer;display:grid;place-items:center;padding:0}.og,.omin,.ox{cursor:pointer}
+  .og{font-size:15px}.omin{font-size:14px}.ox{font-size:18px;line-height:1}.og:hover,.omin:hover,.ox:hover{background:rgba(255,255,255,.12)}
   .oinfo{padding:5px 10px;background:#fbfcfd;border-bottom:1px solid #edf1f3;font-size:9px;color:#7b8a92}
   .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;padding:5px 6px;background:#f6f8f9;border-bottom:1px solid #edf1f3}
   .tab{border:0;background:transparent;color:#718089;padding:7px 3px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:700;transition:.15s}
@@ -315,7 +316,7 @@
   .sactions{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}.sbtn{border:1px solid #dce4e8;background:#fff;color:#34586a;border-radius:8px;padding:6px 8px;font-size:9px;font-weight:700;cursor:pointer}.sbtn.primary{background:#123f68;color:#fff;border-color:#123f68}.sbtn.danger{color:#a34d4d}
   .stextarea{width:100%;min-height:155px;border:1px solid #dfe5e8;border-radius:9px;padding:8px;font:9px/1.4 Consolas,monospace;outline:none;resize:vertical}.stextarea:focus{border-color:#b9cbd4;box-shadow:0 0 0 3px rgba(18,63,104,.06)}
   .sfoot{font-size:8px;color:#9aa5aa;margin-top:7px}
-  .launch{position:fixed;right:14px;bottom:14px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;padding:7px 10px;font-size:9px;font-weight:750;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.2)}
+  .launch{position:fixed;right:10px;bottom:18px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;width:46px;height:46px;font-size:9px;font-weight:800;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.22)}
   @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
@@ -325,7 +326,7 @@
   panel.innerHTML=`
   <div class="oh">
     <div class="ot">Controle de Salas - Procedimentos</div>
-    <div class="ha"><button class="og" title="Configurar favoritos da unidade">⚙</button><button class="ox" title="Fechar">×</button></div>
+    <div class="ha"><button class="og" title="Configurar favoritos da unidade">⚙</button><button class="omin" title="Minimizar">—</button><button class="ox" title="Fechar">×</button></div>
   </div>
   <div class="oinfo"><b>${esc(UNIT)}</b></div>
   <div class="tabs">
@@ -350,10 +351,58 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v0.3.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v0.3.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
+
+  function loadPos(){
+    try{return JSON.parse(localStorage.getItem(STORE_POS)||'null')}catch{return null}
+  }
+  function savePos(){
+    const r=panel.getBoundingClientRect();
+    localStorage.setItem(STORE_POS,JSON.stringify({left:Math.round(r.left),top:Math.round(r.top)}));
+  }
+  function applyPos(){
+    const p=loadPos();
+    if(!p) return;
+    const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
+    const maxT=Math.max(0,window.innerHeight-panel.offsetHeight);
+    panel.style.left=Math.min(Math.max(0,p.left),maxL)+'px';
+    panel.style.top=Math.min(Math.max(0,p.top),maxT)+'px';
+    panel.style.right='auto';
+    panel.style.bottom='auto';
+  }
+
+  let dragging=false,dragDX=0,dragDY=0;
+  const head=q('.oh',panel);
+  head.addEventListener('mousedown',e=>{
+    if(e.target.closest('button')) return;
+    const r=panel.getBoundingClientRect();
+    dragging=true;
+    dragDX=e.clientX-r.left;
+    dragDY=e.clientY-r.top;
+    panel.style.left=r.left+'px';
+    panel.style.top=r.top+'px';
+    panel.style.right='auto';
+    panel.style.bottom='auto';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove',e=>{
+    if(!dragging) return;
+    const w=panel.offsetWidth,h=panel.offsetHeight;
+    const left=Math.min(Math.max(0,e.clientX-dragDX),Math.max(0,window.innerWidth-w));
+    const top=Math.min(Math.max(0,e.clientY-dragDY),Math.max(0,window.innerHeight-h));
+    panel.style.left=left+'px';
+    panel.style.top=top+'px';
+  });
+  document.addEventListener('mouseup',()=>{
+    if(!dragging) return;
+    dragging=false;
+    savePos();
+  });
+  window.addEventListener('resize',()=>applyPos());
+  setTimeout(applyPos,0);
 
   const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30 PA'; document.body.appendChild(launch);
   const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
@@ -537,17 +586,18 @@
   E.s.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pesquisar()}};
   E.s.oninput=()=>{clearTimeout(timer);if(E.s.value.trim().length>=3)timer=setTimeout(()=>pesquisar(),350)};
   q('.og',panel).onclick=openSettings;
+  q('.omin',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};
   q('.sclose',panel).onclick=closeSettings;
   q('.simpor',panel).onclick=()=>E.file.click();
   E.file.onchange=async()=>{await importFiles([...E.file.files]);E.file.value=''};
   q('.sadd',panel).onclick=addTextFavorites;
   q('.sclear',panel).onclick=clearUnitFavorites;
   q('.ox',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};
-  launch.onclick=()=>{launch.style.display='none';panel.style.display='block';E.s.focus()};
+  launch.onclick=()=>{launch.style.display='none';panel.style.display='block';applyPos();E.s.focus()};
 
   renderFavs();
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v0.3.0 carregada para',UNIT);
+  console.info('[OM30 PA] v0.3.1 carregada para',UNIT);
 })();

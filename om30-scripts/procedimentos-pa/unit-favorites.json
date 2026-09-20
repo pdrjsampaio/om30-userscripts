@@ -28,12 +28,6 @@
         "query": "PRESSAO"
       },
       {
-        "type": "procedimento",
-        "code": "0301060100",
-        "name": "ATENDIMENTO ORTOPÉDICO COM IMOBILIZAÇÃO PROVISÓRIA",
-        "query": "0301060100"
-      },
-      {
         "type": "medicamento",
         "code": "1035",
         "name": "DIPIRONA 500 MG CP",

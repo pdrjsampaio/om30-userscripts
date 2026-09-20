@@ -13,8 +13,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V010__) return;
-  window.__OM30_PA_V010__ = true;
+  if (window.__OM30_PA_V020__) return;
+  window.__OM30_PA_V020__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);

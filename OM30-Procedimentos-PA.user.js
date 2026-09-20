@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.4.1
+// @version      1.5.0
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V141__) return;
-  window.__OM30_PA_V141__ = true;
+  if (window.__OM30_PA_V150__) return;
+  window.__OM30_PA_V150__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -376,7 +376,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.4.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.5.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -387,196 +387,115 @@
       .trim();
   }
 
-  function limparIdsAtributos(root){
-    if(!root) return;
-    const todos=[root,...root.querySelectorAll('*')];
-    for(const el of todos){
-      el.removeAttribute('id');
-      el.removeAttribute('aria-controls');
-      el.removeAttribute('aria-labelledby');
-      el.removeAttribute('data-target');
-      el.removeAttribute('data-bs-target');
-      if(el.tagName==='A') el.removeAttribute('href');
-    }
+  function colunasNativasProntuario(){
+    const form=q('#new_prontuario');
+    if(!form) return [];
+
+    return qa('.column.ui-sortable',form).filter(col=>{
+      // As seções principais do prontuário são filhas diretas de um OL.
+      // Isso exclui colunas internas, como o bloco de CID dentro da Evolução.
+      return col.parentElement?.tagName==='OL' &&
+             col.closest('#new_prontuario')===form &&
+             !!col.querySelector(':scope > .portlet > .portlet-header');
+    });
   }
 
-  function substituirTextoControleSalas(root){
-    const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
-    const nodes=[];
-    while(walker.nextNode()) nodes.push(walker.currentNode);
+  function tituloColuna(col){
+    const h=col?.querySelector(':scope > .portlet > .portlet-header');
+    return textoLimpo(h);
+  }
 
-    let trocou=false;
-    for(const node of nodes){
-      const n=norm(node.nodeValue||'');
-      if(n.includes('NOTIFICACAO COMPULSORIA') || n.includes('NOTIFICACAO COMPULSORIAS')){
-        node.nodeValue='CONTROLE DE SALAS';
-        trocou=true;
+  function localizarColunaNativa(titulo){
+    const alvo=norm(titulo);
+    return colunasNativasProntuario().find(col=>tituloColuna(col)===alvo)||null;
+  }
+
+  function trocarTituloHeader(header,titulo){
+    let alterou=false;
+
+    for(const node of [...header.childNodes]){
+      if(node.nodeType===Node.TEXT_NODE && clean(node.nodeValue)){
+        node.nodeValue='\n'+titulo+'\n';
+        alterou=true;
         break;
       }
     }
 
-    if(!trocou){
-      const alvo=[...root.querySelectorAll('*')].find(el=>{
-        const n=norm(el.textContent||'');
-        return n==='NOTIFICACAO COMPULSORIA'||n==='NOTIFICACAO COMPULSORIAS';
-      });
-      if(alvo){alvo.textContent='CONTROLE DE SALAS';trocou=true}
+    if(!alterou){
+      header.insertBefore(document.createTextNode(titulo+'\n'),header.firstChild);
     }
-
-    if(!trocou){
-      // Mantém a estrutura do cabeçalho e acrescenta o título sem destruir os ícones.
-      const span=document.createElement('span');
-      span.textContent='CONTROLE DE SALAS';
-      root.prepend(span);
-    }
-  }
-
-  function secaoPorCampo(campoSelector,regexTitulo){
-    const campo=q(campoSelector);
-    if(!campo) return null;
-
-    let atual=campo;
-    for(let i=0;i<14 && atual && atual!==document.body;i++,atual=atual.parentElement){
-      const anterior=atual.previousElementSibling;
-      if(anterior && regexTitulo.test(norm(anterior.innerText||anterior.textContent||''))){
-        return {header:anterior,content:atual};
-      }
-
-      const cls=String(atual.className||'');
-      if(/ui-accordion-content|accordion-content|panel-body|card-body|accordion-body/i.test(cls)){
-        const h=atual.previousElementSibling;
-        if(h && regexTitulo.test(norm(h.innerText||h.textContent||''))){
-          return {header:h,content:atual};
-        }
-      }
-    }
-
-    return null;
-  }
-
-  function secaoPorTexto(regexTitulo){
-    const candidatos=qa('h1,h2,h3,h4,h5,div,a,button,span')
-      .filter(el=>{
-        const txt=norm(el.innerText||el.textContent||'');
-        if(!regexTitulo.test(txt)) return false;
-        const r=el.getBoundingClientRect();
-        return r.width>250 && r.height>15 && r.height<90;
-      })
-      .sort((a,b)=>{
-        const ta=(a.innerText||a.textContent||'').length;
-        const tb=(b.innerText||b.textContent||'').length;
-        return ta-tb;
-      });
-
-    for(const raw of candidatos){
-      let h=raw.closest?.('.ui-accordion-header,.accordion-header,.panel-heading,.card-header')||raw;
-
-      // Se achou somente o texto interno, sobe para o elemento visual que tem um irmão conteúdo.
-      let x=h;
-      for(let i=0;i<5 && x?.parentElement;i++){
-        if(x.nextElementSibling){
-          const nr=norm(x.innerText||x.textContent||'');
-          if(regexTitulo.test(nr)) { h=x; break; }
-        }
-        const p=x.parentElement;
-        const r=p.getBoundingClientRect();
-        if(r.width>400 && r.height<90) x=p; else break;
-      }
-
-      if(h?.parentNode) return {header:h,content:h.nextElementSibling||null};
-    }
-
-    return null;
-  }
-
-  function localizarNotificacao(){
-    const rx=/NOTIFICACAO\s+COMPULSORIA(S)?/;
-
-    const direta=
-      secaoPorCampo('#prontuario_doenca_agravo_id',rx) ||
-      secaoPorTexto(rx);
-
-    if(direta?.header) return direta;
-
-    // Fallback estrutural: na tela do prontuário, NOTIFICAÇÃO COMPULSÓRIA
-    // vem imediatamente antes de EXAMES. Usa o campo nativo de Exames para
-    // encontrar esse par de seções sem depender do texto da notificação.
-    const exames=secaoPorCampo('#prontuario_exame_token',/EXAMES?/);
-    if(exames?.header){
-      let cursor=exames.header.previousElementSibling;
-
-      for(let i=0;i<5 && cursor;i++,cursor=cursor.previousElementSibling){
-        const txt=norm(cursor.innerText||cursor.textContent||'');
-        if(rx.test(txt)){
-          const proximo=cursor.nextElementSibling;
-          const content=proximo && proximo!==exames.header ? proximo : null;
-          return {header:cursor,content};
-        }
-      }
-
-      // Último fallback: assume o padrão HEADER+CONTEÚDO imediatamente anterior a EXAMES.
-      const possivelConteudo=exames.header.previousElementSibling;
-      const possivelHeader=possivelConteudo?.previousElementSibling;
-      if(possivelHeader){
-        return {header:possivelHeader,content:possivelConteudo};
-      }
-    }
-
-    return null;
   }
 
   function criarOpcaoControleSalas(){
-    if(q('#om30-controle-salas-header')) return true;
+    if(q('#om30-controle-salas-section')) return true;
 
-    const secao=localizarNotificacao();
-    if(!secao?.header?.parentNode) return false;
+    const notificacao=localizarColunaNativa('NOTIFICAÇÃO COMPULSÓRIA');
+    if(!notificacao?.parentNode) return false;
 
-    const header=secao.header.cloneNode(true);
-    limparIdsAtributos(header);
-    substituirTextoControleSalas(header);
-    header.id='om30-controle-salas-header';
+    // Clona A SEÇÃO NATIVA INTEIRA, não apenas o header.
+    // Estrutura real:
+    // .column.ui-sortable
+    //   .portlet
+    //     .portlet-header
+    //     .portlet-content
+    const nova=notificacao.cloneNode(true);
+    nova.id='om30-controle-salas-section';
 
-    // Remove estados ativos herdados, caso a seção nativa esteja aberta.
-    header.classList.remove(
-      'ui-state-active','ui-accordion-header-active','active','show'
-    );
+    const portlet=nova.querySelector(':scope > .portlet');
+    const header=portlet?.querySelector(':scope > .portlet-header');
+    const content=portlet?.querySelector(':scope > .portlet-content');
 
-    let body;
-    if(secao.content){
-      body=secao.content.cloneNode(false);
-      limparIdsAtributos(body);
-    }else{
-      body=document.createElement('div');
+    if(!portlet || !header || !content) return false;
+
+    // Remove qualquer conteúdo/IDs clonados da Notificação.
+    content.replaceChildren();
+    for(const el of [nova,...nova.querySelectorAll('[id]')]){
+      if(el!==nova) el.removeAttribute('id');
     }
+    nova.querySelectorAll('script').forEach(s=>s.remove());
 
-    body.id='om30-controle-salas-body';
-    body.innerHTML='';
-    body.style.display='none';
-    body.classList.remove('show','active','ui-accordion-content-active');
+    trocarTituloHeader(header,'CONTROLE DE SALAS');
 
-    // EXATAMENTE no mesmo pai e imediatamente antes de NOTIFICAÇÃO COMPULSÓRIA.
-    secao.header.parentNode.insertBefore(header,secao.header);
-    secao.header.parentNode.insertBefore(body,secao.header);
+    // Mantém exatamente o mesmo visual nativo fechado.
+    content.style.display='none';
 
-    body.appendChild(panel);
+    // Insere a COLUNA INTEIRA como irmã imediatamente anterior à Notificação.
+    notificacao.parentNode.insertBefore(nova,notificacao);
+
+    content.appendChild(panel);
     panel.classList.add('om30-inline');
     panel.style.cssText='';
+
+    const icon=header.querySelector('.ui-icon');
 
     header.addEventListener('click',e=>{
       e.preventDefault();
       e.stopPropagation();
 
-      const aberto=body.style.display!=='none';
-      body.style.display=aberto?'none':'block';
+      const fechado=content.style.display==='none' ||
+                    getComputedStyle(content).display==='none';
 
-      header.classList.toggle('ui-state-active',!aberto);
-      header.classList.toggle('ui-accordion-header-active',!aberto);
-      header.classList.toggle('active',!aberto);
+      content.style.display=fechado?'block':'none';
 
-      if(!aberto) setTimeout(()=>q('.search',panel)?.focus(),50);
+      if(icon){
+        if(fechado){
+          icon.classList.remove('ui-icon-circle-arrow-s');
+          icon.classList.add('ui-icon-circle-arrow-n');
+        }else{
+          icon.classList.remove('ui-icon-circle-arrow-n');
+          icon.classList.add('ui-icon-circle-arrow-s');
+        }
+      }
+
+      if(fechado){
+        setTimeout(()=>q('.search',panel)?.focus(),50);
+      }
     });
 
-    console.info('[OM30 PA] CONTROLE DE SALAS criado como seção nativa antes de NOTIFICAÇÃO COMPULSÓRIA.');
+    console.info(
+      '[OM30 PA] CONTROLE DE SALAS inserido como .column.ui-sortable nativa antes de NOTIFICAÇÃO COMPULSÓRIA.'
+    );
+
     return true;
   }
 
@@ -586,12 +505,15 @@
     let tentativas=0;
     const timerControleSalas=setInterval(()=>{
       tentativas++;
+
       if(criarOpcaoControleSalas()){
         INLINE_MODE=true;
         clearInterval(timerControleSalas);
       }else if(tentativas>=120){
         clearInterval(timerControleSalas);
-        console.warn('[OM30 PA] A seção NOTIFICAÇÃO COMPULSÓRIA não apareceu no DOM em 30 segundos.');
+        console.warn(
+          '[OM30 PA] Não encontrei a coluna nativa NOTIFICAÇÃO COMPULSÓRIA em 30 segundos.'
+        );
       }
     },250);
   }
@@ -841,5 +763,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.4.1 carregada para',UNIT);
+  console.info('[OM30 PA] v1.5.0 carregada para',UNIT);
 })();

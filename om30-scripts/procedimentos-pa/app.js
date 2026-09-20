@@ -1,8 +1,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V031__) return;
-  window.__OM30_PA_V031__ = true;
+  if (window.__OM30_PA_V041__) return;
+  window.__OM30_PA_V041__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -303,6 +303,20 @@
   .stextarea{width:100%;min-height:155px;border:1px solid #dfe5e8;border-radius:9px;padding:8px;font:9px/1.4 Consolas,monospace;outline:none;resize:vertical}.stextarea:focus{border-color:#b9cbd4;box-shadow:0 0 0 3px rgba(18,63,104,.06)}
   .sfoot{font-size:8px;color:#9aa5aa;margin-top:7px}
   .launch{position:fixed;right:10px;bottom:18px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;width:46px;height:46px;font-size:9px;font-weight:800;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.22)}
+  #om30pa.om30-inline{position:relative;inset:auto;width:100%;max-width:none;max-height:none;border:0;border-radius:0;box-shadow:none;background:#fff}
+  #om30pa.om30-inline .oh{cursor:default;border-radius:0;background:#fff;color:#294858;padding:8px 10px;border-bottom:1px solid #e8edef}
+  #om30pa.om30-inline .ot{font-size:11px}
+  #om30pa.om30-inline .og{color:#315a70;background:#eef4f7}
+  #om30pa.om30-inline .omin,#om30pa.om30-inline .ox{display:none}
+  #om30pa.om30-inline .oinfo{background:#fff;padding:5px 10px}
+  #om30pa.om30-inline .obody{max-height:none}
+  .om30-cs-wrap{margin:10px 0}
+  .om30-cs-head{height:39px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;border:1px solid #c8c8c8;background:linear-gradient(#f4f4f4,#e2e2e2);color:#202020;font:700 11px Arial,sans-serif;cursor:pointer;box-shadow:inset 0 1px 0 #fff}
+  .om30-cs-head:hover{background:linear-gradient(#f8f8f8,#e8e8e8)}
+  .om30-cs-icon{width:16px;height:16px;border-radius:50%;background:#999;color:#fff;display:grid;place-items:center;font-size:11px;line-height:1}
+  .om30-cs-body{display:none;border:1px solid #d9dfe2;border-top:0;background:#fff;padding:0}
+  .om30-cs-wrap.open .om30-cs-body{display:block}
+  .om30-cs-wrap.open .om30-cs-icon{transform:rotate(180deg)}
   @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
@@ -311,7 +325,7 @@
   panel.id='om30pa';
   panel.innerHTML=`
   <div class="oh">
-    <div class="ot">Controle de Salas - Procedimentos</div>
+    <div class="ot">Procedimentos</div>
     <div class="ha"><button class="og" title="Configurar favoritos da unidade">⚙</button><button class="omin" title="Minimizar">—</button><button class="ox" title="Fechar">×</button></div>
   </div>
   <div class="oinfo"><b>${esc(UNIT)}</b></div>
@@ -337,10 +351,69 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v0.3.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v0.4.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
+
+  function textoLimpo(el){
+    return norm(el?.innerText||el?.textContent||'').replace(/^\\(\\*\\)\\s*/,'');
+  }
+
+  function localizarEvolucao(){
+    const candidatos=qa('h1,h2,h3,h4,h5,div,a,span,button')
+      .filter(el=>{
+        const t=textoLimpo(el);
+        return t==='EVOLUCAO CLINICA'||t.startsWith('EVOLUCAO CLINICA ');
+      })
+      .sort((a,b)=>(a.innerText||'').length-(b.innerText||'').length);
+
+    if(!candidatos.length) return null;
+
+    const el=candidatos[0];
+    return el.closest('.ui-accordion-header,.panel-heading,.card-header,.accordion-heading')||el;
+  }
+
+  function montarComoSecao(){
+    const evo=localizarEvolucao();
+    if(!evo) return false;
+
+    let ponto=evo;
+
+    if(evo.matches?.('.ui-accordion-header') &&
+       evo.nextElementSibling?.classList?.contains('ui-accordion-content')){
+      ponto=evo.nextElementSibling;
+    } else {
+      const pai=evo.parentElement;
+      if(pai){
+        const r=pai.getBoundingClientRect();
+        if(r.width>500 && r.height<180) ponto=pai;
+      }
+    }
+
+    const wrap=document.createElement('div');
+    wrap.className='om30-cs-wrap';
+    wrap.innerHTML='<div class="om30-cs-head"><span>CONTROLE DE SALAS</span><span class="om30-cs-icon">⌄</span></div><div class="om30-cs-body"></div>';
+
+    ponto.insertAdjacentElement('afterend',wrap);
+    q('.om30-cs-body',wrap).appendChild(panel);
+
+    panel.classList.add('om30-inline');
+    panel.style.cssText='';
+    panel.classList.add('om30-inline');
+
+    const head=q('.om30-cs-head',wrap);
+    head.onclick=()=>{
+      wrap.classList.toggle('open');
+      if(wrap.classList.contains('open')){
+        setTimeout(()=>E?.s?.focus(),60);
+      }
+    };
+
+    return true;
+  }
+
+  const INLINE_MODE=montarComoSecao();
 
   function loadPos(){
     try{return JSON.parse(localStorage.getItem(STORE_POS)||'null')}catch{return null}
@@ -350,6 +423,7 @@
     localStorage.setItem(STORE_POS,JSON.stringify({left:Math.round(r.left),top:Math.round(r.top)}));
   }
   function applyPos(){
+    if(INLINE_MODE) return;
     const p=loadPos();
     if(!p) return;
     const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
@@ -363,6 +437,7 @@
   let dragging=false,dragDX=0,dragDY=0;
   const head=q('.oh',panel);
   head.addEventListener('mousedown',e=>{
+    if(INLINE_MODE) return;
     if(e.target.closest('button')) return;
     const r=panel.getBoundingClientRect();
     dragging=true;
@@ -390,7 +465,7 @@
   window.addEventListener('resize',()=>applyPos());
   setTimeout(applyPos,0);
 
-  const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30 PA'; document.body.appendChild(launch);
+  const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30'; document.body.appendChild(launch); if(INLINE_MODE) launch.style.display='none';
   const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer;
 
@@ -572,18 +647,18 @@
   E.s.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pesquisar()}};
   E.s.oninput=()=>{clearTimeout(timer);if(E.s.value.trim().length>=3)timer=setTimeout(()=>pesquisar(),350)};
   q('.og',panel).onclick=openSettings;
-  q('.omin',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};
+  q('.omin',panel).onclick=()=>{if(INLINE_MODE)return;panel.style.display='none';launch.style.display='block'};
   q('.sclose',panel).onclick=closeSettings;
   q('.simpor',panel).onclick=()=>E.file.click();
   E.file.onchange=async()=>{await importFiles([...E.file.files]);E.file.value=''};
   q('.sadd',panel).onclick=addTextFavorites;
   q('.sclear',panel).onclick=clearUnitFavorites;
-  q('.ox',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};
+  q('.ox',panel).onclick=()=>{if(INLINE_MODE)return;panel.style.display='none';launch.style.display='block'};
   launch.onclick=()=>{launch.style.display='none';panel.style.display='block';applyPos();E.s.focus()};
 
   renderFavs();
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v0.3.1 carregada para',UNIT);
+  console.info('[OM30 PA] v0.4.1 carregada para',UNIT);
 })();

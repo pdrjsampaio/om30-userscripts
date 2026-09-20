@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.3.2
+// @version      1.4.0
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V132__) return;
-  window.__OM30_PA_V132__ = true;
+  if (window.__OM30_PA_V140__) return;
+  window.__OM30_PA_V140__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -376,7 +376,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.3.2 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.4.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -387,148 +387,168 @@
       .trim();
   }
 
-  function encontrarHeaderPorTexto(textos){
-    const alvos=textos.map(norm);
-
-    const candidatos=qa(
-      '.ui-accordion-header,.accordion-header,.panel-heading,.card-header,h1,h2,h3,h4,h5,a,button,div,span'
-    ).filter(el=>{
-      const t=textoLimpo(el);
-      return alvos.some(a=>t===a || t.startsWith(a+' '));
-    });
-
-    if(!candidatos.length) return null;
-
-    candidatos.sort((a,b)=>{
-      const ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
-
-      function score(el,r){
-        let s=0;
-        const cls=String(el.className||'');
-        if(/ui-accordion-header|accordion-header|panel-heading|card-header/i.test(cls)) s-=3000;
-        if(r.width>500) s-=1000;
-        if(r.height>=20 && r.height<=70) s-=800;
-        if(r.top>120) s-=200;
-        s+=(el.innerText||el.textContent||'').length;
-        return s;
-      }
-
-      return score(a,ra)-score(b,rb);
-    });
-
-    return candidatos[0];
+  function limparIdsAtributos(root){
+    if(!root) return;
+    const todos=[root,...root.querySelectorAll('*')];
+    for(const el of todos){
+      el.removeAttribute('id');
+      el.removeAttribute('aria-controls');
+      el.removeAttribute('aria-labelledby');
+      el.removeAttribute('data-target');
+      el.removeAttribute('data-bs-target');
+      if(el.tagName==='A') el.removeAttribute('href');
+    }
   }
 
-  function headerReal(el){
-    if(!el) return null;
+  function substituirTextoControleSalas(root){
+    const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+    const nodes=[];
+    while(walker.nextNode()) nodes.push(walker.currentNode);
 
-    const conhecido=el.closest?.(
-      '.ui-accordion-header,.accordion-header,.panel-heading,.card-header'
-    );
-    if(conhecido) return conhecido;
-
-    let atual=el;
-    for(let i=0;i<5 && atual?.parentElement;i++){
-      const p=atual.parentElement;
-      const r=p.getBoundingClientRect();
-      const t=textoLimpo(p);
-
-      if(
-        r.width>500 &&
-        r.height>=22 &&
-        r.height<=80 &&
-        t.length<140
-      ){
-        atual=p;
-        continue;
+    let trocou=false;
+    for(const node of nodes){
+      const n=norm(node.nodeValue||'');
+      if(n.includes('NOTIFICACAO COMPULSORIA') || n.includes('NOTIFICACAO COMPULSORIAS')){
+        node.nodeValue='CONTROLE DE SALAS';
+        trocou=true;
+        break;
       }
-      break;
     }
 
-    return atual;
+    if(!trocou){
+      const alvo=[...root.querySelectorAll('*')].find(el=>{
+        const n=norm(el.textContent||'');
+        return n==='NOTIFICACAO COMPULSORIA'||n==='NOTIFICACAO COMPULSORIAS';
+      });
+      if(alvo){alvo.textContent='CONTROLE DE SALAS';trocou=true}
+    }
+
+    if(!trocou){
+      // Mantém a estrutura do cabeçalho e acrescenta o título sem destruir os ícones.
+      const span=document.createElement('span');
+      span.textContent='CONTROLE DE SALAS';
+      root.prepend(span);
+    }
   }
 
-  function blocoCompletoDoHeader(header){
-    if(!header) return null;
+  function secaoPorCampo(campoSelector,regexTitulo){
+    const campo=q(campoSelector);
+    if(!campo) return null;
 
-    // jQuery UI accordion normalmente usa: HEADER + DIV conteúdo.
-    if(
-      header.classList?.contains('ui-accordion-header') &&
-      header.nextElementSibling?.classList?.contains('ui-accordion-content')
-    ){
-      return {
-        header,
-        content: header.nextElementSibling,
-        last: header.nextElementSibling
-      };
+    let atual=campo;
+    for(let i=0;i<14 && atual && atual!==document.body;i++,atual=atual.parentElement){
+      const anterior=atual.previousElementSibling;
+      if(anterior && regexTitulo.test(norm(anterior.innerText||anterior.textContent||''))){
+        return {header:anterior,content:atual};
+      }
+
+      const cls=String(atual.className||'');
+      if(/ui-accordion-content|accordion-content|panel-body|card-body|accordion-body/i.test(cls)){
+        const h=atual.previousElementSibling;
+        if(h && regexTitulo.test(norm(h.innerText||h.textContent||''))){
+          return {header:h,content:atual};
+        }
+      }
     }
 
-    // Outros accordions/painéis: tenta usar o contêiner completo.
-    const box=header.closest?.(
-      '.accordion-item,.panel,.card,.box,.fieldset,.grupo,.secao,.section'
-    );
-    if(box) return {header,content:null,last:box};
+    return null;
+  }
 
-    return {header,content:null,last:header};
+  function secaoPorTexto(regexTitulo){
+    const candidatos=qa('h1,h2,h3,h4,h5,div,a,button,span')
+      .filter(el=>{
+        const txt=norm(el.innerText||el.textContent||'');
+        if(!regexTitulo.test(txt)) return false;
+        const r=el.getBoundingClientRect();
+        return r.width>250 && r.height>15 && r.height<90;
+      })
+      .sort((a,b)=>{
+        const ta=(a.innerText||a.textContent||'').length;
+        const tb=(b.innerText||b.textContent||'').length;
+        return ta-tb;
+      });
+
+    for(const raw of candidatos){
+      let h=raw.closest?.('.ui-accordion-header,.accordion-header,.panel-heading,.card-header')||raw;
+
+      // Se achou somente o texto interno, sobe para o elemento visual que tem um irmão conteúdo.
+      let x=h;
+      for(let i=0;i<5 && x?.parentElement;i++){
+        if(x.nextElementSibling){
+          const nr=norm(x.innerText||x.textContent||'');
+          if(regexTitulo.test(nr)) { h=x; break; }
+        }
+        const p=x.parentElement;
+        const r=p.getBoundingClientRect();
+        if(r.width>400 && r.height<90) x=p; else break;
+      }
+
+      if(h?.parentNode) return {header:h,content:h.nextElementSibling||null};
+    }
+
+    return null;
+  }
+
+  function localizarNotificacao(){
+    const rx=/NOTIFICACAO\s+COMPULSORIA(S)?/;
+    return secaoPorCampo('#prontuario_doenca_agravo_id',rx) || secaoPorTexto(rx);
   }
 
   function criarOpcaoControleSalas(){
     if(q('#om30-controle-salas-header')) return true;
 
-    const notificacaoBruta=encontrarHeaderPorTexto([
-      'NOTIFICAÇÃO COMPULSÓRIA',
-      'NOTIFICACAO COMPULSORIA',
-      'NOTIFICAÇÃO COMPULSORIAS',
-      'NOTIFICACAO COMPULSORIAS'
-    ]);
+    const secao=localizarNotificacao();
+    if(!secao?.header?.parentNode) return false;
 
-    const evolucaoBruta=encontrarHeaderPorTexto([
-      'EVOLUÇÃO CLÍNICA',
-      'EVOLUCAO CLINICA'
-    ]);
-
-    const notificacao=headerReal(notificacaoBruta);
-    const evolucao=headerReal(evolucaoBruta);
-
-    if(!notificacao && !evolucao) return false;
-
-    const header=document.createElement('div');
+    const header=secao.header.cloneNode(true);
+    limparIdsAtributos(header);
+    substituirTextoControleSalas(header);
     header.id='om30-controle-salas-header';
-    header.className='om30-cs-native-header';
-    header.innerHTML='<span>CONTROLE DE SALAS</span><span class="om30-cs-native-icon">▼</span>';
 
-    const body=document.createElement('div');
-    body.id='om30-controle-salas-body';
-    body.className='om30-cs-native-body';
+    // Remove estados ativos herdados, caso a seção nativa esteja aberta.
+    header.classList.remove(
+      'ui-state-active','ui-accordion-header-active','active','show'
+    );
 
-    // REGRA: mesma hierarquia dos outros blocos.
-    // Preferência: imediatamente ANTES de Notificação Compulsória.
-    if(notificacao){
-      notificacao.parentNode.insertBefore(header,notificacao);
-      notificacao.parentNode.insertBefore(body,notificacao);
-    } else {
-      // Fallback: logo APÓS o bloco inteiro de Evolução Clínica.
-      const bloco=blocoCompletoDoHeader(evolucao);
-      bloco.last.insertAdjacentElement('afterend',body);
-      bloco.last.insertAdjacentElement('afterend',header);
+    let body;
+    if(secao.content){
+      body=secao.content.cloneNode(false);
+      limparIdsAtributos(body);
+    }else{
+      body=document.createElement('div');
     }
+
+    body.id='om30-controle-salas-body';
+    body.innerHTML='';
+    body.style.display='none';
+    body.classList.remove('show','active','ui-accordion-content-active');
+
+    // EXATAMENTE no mesmo pai e imediatamente antes de NOTIFICAÇÃO COMPULSÓRIA.
+    secao.header.parentNode.insertBefore(header,secao.header);
+    secao.header.parentNode.insertBefore(body,secao.header);
 
     body.appendChild(panel);
     panel.classList.add('om30-inline');
     panel.style.cssText='';
 
-    header.addEventListener('click',()=>{
-      const aberto=body.classList.toggle('open');
-      header.classList.toggle('open',aberto);
-      if(aberto) setTimeout(()=>q('.search',panel)?.focus(),50);
+    header.addEventListener('click',e=>{
+      e.preventDefault();
+      e.stopPropagation();
+
+      const aberto=body.style.display!=='none';
+      body.style.display=aberto?'none':'block';
+
+      header.classList.toggle('ui-state-active',!aberto);
+      header.classList.toggle('ui-accordion-header-active',!aberto);
+      header.classList.toggle('active',!aberto);
+
+      if(!aberto) setTimeout(()=>q('.search',panel)?.focus(),50);
     });
 
-    console.info('[OM30 PA] Opção CONTROLE DE SALAS criada no mesmo nível das seções do prontuário.');
+    console.info('[OM30 PA] CONTROLE DE SALAS criado como seção nativa antes de NOTIFICAÇÃO COMPULSÓRIA.');
     return true;
   }
 
-  // Pode haver montagem tardia do formulário. Tenta imediatamente e continua
-  // tentando por alguns segundos até os blocos nativos aparecerem.
   let INLINE_MODE=criarOpcaoControleSalas();
 
   if(!INLINE_MODE){
@@ -538,9 +558,9 @@
       if(criarOpcaoControleSalas()){
         INLINE_MODE=true;
         clearInterval(timerControleSalas);
-      } else if(tentativas>=40){
+      }else if(tentativas>=120){
         clearInterval(timerControleSalas);
-        console.warn('[OM30 PA] Não foi possível localizar as seções nativas para criar CONTROLE DE SALAS.');
+        console.warn('[OM30 PA] A seção NOTIFICAÇÃO COMPULSÓRIA não apareceu no DOM em 30 segundos.');
       }
     },250);
   }
@@ -790,5 +810,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.3.2 carregada para',UNIT);
+  console.info('[OM30 PA] v1.4.0 carregada para',UNIT);
 })();

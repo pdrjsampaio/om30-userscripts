@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.5.1
+// @version      1.5.2
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V151__) return;
-  window.__OM30_PA_V151__ = true;
+  if (window.__OM30_PA_V152__) return;
+  window.__OM30_PA_V152__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -376,10 +376,62 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.5.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.5.2 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
+
+  // O painel passa a ficar dentro de #new_prontuario quando montado inline.
+  // Em HTML, <button> sem type dentro de <form> é submit por padrão.
+  // Normaliza botões atuais e futuros para impedir finalização acidental.
+  function neutralizarSubmitDoPainel(root=panel){
+    if(root?.matches?.('button')) root.type='button';
+    qa('button',root).forEach(btn=>{btn.type='button'});
+  }
+
+  neutralizarSubmitDoPainel(panel);
+
+  const observerBotoesPainel=new MutationObserver(mutations=>{
+    for(const m of mutations){
+      for(const node of m.addedNodes){
+        if(node.nodeType===Node.ELEMENT_NODE){
+          neutralizarSubmitDoPainel(node);
+        }
+      }
+    }
+  });
+  observerBotoesPainel.observe(panel,{childList:true,subtree:true});
+
+  // Defesa extra: mesmo que algum botão dinâmico apareça antes do observer
+  // normalizá-lo, seu clique nunca poderá enviar o formulário do prontuário.
+  panel.addEventListener('click',e=>{
+    const btn=e.target.closest?.('button');
+    if(btn && panel.contains(btn)){
+      btn.type='button';
+      e.preventDefault();
+    }
+  },true);
+
+  // Enter em campos de uma ferramenta embutida em um formulário também pode
+  // acionar o submit implícito do formulário. Busca mantém seu handler próprio.
+  panel.addEventListener('keydown',e=>{
+    if(e.key!=='Enter') return;
+    if(e.target.matches('textarea')) return;
+    if(e.target.matches('input,select')){
+      e.preventDefault();
+    }
+  },true);
+
+  // Última barreira: um submit cujo botão originador pertença ao nosso painel
+  // é sempre acidental e deve ser bloqueado.
+  document.addEventListener('submit',e=>{
+    const submitter=e.submitter;
+    if(submitter && panel.contains(submitter)){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      console.warn('[OM30 PA] Submit acidental do prontuário bloqueado.');
+    }
+  },true);
 
   function textoLimpo(el){
     return norm(el?.innerText||el?.textContent||'')
@@ -568,7 +620,41 @@
   window.addEventListener('resize',()=>applyPos());
   setTimeout(applyPos,0);
 
-  const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30'; document.body.appendChild(launch); if(INLINE_MODE) launch.style.display='none';
+  const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30'; launch.type='button'; document.body.appendChild(launch); if(INLINE_MODE) launch.style.display='none';
+
+  // Saúde Simples pode reconstruir o formulário após uma validação por AJAX.
+  // Se nossa seção for removida junto, recria automaticamente no novo DOM.
+  let timerRemontagem=null;
+  let remontandoControleSalas=false;
+
+  function garantirControleSalas(){
+    if(remontandoControleSalas) return;
+    if(!q('#new_prontuario')) return;
+
+    const secaoAtual=q('#om30-controle-salas-section');
+    if(secaoAtual?.isConnected){
+      INLINE_MODE=true;
+      launch.style.display='none';
+      return;
+    }
+
+    remontandoControleSalas=true;
+    try{
+      if(criarOpcaoControleSalas()){
+        INLINE_MODE=true;
+        launch.style.display='none';
+        console.info('[OM30 PA] CONTROLE DE SALAS remontado após atualização do formulário.');
+      }
+    }finally{
+      remontandoControleSalas=false;
+    }
+  }
+
+  const observerProntuario=new MutationObserver(()=>{
+    clearTimeout(timerRemontagem);
+    timerRemontagem=setTimeout(garantirControleSalas,80);
+  });
+  observerProntuario.observe(document.documentElement,{childList:true,subtree:true});
   const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer;
 
@@ -763,5 +849,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.5.1 carregada para',UNIT);
+  console.info('[OM30 PA] v1.5.2 carregada para',UNIT);
 })();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.7.0
+// @version      1.8.0
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V170__) return;
-  window.__OM30_PA_V170__ = true;
+  if (window.__OM30_PA_V180__) return;
+  window.__OM30_PA_V180__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -277,13 +277,27 @@
   async function buscar(tipo,termo){
     let xs=await buscarBruto(tipo,termo);
     xs=filtroCodigoExato(xs,termo);
-    xs=filtrarVigentesSigtap(xs,tipo);
+    // IMPORTANTE: não oculta revogados/não vigentes.
+    // Eles precisam aparecer para o usuário poder ver os procedimentos originados/substitutos.
     return xs;
   }
 
   function code(tipo,item){return clean(item.codigo||item.codigo_externo||'');}
   function name(tipo,item){return clean(tipo==='medicamento'?(item.nome||item.descricao):item.nome);}
   function key(tipo,item){return UNITKEY+'|'+tipo+'|'+(code(tipo,item)||item.id)+'|'+name(tipo,item);}
+
+  function situacaoItemSigtap(tipo,item){
+    if(tipo==='medicamento') return {ok:true,tipo:'ok',mensagem:''};
+    const cd=code(tipo,item);
+    if(item?.revogado===true){
+      return {
+        ok:false,
+        tipo:'revogado',
+        mensagem:'Procedimento revogado no Saúde Simples. Selecione para consultar os procedimentos originados/substitutos.'
+      };
+    }
+    return validarVigenciaSigtap(cd);
+  }
 
   async function validarItemAtual(tipo,item){
     if(tipo==='medicamento') return item;
@@ -405,40 +419,163 @@
   function incluirDepois(campo){
     const f=q(campo);
     if(!f) return null;
-
     const todos=qa('a,button,input[type="button"],input[type="submit"]')
       .filter(el=>/INCLUIR/.test(norm(el.innerText||el.value)));
-
-    // Prioriza o + Incluir mais próximo e posterior ao campo,
-    // mesmo quando a seção da Evolução está fechada/oculta.
-    const posteriores=todos
+    return todos
       .filter(el=>f.compareDocumentPosition(el)&Node.DOCUMENT_POSITION_FOLLOWING)
       .sort((a,b)=>{
         const pa=f.parentElement?.contains(a)?0:1;
         const pb=f.parentElement?.contains(b)?0:1;
         return pa-pb;
-      });
+      })[0]||null;
+  }
 
-    return posteriores[0]||null;
+  function botaoIncluirExame(){
+    return q('#addFieldsButton a[onclick*="add_prontuarios_exames_fields"]');
+  }
+
+  function botaoIncluirProcedimento(){
+    return q('#add_fields_lancamento_bpa_procedimentos_cids a[onclick*="add_lancamentos_bpa_fields"]');
+  }
+
+  function rowAtiva(row){
+    if(!row) return false;
+    const destroy=q('input[name$="[_destroy]"]',row);
+    const dv=clean(destroy?.value).toLowerCase();
+    if(dv==='1'||dv==='true') return false;
+    return getComputedStyle(row).display!=='none';
+  }
+
+  function codigoLinhaExame(row){
+    return digits(q('.codigo_exame',row)?.value||'');
+  }
+
+  function codigoLinhaProcedimento(row){
+    const f=q('input[name*="[procedimento_token]"]',row);
+    return digits((f?.value||'').slice(0,10));
+  }
+
+  function linhaExameComCodigo(cd){
+    const alvo=digits(cd);
+    return qa('tr.prontuario-exame-row').find(r=>rowAtiva(r)&&codigoLinhaExame(r)===alvo)||null;
+  }
+
+  function linhaProcedimentoComCodigo(cd){
+    const alvo=digits(cd);
+    return qa('tr.prontuario-lancamento-bpa-row').find(r=>rowAtiva(r)&&codigoLinhaProcedimento(r)===alvo)||null;
+  }
+
+  function tokenGet(selector){
+    try{
+      const xs=$(selector).tokenInput('get');
+      return Array.isArray(xs)?xs:(xs?[xs]:[]);
+    }catch{return []}
+  }
+
+  function tokenTemCodigo(selector,cd){
+    const alvo=digits(cd);
+    return tokenGet(selector).some(x=>{
+      const bruto=x?.codigo||x?.codigo_externo||x?.name||x?.nome||'';
+      return digits(bruto).includes(alvo);
+    });
+  }
+
+  function tokenClear(selector){
+    try{$(selector).tokenInput('clear')}catch{
+      const el=q(selector);
+      if(el) el.value='';
+    }
+  }
+
+  async function esperar(cond,timeout=2500,passo=50){
+    const inicio=Date.now();
+    while(Date.now()-inicio<timeout){
+      if(cond()) return true;
+      await sleep(passo);
+    }
+    return !!cond();
   }
 
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
   async function incluirSimples(tipo,item){
+    const cd=code(tipo,item);
+
     if(tipo==='exame'){
+      const ja=linhaExameComCodigo(cd);
+      if(ja){
+        renderSelecionados?.();
+        return {already:true,row:ja};
+      }
+
       const interno=q('#prontuario_exame_externo_false');
-      if(interno){interno.checked=true;interno.dispatchEvent(new Event('change',{bubbles:true}))}
-      tokenAdd('#prontuario_exame_token',tipo,item);
-      await sleep(180);
-      const b=incluirDepois('#prontuario_exame_token');
-      if(!b) throw new Error('Botão + Incluir de Exame não encontrado.');
-      b.click(); return;
+      if(interno){
+        interno.checked=true;
+        interno.dispatchEvent(new Event('change',{bubbles:true}));
+      }
+
+      const selector='#prontuario_exame_token';
+      const tokens=tokenGet(selector);
+      const mesmo=tokenTemCodigo(selector,cd);
+
+      if(tokens.length&&!mesmo){
+        throw new Error('Existe outro exame aguardando inclusão na seção nativa de EXAMES.');
+      }
+      if(!mesmo) tokenAdd(selector,tipo,item);
+
+      await sleep(100);
+      const b=botaoIncluirExame();
+      if(!b){
+        if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+        throw new Error('Botão nativo + Incluir de EXAMES não encontrado.');
+      }
+
+      b.click();
+
+      const entrou=await esperar(()=>!!linhaExameComCodigo(cd),2500);
+      if(!entrou){
+        if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+        throw new Error('O Saúde Simples não criou a linha do exame após o + Incluir. O token foi limpo para não ficar preso.');
+      }
+
+      if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+      renderSelecionados?.();
+      return {already:false,row:linhaExameComCodigo(cd)};
     }
-    tokenAdd('#prontuario_procedimento_token',tipo,item);
-    await sleep(180);
-    const b=incluirDepois('#prontuario_procedimento_token');
-    if(!b) throw new Error('Botão + Incluir de Procedimento não encontrado.');
+
+    const ja=linhaProcedimentoComCodigo(cd);
+    if(ja){
+      renderSelecionados?.();
+      return {already:true,row:ja};
+    }
+
+    const selector='#prontuario_procedimento_token';
+    const tokens=tokenGet(selector);
+    const mesmo=tokenTemCodigo(selector,cd);
+
+    if(tokens.length&&!mesmo){
+      throw new Error('Existe outro procedimento aguardando inclusão na seção nativa de PROCEDIMENTOS/CIDS.');
+    }
+    if(!mesmo) tokenAdd(selector,tipo,item);
+
+    await sleep(100);
+    const b=botaoIncluirProcedimento();
+    if(!b){
+      if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+      throw new Error('Botão nativo + Incluir de PROCEDIMENTOS/CIDS não encontrado.');
+    }
+
     b.click();
+
+    const entrou=await esperar(()=>!!linhaProcedimentoComCodigo(cd),2500);
+    if(!entrou){
+      if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+      throw new Error('O Saúde Simples não criou a linha do procedimento após o + Incluir. O token foi limpo para não ficar preso.');
+    }
+
+    if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+    renderSelecionados?.();
+    return {already:false,row:linhaProcedimentoComCodigo(cd)};
   }
 
   function vias(){
@@ -449,16 +586,44 @@
   async function incluirMedicamento(item,via,pos,obs){
     if(!via) throw new Error('Selecione a via de administração.');
     if(!clean(pos)) throw new Error('Informe a posologia.');
+
+    const antes=qa('tr.prontuario-medicamento-row').filter(rowAtiva).length;
     tokenAdd('#prontuario_medicamento_token','medicamento',item);
     await sleep(100);
+
     const v=q('#prontuario_tipo_uso_medicamento_id'),p=q('#prontuario_posologia_medicamento'),o=q('#prontuario_observacao_medicamento');
-    v.value=via; v.dispatchEvent(new Event('change',{bubbles:true}));
-    p.value=pos; p.dispatchEvent(new Event('input',{bubbles:true})); p.dispatchEvent(new Event('change',{bubbles:true}));
-    if(o){o.value=obs||'';o.dispatchEvent(new Event('input',{bubbles:true}))}
+    if(!v||!p) throw new Error('Campos nativos de medicamento não encontrados.');
+
+    v.value=via;
+    v.dispatchEvent(new Event('change',{bubbles:true}));
+    p.value=pos;
+    p.dispatchEvent(new Event('input',{bubbles:true}));
+    p.dispatchEvent(new Event('change',{bubbles:true}));
+    if(o){
+      o.value=obs||'';
+      o.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+
     await sleep(120);
-    const b=q('a.incluir_prontuario_medicamento')||incluirDepois('#prontuario_medicamento_token');
-    if(!b) throw new Error('Botão + Incluir de Medicamento não encontrado.');
+    const b=q('#prontuario-medicamento-container a.incluir_prontuario_medicamento')||q('a.incluir_prontuario_medicamento');
+    if(!b){
+      tokenClear('#prontuario_medicamento_token');
+      throw new Error('Botão nativo + Incluir de Medicamento não encontrado.');
+    }
+
     b.click();
+
+    const entrou=await esperar(
+      ()=>qa('tr.prontuario-medicamento-row').filter(rowAtiva).length>antes,
+      2500
+    );
+    if(!entrou){
+      tokenClear('#prontuario_medicamento_token');
+      throw new Error('O Saúde Simples não criou a linha do medicamento. O token foi limpo para não ficar preso.');
+    }
+
+    tokenClear('#prontuario_medicamento_token');
+    renderSelecionados?.();
   }
 
   const css=document.createElement('style');
@@ -511,6 +676,14 @@
   .code{font:700 8px Consolas,monospace;color:#5c7582;white-space:nowrap}.nm{font-weight:650;line-height:1.15;color:#324852}
   .status{margin-top:5px;min-height:12px;color:#8a989f;font-size:8px}.status.ok{color:#4a7a5b}.status.err{color:#b14a4a}
   .empty{padding:7px;text-align:center;color:#9ca8ad;font-size:8.5px}
+  .selected-list{display:grid;grid-template-columns:1fr;gap:3px}
+  .selected-item{display:flex;align-items:center;gap:7px;border:1px solid #dce8de;background:#f7fbf8;border-radius:8px;padding:6px 7px}
+  .selected-mark{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:#e1f1e5;color:#39704a;font-size:10px;font-weight:900;flex:none}
+  .selected-main{min-width:0;flex:1}.selected-code{font:700 8px Consolas,monospace;color:#71837a}.selected-name{font-size:9px;font-weight:700;color:#30493a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tbl tr.revoked td{background:#fff8f7}
+  .revoked-note{margin-top:2px;color:#b23f3f;font-size:8px;font-weight:750;line-height:1.25}
+  .revoked-pill{display:inline-block;border:1px solid #efc6c2;background:#fff0ee;color:#a83c35;border-radius:999px;padding:2px 5px;font-size:7px;font-weight:800;margin-top:3px}
+  .use[disabled]{opacity:.55;cursor:default;background:#788a93}
   .med{border:1px solid #e5eaed;background:#fbfcfd;border-radius:9px;padding:7px}.medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}
   .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:8px;font-weight:700;margin-bottom:3px;color:#697b84}
   .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}
@@ -571,7 +744,7 @@
   </div>
   <div class="obody">
     <div class="searchrow"><input class="search" placeholder="Buscar radiografia..."><button class="searchbtn" title="Pesquisar">Pesquisar</button></div>
-    <div class="rx sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
+    <div class="rx sect"></div><div class="sel sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
   </div>
   <div class="settings">
     <div class="shead"><div class="stxt">Favoritos da unidade</div><button class="sclose">×</button></div>
@@ -585,7 +758,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.7.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.8.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -864,7 +1037,7 @@
     timerRemontagem=setTimeout(garantirControleSalas,80);
   });
   observerProntuario.observe(document.documentElement,{childList:true,subtree:true});
-  const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
+  const E={s:q('.search',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer;
 
   function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}
@@ -874,6 +1047,81 @@
     if(t==='enfermagem') return 'procedimento';
     return t;
   }
+
+  function parseCodigoNome(v){
+    const s=clean(v);
+    const m=s.match(/^(\d{10})\s*-\s*(.+)$/);
+    return m?{codigo:m[1],nome:clean(m[2])}:{codigo:'',nome:s};
+  }
+
+  function selecionadosNativos(t=tipo){
+    if(t==='raiox'||t==='exames'){
+      return qa('tr.prontuario-exame-row')
+        .filter(rowAtiva)
+        .filter(r=>t==='raiox'?r.classList.contains('radiografia'):!r.classList.contains('radiografia'))
+        .map(r=>({
+          codigo:codigoLinhaExame(r),
+          nome:clean(q('input[name*="[exame_token_nome]"]',r)?.value||'')
+        }))
+        .filter(x=>x.codigo||x.nome);
+    }
+
+    if(t==='enfermagem'){
+      return qa('tr.prontuario-lancamento-bpa-row')
+        .filter(rowAtiva)
+        .filter(r=>r.classList.contains('procedimento-enfermagem'))
+        .map(r=>parseCodigoNome(q('input[name*="[procedimento_token]"]',r)?.value||''))
+        .filter(x=>x.codigo||x.nome);
+    }
+
+    if(t==='medicacao'){
+      return qa('tr.prontuario-medicamento-row')
+        .filter(rowAtiva)
+        .map(r=>{
+          const candidatos=qa('input[type="text"],textarea',r)
+            .filter(el=>!/posologia|observacao|quantidade|via/i.test((el.name||'')+' '+(el.id||'')))
+            .map(el=>clean(el.value))
+            .filter(Boolean);
+          const nome=candidatos.find(v=>/\D/.test(v)&&v.length>2)||clean(r.innerText||'');
+          return {codigo:'',nome};
+        })
+        .filter(x=>x.nome);
+    }
+
+    return [];
+  }
+
+  function codigoSelecionado(t,codigo){
+    const cd=digits(codigo);
+    return !!cd&&selecionadosNativos(t).some(x=>digits(x.codigo)===cd);
+  }
+
+  function renderSelecionados(){
+    if(!E?.sel) return;
+    const xs=selecionadosNativos(tipo);
+    E.sel.innerHTML=
+      '<div class="stitle"><span>Selecionados neste atendimento</span><span class="muted">'+xs.length+'</span></div>'+
+      (xs.length
+        ?'<div class="selected-list">'+xs.map(x=>
+          '<div class="selected-item">'+
+            '<div class="selected-mark">✓</div>'+
+            '<div class="selected-main">'+
+              (x.codigo?'<div class="selected-code">'+esc(x.codigo)+'</div>':'')+
+              '<div class="selected-name">'+esc(x.nome||'Item selecionado')+'</div>'+
+            '</div>'+
+          '</div>'
+        ).join('')+'</div>'
+        :'<div class="empty">Nenhum item selecionado nesta categoria.</div>');
+  }
+
+  let timerSelecionados=null;
+  const observerSelecionados=new MutationObserver(muts=>{
+    const relevantes=muts.some(m=>!panel.contains(m.target));
+    if(!relevantes) return;
+    clearTimeout(timerSelecionados);
+    timerSelecionados=setTimeout(renderSelecionados,100);
+  });
+  observerSelecionados.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style']});
   function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||[]);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
 
   async function resolveDef(d){
@@ -920,10 +1168,11 @@
       }
     }));
 
-    const titulo=tituloSugestoesSubstituicao(sugestoes)||'Procedimentos atuais sugeridos:';
+    const detalhe=tituloSugestoesSubstituicao(sugestoes)||'Escolha o procedimento atual correspondente ao atendimento:';
 
     E.r.innerHTML=
-      '<div class="stitle"><span>'+esc(titulo)+'</span><span class="muted">SIGTAP '+esc(competencia)+'</span></div>'+
+      '<div class="stitle"><span>Procedimentos originados/substitutos após a revogação</span><span class="muted">SIGTAP '+esc(competencia)+'</span></div>'+
+      '<div class="muted" style="margin-bottom:5px">'+esc(detalhe)+'</div>'+
       '<div class="wrap"><table class="tbl"><thead><tr><th>Código SIGTAP</th><th>Procedimento atual</th><th></th></tr></thead><tbody>'+
       resolvidos.map((r,i)=>
         '<tr data-i="'+i+'">'+
@@ -932,7 +1181,7 @@
           (r.s.contexto?'<div class="muted">'+esc(r.s.contexto)+'</div>':'')+
           (!r.item?'<div class="muted">Não disponível para a ocupação/tela atual.</div>':'')+
           '</td>'+
-          '<td>'+(r.item?'<button class="use sigtap-use">Usar + incluir</button>':'')+'</td>'+
+          '<td>'+(r.item?'<button class="use sigtap-use">Selecionar</button>':'')+'</td>'+
         '</tr>'
       ).join('')+
       '</tbody></table></div>';
@@ -956,8 +1205,8 @@
       }
 
       const cd=code(nt,item);
-      const regra=validarVigenciaSigtap(cd);
-      if(!regra.ok){
+      const situacao=situacaoItemSigtap(nt,item);
+      if(!situacao.ok){
         await mostrarSugestoesSigtap(nt,cd,name(nt,item));
         return;
       }
@@ -965,9 +1214,15 @@
       status('Validando '+cd+' na SIGTAP e na ocupação/tela atual...');
       const validado=await validarItemAtual(nt,item);
 
-      status('Incluindo '+name(nt,validado)+'...');
-      await incluirSimples(nt,validado);
-      status(name(nt,validado)+' incluído. O destino da sala continua sendo definido pelo Saúde Simples.','ok');
+      status('Selecionando '+name(nt,validado)+'...');
+      const r=await incluirSimples(nt,validado);
+      renderSelecionados();
+
+      if(r?.already){
+        status(name(nt,validado)+' já está selecionado neste atendimento.','ok');
+      }else{
+        status(name(nt,validado)+' selecionado no prontuário. O destino da sala continua sendo definido pelo Saúde Simples.','ok');
+      }
     }catch(e){
       console.error(e);
       status(e.message||String(e),'err');
@@ -1004,7 +1259,7 @@
       const d=it.data;
       const cd=it.kind==='base'?(d.code||''):code(nt,d);
       const nm=it.kind==='base'?d.name:name(nt,d);
-      return '<div class="fav" data-i="'+i+'"><button class="star '+(it.kind==='local'?'on':'')+'">'+(it.kind==='local'?'★':'☆')+'</button><div class="fmain"><div class="fcode">'+esc(cd)+'</div><div class="fname">'+esc(nm)+'</div></div><button class="fuse">Usar</button></div>'
+      return '<div class="fav" data-i="'+i+'"><button class="star '+(it.kind==='local'?'on':'')+'">'+(it.kind==='local'?'★':'☆')+'</button><div class="fmain"><div class="fcode">'+esc(cd)+'</div><div class="fname">'+esc(nm)+'</div></div><button class="fuse">Selecionar</button></div>'
     }).join('')+'</div>';
 
     E.lf.innerHTML='';
@@ -1040,11 +1295,50 @@
   }
 
   function renderTable(xs){
-    if(!xs.length){E.r.innerHTML='<div class="stitle">Tabela SIGTAP / resultados</div><div class="wrap"><div class="empty">Nenhum resultado.</div></div>';return}
+    if(!xs.length){
+      E.r.innerHTML='<div class="stitle">Tabela SIGTAP / resultados</div><div class="wrap"><div class="empty">Nenhum resultado.</div></div>';
+      return;
+    }
+
     const nt=tipoNativo();
     const med=nt==='medicamento';
-    E.r.innerHTML='<div class="stitle"><span>'+(med?'Medicamentos disponíveis no local':'Tabela SIGTAP '+SIGTAP_COMPETENCIA.slice(4,6)+'/'+SIGTAP_COMPETENCIA.slice(0,4)+' — resultados')+'</span><span class="muted">'+xs.length+' resultado(s)</span></div><div class="wrap"><table class="tbl"><thead><tr><th>★</th><th>'+(med?'Código':'Código SIGTAP')+'</th><th>'+(med?'Medicamento':'Procedimento')+'</th><th></th></tr></thead><tbody>'+xs.map((x,i)=>'<tr data-i="'+i+'"><td><button class="star '+(isFav(nt,x)?'on':'')+'">'+(isFav(nt,x)?'★':'☆')+'</button></td><td class="code">'+esc(code(tipo,x))+'</td><td><div class="nm">'+esc(name(tipo,x))+'</div></td><td><button class="use">'+(med?'Selecionar':'Usar + incluir')+'</button></td></tr>').join('')+'</tbody></table></div>';
-    qa('tbody tr',E.r).forEach(tr=>{const it=xs[+tr.dataset.i];const st=q('.star',tr);st.onclick=()=>{const on=toggleFav(nt,it);st.textContent=on?'★':'☆';st.classList.toggle('on',on);renderFavs()};q('.use',tr).onclick=()=>usar(tipo,it)});
+    const competencia=SIGTAP_COMPETENCIA.slice(4,6)+'/'+SIGTAP_COMPETENCIA.slice(0,4);
+
+    E.r.innerHTML=
+      '<div class="stitle"><span>'+(med?'Medicamentos disponíveis no local':'Tabela SIGTAP '+competencia+' — resultados')+'</span><span class="muted">'+xs.length+' resultado(s)</span></div>'+
+      '<div class="wrap"><table class="tbl"><thead><tr><th>★</th><th>'+(med?'Código':'Código SIGTAP')+'</th><th>'+(med?'Medicamento':'Procedimento')+'</th><th></th></tr></thead><tbody>'+
+      xs.map((x,i)=>{
+        const sit=med?{ok:true}:situacaoItemSigtap(nt,x);
+        const rev=!sit.ok;
+        const selecionado=!med&&codigoSelecionado(tipo,code(nt,x));
+
+        return '<tr data-i="'+i+'" class="'+(rev?'revoked':'')+'">'+
+          '<td><button class="star '+(isFav(nt,x)?'on':'')+'">'+(isFav(nt,x)?'★':'☆')+'</button></td>'+
+          '<td class="code">'+esc(code(nt,x))+'</td>'+
+          '<td><div class="nm">'+esc(name(nt,x))+'</div>'+
+            (rev?'<div class="revoked-pill">REVOGADO / NÃO VIGENTE</div><div class="revoked-note">Selecione para ver os procedimentos originados/substitutos.</div>':'')+
+          '</td>'+
+          '<td><button class="use" '+(selecionado?'disabled':'')+'>'+(selecionado?'Selecionado':'Selecionar')+'</button></td>'+
+        '</tr>';
+      }).join('')+
+      '</tbody></table></div>';
+
+    qa('tbody tr',E.r).forEach(tr=>{
+      const it=xs[+tr.dataset.i];
+      const st=q('.star',tr);
+      const use=q('.use',tr);
+
+      st.onclick=()=>{
+        const on=toggleFav(nt,it);
+        st.textContent=on?'★':'☆';
+        st.classList.toggle('on',on);
+        renderFavs();
+      };
+
+      if(!use.disabled){
+        use.onclick=()=>usar(tipo,it);
+      }
+    });
   }
 
   function renderRX(){
@@ -1100,61 +1394,117 @@
   }
 
   function composer(item){
-    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido agora"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
-    q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};
+    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Digite a posologia prescrita"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
+    q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';renderSelecionados();status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};
     q('.mpos',E.mc)?.focus();
   }
 
   async function pesquisar(forcado=null,grupo=false){
     const termo=clean(forcado??E.s.value);
-    if(tipo==='raiox'&&!termo){renderRX();E.r.innerHTML='';status('');return}
-    if(termo.length<2){status('Digite pelo menos 2 caracteres.');return}
+
+    if(!termo){
+      E.r.innerHTML='';
+      E.mc.innerHTML='';
+      status('');
+      if(tipo==='raiox') renderRX();
+      else E.rx.innerHTML='';
+      return;
+    }
+
+    if(termo.length<2){
+      E.r.innerHTML='';
+      status('Digite pelo menos 2 caracteres.');
+      return;
+    }
 
     const nt=tipoNativo();
     const n=norm(termo);
 
     if(tipo==='raiox'&&!grupo&&['RADIOGRAFIA','RX','RAIO X','RAIO-X'].includes(n)){
-      renderRX();E.r.innerHTML='';status('');return;
+      renderRX();
+      E.r.innerHTML='';
+      status('');
+      return;
     }
 
     E.rx.innerHTML='';
 
     try{
       const cod=digits(termo);
-
-      // Código SIGTAP completo: valida PRIMEIRO na mesma base oficial
-      // utilizada pelo outro OM30 - Procedimentos.
-      if((nt==='exame'||nt==='procedimento')&&cod.length===10){
-        const regra=validarVigenciaSigtap(cod);
-        if(!regra.ok){
-          await mostrarSugestoesSigtap(nt,cod);
-          return;
-        }
-      }
-
       status('Pesquisando “'+traduz(nt,termo)+'”...');
+
       let xs=await buscar(nt,termo);
 
       if(tipo==='raiox') xs=xs.filter(x=>/RADIOGRAFIA/i.test(name(nt,x)));
       if(tipo==='exames') xs=xs.filter(x=>!/RADIOGRAFIA/i.test(name(nt,x)));
 
+      // Se o código antigo já não vier mais na API, ainda assim o exibe como
+      // não vigente para permitir abrir os procedimentos originados/substitutos.
+      if(
+        cod.length===10 &&
+        !xs.length &&
+        (nt==='exame'||nt==='procedimento') &&
+        !validarVigenciaSigtap(cod).ok
+      ){
+        xs=[{codigo:cod,nome:'PROCEDIMENTO REVOGADO / NÃO VIGENTE',revogado:true,__om30_sintetico:true}];
+      }
+
       renderTable(xs);
 
-      if(cod.length===10&&!xs.length&&(nt==='exame'||nt==='procedimento')){
-        status('Código '+cod+' está vigente na SIGTAP, mas não está disponível para a ocupação/tela atual.','err');
+      const revogados=xs.filter(x=>nt!=='medicamento'&&!situacaoItemSigtap(nt,x).ok).length;
+      if(xs.length){
+        status(
+          xs.length+' resultado(s).'+
+          (revogados?' '+revogados+' revogado(s)/não vigente(s) mantido(s) visível(is).':'')
+        );
       }else{
-        status(xs.length+' resultado(s) vigente(s) na SIGTAP.');
+        status('Nenhum resultado.');
       }
     }catch(e){
       console.error(e);
+      E.r.innerHTML='';
       status(e.message||String(e),'err');
     }
   }
 
-  qa('.tab',panel).forEach(b=>b.onclick=()=>{qa('.tab',panel).forEach(x=>x.classList.remove('on'));b.classList.add('on');tipo=b.dataset.t;E.s.value='';E.r.innerHTML='';E.rx.innerHTML='';E.mc.innerHTML='';renderFavs();updatePlaceholder();if(tipo==='raiox'){renderRX()}status('');E.s.focus()});
+  qa('.tab',panel).forEach(b=>b.onclick=()=>{
+    qa('.tab',panel).forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    tipo=b.dataset.t;
+    E.s.value='';
+    E.r.innerHTML='';
+    E.rx.innerHTML='';
+    E.mc.innerHTML='';
+    renderSelecionados();
+    renderFavs();
+    updatePlaceholder();
+    if(tipo==='raiox') renderRX();
+    status('');
+    E.s.focus();
+  });
   q('.searchbtn',panel).onclick=()=>pesquisar();
   E.s.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pesquisar()}};
-  E.s.oninput=()=>{clearTimeout(timer);if(E.s.value.trim().length>=3)timer=setTimeout(()=>pesquisar(),350)};
+  E.s.oninput=()=>{
+    clearTimeout(timer);
+    const v=E.s.value.trim();
+
+    if(!v){
+      E.r.innerHTML='';
+      E.mc.innerHTML='';
+      status('');
+      if(tipo==='raiox') renderRX();
+      else E.rx.innerHTML='';
+      return;
+    }
+
+    if(v.length<3){
+      E.r.innerHTML='';
+      status('');
+      return;
+    }
+
+    timer=setTimeout(()=>pesquisar(),350);
+  };
   q('.og',panel).onclick=openSettings;
   q('.omin',panel).onclick=()=>{if(INLINE_MODE)return;panel.style.display='none';launch.style.display='block'};
   q('.sclose',panel).onclick=closeSettings;
@@ -1169,5 +1519,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.7.0 carregada para',UNIT);
+  console.info('[OM30 PA] v1.8.0 carregada para',UNIT);
 })();

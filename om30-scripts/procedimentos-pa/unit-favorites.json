@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "updated_at": "2026-09-20",
+  "units": {
+    "UNIDADE TESTE GUARUJA": [
+      {
+        "type": "exame",
+        "code": "0202020380",
+        "name": "HEMOGRAMA COMPLETO",
+        "query": "HEMOGRAMA"
+      },
+      {
+        "type": "exame",
+        "code": "0204030153",
+        "name": "RADIOGRAFIA DE TORAX (PA E PERFIL)",
+        "query": "RADIOGRAFIA TORAX"
+      },
+      {
+        "type": "procedimento",
+        "code": "0214010015",
+        "name": "GLICEMIA CAPILAR",
+        "query": "GLICEMIA"
+      },
+      {
+        "type": "procedimento",
+        "code": "0301100039",
+        "name": "AFERIÇÃO DE PRESSÃO ARTERIAL",
+        "query": "PRESSAO"
+      },
+      {
+        "type": "procedimento",
+        "code": "0301060100",
+        "name": "ATENDIMENTO ORTOPÉDICO COM IMOBILIZAÇÃO PROVISÓRIA",
+        "query": "0301060100"
+      },
+      {
+        "type": "medicamento",
+        "code": "1035",
+        "name": "DIPIRONA 500 MG CP",
+        "query": "DIPIRONA 500 MG"
+      }
+    ]
+  }
+}

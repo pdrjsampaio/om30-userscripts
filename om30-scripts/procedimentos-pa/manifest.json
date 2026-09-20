@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "name": "OM30 - Procedimentos PA",
-  "version": "0.4.1",
-  "format": "plain-js",
-  "app_url": "https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos-pa/app.js",
-  "published_at": "2026-09-20",
-  "note": "Local-first cached app with bundled fallback; remote update applies on next page."
-}

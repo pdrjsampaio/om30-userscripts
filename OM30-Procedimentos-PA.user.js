@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.5.3
+// @version      1.6.0
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V153__) return;
-  window.__OM30_PA_V153__ = true;
+  if (window.__OM30_PA_V160__) return;
+  window.__OM30_PA_V160__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -33,16 +33,40 @@
     return qa('a.nav-link,.navbar a,.navbar-nav a').map(x=>clean(x.innerText)).find(t=>/\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA';
   }
 
-  function occupation(){
-    for(const el of qa('input[name*="profissional_ocupacao_id"],input[id*="profissional_ocupacao_id"]')){
-      const v=clean(el.value),m=v.match(/-(\d+)$/);
-      if(m) return m[1];
-      if(/^\d+$/.test(v)) return v;
-    }
+  function occupationValue(v){
+    const s=clean(v);
+    if(!s) return null;
+    const m=s.match(/-(\d+)$/);
+    if(m) return m[1];
+    if(/^\d+$/.test(s)) return s;
     return null;
   }
 
-  const UNIT=unitName(), UNITKEY=norm(UNIT), OCC=occupation();
+  function occupation(){
+    // Campo real do bloco PROCEDIMENTOS/CIDS desta tela.
+    const direto=q('#prontuario_ocupacao_id');
+    const diretoId=occupationValue(direto?.value);
+    if(diretoId) return diretoId;
+
+    // Fallbacks para registros já adicionados / outras variações do prontuário.
+    const seletores=[
+      'input[name*="[ocupacao_id]"]',
+      'select[name*="[ocupacao_id]"]',
+      'input[name*="profissional_ocupacao_id"]',
+      'input[id*="profissional_ocupacao_id"]'
+    ];
+
+    for(const sel of seletores){
+      for(const el of qa(sel)){
+        const id=occupationValue(el.value);
+        if(id) return id;
+      }
+    }
+
+    return null;
+  }
+
+  const UNIT=unitName(), UNITKEY=norm(UNIT);
 
   const aliases={
     exame:{
@@ -77,6 +101,31 @@
     ]
   };
 
+  // Regras de negócio confirmadas para o fluxo de Pronto Atendimento.
+  // Não basta existir na SIGTAP: alguns códigos não pertencem a este fluxo.
+  const bloqueadosPA=new Map([
+    ['0214010082','TESTE RÁPIDO PARA SÍFILIS EM GESTANTE']
+  ]);
+
+  function motivoBloqueioPA(item){
+    const cd=code('',item);
+    return bloqueadosPA.get(cd)||'';
+  }
+
+  function filtrarBloqueadosPA(xs){
+    return (Array.isArray(xs)?xs:[]).filter(x=>!motivoBloqueioPA(x));
+  }
+
+  function codigoDigitado(v){
+    return clean(v).replace(/\D/g,'');
+  }
+
+  function filtroCodigoExato(xs,termo){
+    const n=codigoDigitado(termo);
+    if(n.length!==10) return xs;
+    return xs.filter(x=>codigoDigitado(code('',x))===n);
+  }
+
   function traduz(tipo,txt){
     const n=norm(txt),map=aliases[tipo]||{};
     if(map[n]) return map[n];
@@ -92,18 +141,60 @@
 
   async function buscar(tipo,termo){
     const t=traduz(tipo,termo);
-    if(tipo==='exame') return api('/procedimentos/search.json?exame=1&q='+encodeURIComponent(t));
-    if(tipo==='procedimento'){
-      if(!OCC) throw new Error('Ocupação profissional não identificada.');
-      return api('/procedimentos/procedimentos_ocupacoes.json?'+new URLSearchParams({ocupacao_id:OCC,q:t}));
+    let xs=[];
+
+    if(tipo==='exame'){
+      xs=await api('/procedimentos/search.json?exame=1&q='+encodeURIComponent(t));
+    }else if(tipo==='procedimento'){
+      const occ=occupation();
+      if(!occ) throw new Error('Ocupação profissional não identificada no prontuário.');
+      xs=await api('/procedimentos/procedimentos_ocupacoes.json?'+new URLSearchParams({ocupacao_id:occ,q:t}));
+    }else if(tipo==='medicamento'){
+      xs=await api('/estoque/produtos/aplicacao_local?q='+encodeURIComponent(t));
     }
-    if(tipo==='medicamento') return api('/estoque/produtos/aplicacao_local?q='+encodeURIComponent(t));
-    return [];
+
+    xs=Array.isArray(xs)?xs:[];
+    xs=filtroCodigoExato(xs,termo);
+
+    if(tipo==='exame'||tipo==='procedimento'){
+      xs=filtrarBloqueadosPA(xs);
+    }
+
+    return xs;
   }
 
   function code(tipo,item){return clean(item.codigo||item.codigo_externo||'');}
   function name(tipo,item){return clean(tipo==='medicamento'?(item.nome||item.descricao):item.nome);}
   function key(tipo,item){return UNITKEY+'|'+tipo+'|'+(code(tipo,item)||item.id)+'|'+name(tipo,item);}
+
+  async function validarItemAtual(tipo,item){
+    if(tipo==='medicamento') return item;
+
+    const cd=code(tipo,item);
+    if(!cd) throw new Error('Procedimento sem código SIGTAP.');
+
+    const bloqueio=motivoBloqueioPA(item);
+    if(bloqueio){
+      throw new Error(cd+' - '+bloqueio+' está bloqueado para o fluxo de Pronto Atendimento.');
+    }
+
+    // Reconsulta a fonte nativa no momento do uso. Favorito/cache nunca é confiado sozinho.
+    const xs=await buscar(tipo,cd);
+    const exato=xs.find(x=>codigoDigitado(code(tipo,x))===codigoDigitado(cd));
+
+    if(!exato){
+      if(tipo==='procedimento'){
+        throw new Error('Procedimento '+cd+' não está habilitado para a ocupação atual deste prontuário.');
+      }
+      throw new Error('Procedimento '+cd+' não foi validado na tabela disponível para este prontuário.');
+    }
+
+    if(exato.revogado===true){
+      throw new Error('Procedimento '+cd+' está revogado.');
+    }
+
+    return exato;
+  }
 
   function favs(){try{return JSON.parse(localStorage.getItem(STORE)||'{}')}catch{return {}}}
   function setFavs(v){localStorage.setItem(STORE,JSON.stringify(v))}
@@ -377,7 +468,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.5.3 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.6.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -669,18 +760,36 @@
   function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||[]);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
 
   async function resolveDef(d){
-    const xs=await buscar(d.type,d.query||d.code||d.name);
-    return xs.find(x=>norm(code(d.type,x))===norm(d.code))||xs[0]||null;
+    const termo=d.code||d.query||d.name;
+    const xs=await buscar(d.type,termo);
+
+    if(d.code){
+      return xs.find(x=>codigoDigitado(code(d.type,x))===codigoDigitado(d.code))||null;
+    }
+
+    // Sem código não escolhe automaticamente um resultado aproximado.
+    return xs.length===1?xs[0]:null;
   }
 
   async function usar(tipo,item){
     try{
       const nt=tipoNativo(tipo);
-      if(nt==='medicamento'){composer(item);status('Medicamento selecionado. Preencha via e posologia.');return}
-      status('Incluindo '+name(nt,item)+'...');
-      await incluirSimples(nt,item);
-      status(name(nt,item)+' incluído. O destino da sala continua sendo definido pelo Saúde Simples.','ok');
-    }catch(e){console.error(e);status(e.message||String(e),'err')}
+      if(nt==='medicamento'){
+        composer(item);
+        status('Medicamento selecionado. Preencha via e posologia.');
+        return;
+      }
+
+      status('Validando '+code(nt,item)+' na tabela e na ocupação atual...');
+      const validado=await validarItemAtual(nt,item);
+
+      status('Incluindo '+name(nt,validado)+'...');
+      await incluirSimples(nt,validado);
+      status(name(nt,validado)+' incluído. O destino da sala continua sendo definido pelo Saúde Simples.','ok');
+    }catch(e){
+      console.error(e);
+      status(e.message||String(e),'err');
+    }
   }
 
   function renderFavs(){
@@ -827,8 +936,19 @@
       let xs=await buscar(nt,termo);
       if(tipo==='raiox') xs=xs.filter(x=>/RADIOGRAFIA/i.test(name(nt,x)));
       if(tipo==='exames') xs=xs.filter(x=>!/RADIOGRAFIA/i.test(name(nt,x)));
+
       renderTable(xs);
-      status(xs.length+' resultado(s).')
+
+      const cod=codigoDigitado(termo);
+      if(cod.length===10 && !xs.length){
+        if(bloqueadosPA.has(cod)){
+          status(cod+' - '+bloqueadosPA.get(cod)+' está bloqueado para o fluxo de Pronto Atendimento.','err');
+        }else{
+          status('Código '+cod+' não foi validado para este contexto do prontuário.','err');
+        }
+      }else{
+        status(xs.length+' resultado(s).');
+      }
     }catch(e){console.error(e);status(e.message||String(e),'err')}
   }
 
@@ -850,5 +970,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.5.3 carregada para',UNIT);
+  console.info('[OM30 PA] v1.6.0 carregada para',UNIT);
 })();

@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.0.0
-// @description  Carregador automático do Controle de Salas - Procedimentos.
+// @version      1.1.0
+// @description  Controle de Salas - Procedimentos com cache local e atualização segura.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
 // @match        https://guarujahomolog.saudesimples.net/prontuarios/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
 // @run-at       document-idle
@@ -15,10 +17,45 @@
 (() => {
   'use strict';
 
-  const APP_URL =
-    'https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos-pa/app.js';
+  const LOADER_VERSION = '1.1.0';
+  const FALLBACK_VERSION = '0.3.1';
+  const FALLBACK_APP = "(() => {\n  'use strict';\n\n  if (window.__OM30_PA_V031__) return;\n  window.__OM30_PA_V031__ = true;\n\n  const $ = window.jQuery;\n  const q = (s,r=document) => r.querySelector(s);\n  const qa = (s,r=document) => [...r.querySelectorAll(s)];\n  const clean = v => String(v ?? '').replace(/\\s+/g,' ').trim();\n  const norm = v => clean(v).normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase();\n  const esc = v => String(v ?? '').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',\"'\":'&#39;','\"':'&quot;'}[c]));\n\n  if (!q('#prontuario_exame_token') || !q('#prontuario_procedimento_token') || !q('#prontuario_medicamento_token')) return;\n\n  const STORE = 'OM30_PA_FAVORITOS_PC_V1';\n  const STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2';\n  const STORE_POS = 'OM30_PA_POSICAO_V1';\n\n  function unitName(){\n    return qa('a.nav-link,.navbar a,.navbar-nav a').map(x=>clean(x.innerText)).find(t=>/\\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\\b|PA\\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA';\n  }\n\n  function occupation(){\n    for(const el of qa('input[name*=\"profissional_ocupacao_id\"],input[id*=\"profissional_ocupacao_id\"]')){\n      const v=clean(el.value),m=v.match(/-(\\d+)$/);\n      if(m) return m[1];\n      if(/^\\d+$/.test(v)) return v;\n    }\n    return null;\n  }\n\n  const UNIT=unitName(), UNITKEY=norm(UNIT), OCC=occupation();\n\n  const aliases={\n    exame:{\n      'RX':'RADIOGRAFIA','RAIO X':'RADIOGRAFIA','RAIO-X':'RADIOGRAFIA',\n      'RX TORAX':'RADIOGRAFIA TORAX','RAIO X TORAX':'RADIOGRAFIA TORAX',\n      'HC':'HEMOGRAMA COMPLETO','SANGUE':'HEMOGRAMA'\n    },\n    procedimento:{\n      'HGT':'GLICEMIA','DEXTRO':'GLICEMIA','PA':'PRESSAO ARTERIAL',\n      'PRESSAO':'PRESSAO ARTERIAL','AFERIR PRESSAO':'PRESSAO ARTERIAL'\n    }\n  };\n\n  const gruposRX=[\n    ['Tórax','RADIOGRAFIA TORAX'],\n    ['Cabeça / Crânio','RADIOGRAFIA CRANIO'],\n    ['Face','RADIOGRAFIA FACE'],\n    ['Coluna','RADIOGRAFIA COLUNA'],\n    ['Membro superior','RADIOGRAFIA MAO'],\n    ['Membro inferior','RADIOGRAFIA PE'],\n    ['Abdome','RADIOGRAFIA ABDOME'],\n    ['Bacia / Pelve / Quadril','RADIOGRAFIA BACIA']\n  ];\n\n  const favoritosUnidade={\n    'UNIDADE TESTE GUARUJA':[\n      {type:'exame',code:'0202020380',name:'HEMOGRAMA COMPLETO',query:'HEMOGRAMA'},\n      {type:'exame',code:'0204030153',name:'RADIOGRAFIA DE TORAX (PA E PERFIL)',query:'RADIOGRAFIA TORAX'},\n      {type:'procedimento',code:'0214010015',name:'GLICEMIA CAPILAR',query:'GLICEMIA'},\n      {type:'procedimento',code:'0301100039',name:'AFERIÇÃO DE PRESSÃO ARTERIAL',query:'PRESSAO'},\n      {type:'medicamento',code:'1035',name:'DIPIRONA 500 MG CP',query:'DIPIRONA 500 MG'}\n    ]\n  };\n\n  function traduz(tipo,txt){\n    const n=norm(txt),map=aliases[tipo]||{};\n    if(map[n]) return map[n];\n    const k=Object.keys(map).sort((a,b)=>b.length-a.length).find(x=>n.includes(x));\n    return k?map[k]:txt;\n  }\n\n  async function api(url){\n    const r=await fetch(url,{credentials:'same-origin',headers:{Accept:'application/json, text/javascript, */*; q=0.01','X-Requested-With':'XMLHttpRequest'}});\n    if(!r.ok) throw new Error('HTTP '+r.status);\n    return await r.json();\n  }\n\n  async function buscar(tipo,termo){\n    const t=traduz(tipo,termo);\n    if(tipo==='exame') return api('/procedimentos/search.json?exame=1&q='+encodeURIComponent(t));\n    if(tipo==='procedimento'){\n      if(!OCC) throw new Error('Ocupação profissional não identificada.');\n      return api('/procedimentos/procedimentos_ocupacoes.json?'+new URLSearchParams({ocupacao_id:OCC,q:t}));\n    }\n    if(tipo==='medicamento') return api('/estoque/produtos/aplicacao_local?q='+encodeURIComponent(t));\n    return [];\n  }\n\n  function code(tipo,item){return clean(item.codigo||item.codigo_externo||'');}\n  function name(tipo,item){return clean(tipo==='medicamento'?(item.nome||item.descricao):item.nome);}\n  function key(tipo,item){return UNITKEY+'|'+tipo+'|'+(code(tipo,item)||item.id)+'|'+name(tipo,item);}\n\n  function favs(){try{return JSON.parse(localStorage.getItem(STORE)||'{}')}catch{return {}}}\n  function setFavs(v){localStorage.setItem(STORE,JSON.stringify(v))}\n  function isFav(tipo,item){return !!favs()[key(tipo,item)]}\n  function toggleFav(tipo,item){\n    const f=favs(),k=key(tipo,item);\n    if(f[k]) delete f[k]; else f[k]={unit:UNITKEY,type:tipo,item};\n    setFavs(f); return !!f[k];\n  }\n  function favLocal(tipo){return Object.values(favs()).filter(x=>x.unit===UNITKEY&&x.type===tipo).map(x=>x.item)}\n\n  function unitStore(){try{return JSON.parse(localStorage.getItem(STORE_UNIT)||'{}')}catch{return {}}}\n  function setUnitStore(v){localStorage.setItem(STORE_UNIT,JSON.stringify(v))}\n  function unitCustom(){return unitStore()[UNITKEY]||[]}\n  function saveUnitCustom(list){const s=unitStore();s[UNITKEY]=list;setUnitStore(s)}\n\n  function logicalFromText(v){\n    const n=norm(v);\n    if(/RAIO|RADIOGRAF|\\\\bRX\\\\b/.test(n)) return 'raiox';\n    if(/MEDIC/.test(n)) return 'medicacao';\n    if(/ENFERMAG|PROCED/.test(n)) return 'enfermagem';\n    if(/EXAME|COLETA|LABORAT/.test(n)) return 'exames';\n    return '';\n  }\n\n  function nativeFromLogical(g){\n    if(g==='raiox'||g==='exames') return 'exame';\n    if(g==='medicacao') return 'medicamento';\n    if(g==='enfermagem') return 'procedimento';\n    return '';\n  }\n\n  function parseUnitTxt(text,hint=''){\n    let grupo=logicalFromText(hint);\n    const out=[];\n    for(const raw of String(text||'').split(/\\\\r?\\\\n/)){\n      const line=clean(raw);\n      if(!line||/^#|^\\\\/\\\\//.test(line)) continue;\n      const heading=line.replace(/^\\\\[|\\\\]$/g,'');\n      const hg=logicalFromText(heading);\n      if(/^\\\\[.*\\\\]$/.test(line)||/^(RAIO X|RX|RADIOGRAFIA|EXAMES?|MEDICA(CAO|ÇÃO)|ENFERMAGEM|PROCEDIMENTOS?)$/i.test(line)){\n        if(hg) grupo=hg;\n        continue;\n      }\n\n      let parts=line.split(/\\\\s*[|;\\\\t]\\\\s*/).filter(Boolean);\n      let lineGrupo='';\n      if(parts.length>=3){\n        const g=logicalFromText(parts[0]);\n        if(g){lineGrupo=g;parts.shift()}\n      }\n      const g=lineGrupo||grupo||logicalFromText(line);\n      if(!g) continue;\n\n      let codigo='',nome='';\n      if(parts.length>=2){codigo=clean(parts[0]);nome=clean(parts.slice(1).join(' | '))}\n      else {\n        const m=line.match(/^(\\\\d{3,14})\\\\s*[-–—:]\\\\s*(.+)$/);\n        if(m){codigo=m[1];nome=clean(m[2])}\n        else {nome=line}\n      }\n      if(!nome) continue;\n      out.push({type:nativeFromLogical(g),group:g,code:codigo,name:nome,query:codigo||nome});\n    }\n    return out;\n  }\n\n  function mergeUnitCustom(items){\n    const map=new Map();\n    for(const x of [...unitCustom(),...items]){\n      const k=(x.group||'')+'|'+(x.code||'')+'|'+norm(x.name||'');\n      map.set(k,x);\n    }\n    const list=[...map.values()];\n    saveUnitCustom(list);\n    return list;\n  }\n\n  function visible(el){\n    if(!el) return false;\n    const s=getComputedStyle(el),r=el.getBoundingClientRect();\n    return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;\n  }\n\n  function tokenAdd(selector,tipo,item){\n    if(!$||typeof $(selector).tokenInput!=='function') throw new Error('TokenInput não disponível.');\n    const nm=tipo==='medicamento'?name(tipo,item):code(tipo,item)+' - '+name(tipo,item);\n    $(selector).tokenInput('add',{...item,id:item.id,name:nm});\n  }\n\n  function incluirDepois(campo){\n    const f=q(campo);\n    if(!f) return null;\n\n    const todos=qa('a,button,input[type=\"button\"],input[type=\"submit\"]')\n      .filter(el=>/INCLUIR/.test(norm(el.innerText||el.value)));\n\n    // Prioriza o + Incluir mais próximo e posterior ao campo,\n    // mesmo quando a seção da Evolução está fechada/oculta.\n    const posteriores=todos\n      .filter(el=>f.compareDocumentPosition(el)&Node.DOCUMENT_POSITION_FOLLOWING)\n      .sort((a,b)=>{\n        const pa=f.parentElement?.contains(a)?0:1;\n        const pb=f.parentElement?.contains(b)?0:1;\n        return pa-pb;\n      });\n\n    return posteriores[0]||null;\n  }\n\n  const sleep=ms=>new Promise(r=>setTimeout(r,ms));\n\n  async function incluirSimples(tipo,item){\n    if(tipo==='exame'){\n      const interno=q('#prontuario_exame_externo_false');\n      if(interno){interno.checked=true;interno.dispatchEvent(new Event('change',{bubbles:true}))}\n      tokenAdd('#prontuario_exame_token',tipo,item);\n      await sleep(180);\n      const b=incluirDepois('#prontuario_exame_token');\n      if(!b) throw new Error('Botão + Incluir de Exame não encontrado.');\n      b.click(); return;\n    }\n    tokenAdd('#prontuario_procedimento_token',tipo,item);\n    await sleep(180);\n    const b=incluirDepois('#prontuario_procedimento_token');\n    if(!b) throw new Error('Botão + Incluir de Procedimento não encontrado.');\n    b.click();\n  }\n\n  function vias(){\n    const s=q('#prontuario_tipo_uso_medicamento_id');\n    return s?[...s.options].filter(o=>clean(o.value)&&clean(o.textContent)).map(o=>({v:o.value,t:clean(o.textContent)})):[];\n  }\n\n  async function incluirMedicamento(item,via,pos,obs){\n    if(!via) throw new Error('Selecione a via de administração.');\n    if(!clean(pos)) throw new Error('Informe a posologia.');\n    tokenAdd('#prontuario_medicamento_token','medicamento',item);\n    await sleep(100);\n    const v=q('#prontuario_tipo_uso_medicamento_id'),p=q('#prontuario_posologia_medicamento'),o=q('#prontuario_observacao_medicamento');\n    v.value=via; v.dispatchEvent(new Event('change',{bubbles:true}));\n    p.value=pos; p.dispatchEvent(new Event('input',{bubbles:true})); p.dispatchEvent(new Event('change',{bubbles:true}));\n    if(o){o.value=obs||'';o.dispatchEvent(new Event('input',{bubbles:true}))}\n    await sleep(120);\n    const b=q('a.incluir_prontuario_medicamento')||incluirDepois('#prontuario_medicamento_token');\n    if(!b) throw new Error('Botão + Incluir de Medicamento não encontrado.');\n    b.click();\n  }\n\n  const css=document.createElement('style');\n  css.textContent=`\n  #om30pa{\n    position:fixed;right:14px;bottom:14px;width:370px;max-width:calc(100vw - 28px);\n    max-height:66vh;background:#fff;border:1px solid #e8ecef;border-radius:16px;\n    box-shadow:0 16px 44px rgba(26,45,58,.17);z-index:2147483646;\n    font-family:\"Segoe UI\",Arial,sans-serif;color:#263942;overflow:hidden\n  }\n  #om30pa *{box-sizing:border-box}\n  .oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;align-items:center;justify-content:space-between}\n  .ot{font-size:13px;font-weight:750;letter-spacing:.05px}\n  .ha{display:flex;align-items:center;gap:2px}\n  .oh{cursor:move;user-select:none}.og,.omin,.ox{width:27px;height:27px;border:0;background:transparent;color:#fff;border-radius:7px;cursor:pointer;display:grid;place-items:center;padding:0}.og,.omin,.ox{cursor:pointer}\n  .og{font-size:15px}.omin{font-size:14px}.ox{font-size:18px;line-height:1}.og:hover,.omin:hover,.ox:hover{background:rgba(255,255,255,.12)}\n  .oinfo{padding:5px 10px;background:#fbfcfd;border-bottom:1px solid #edf1f3;font-size:9px;color:#7b8a92}\n  .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;padding:5px 6px;background:#f6f8f9;border-bottom:1px solid #edf1f3}\n  .tab{border:0;background:transparent;color:#718089;padding:7px 3px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:700;transition:.15s}\n  .tab:hover{background:#edf2f5;color:#3d5968}\n  .tab.on{background:#fff;color:#123f68;box-shadow:0 1px 5px rgba(32,55,70,.11)}\n  .obody{padding:8px;overflow:auto;max-height:calc(66vh - 93px)}\n  .searchrow{display:flex;align-items:center;background:#f4f6f7;border:1px solid transparent;border-radius:999px;padding:3px 4px 3px 11px;transition:.15s}\n  .searchrow:focus-within{background:#fff;border-color:#cbd8df;box-shadow:0 0 0 3px rgba(18,63,104,.07)}\n  .search{flex:1;border:0;background:transparent;outline:none;padding:6px 2px;font-size:10.5px;color:#2d434f;min-width:0}\n  .search::placeholder{color:#99a5ab}\n  .searchbtn{width:29px;height:29px;border:0;border-radius:50%;background:#123f68;color:#fff;cursor:pointer;font-size:0;padding:0;position:relative;flex:none}\n  .searchbtn:before{content:\"⌕\";font-size:17px;line-height:29px}\n  .sect{margin-top:7px}\n  .stitle{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:9px;font-weight:750;color:#50636d;margin-bottom:4px}\n  .muted{font-weight:500;color:#a0aaaf;font-size:8px}\n  .rxpick{position:relative}\n  .rxtrigger{width:100%;border:1px solid #e3e8eb;background:#fff;border-radius:10px;padding:8px 9px;display:flex;align-items:center;gap:7px;cursor:pointer;text-align:left;color:#405660}\n  .rxtrigger:hover{background:#fafcfd}\n  .rxlabel{font-size:8px;color:#93a0a6;text-transform:uppercase;letter-spacing:.4px}\n  .rxvalue{flex:1;font-size:10px;font-weight:700;color:#2e4856}\n  .rxchev{font-size:12px;color:#91a0a7}\n  .rxmenu{display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:50;background:#fff;border:1px solid #e2e8eb;border-radius:10px;padding:4px;box-shadow:0 10px 25px rgba(30,50,63,.16)}\n  .rxmenu.open{display:grid;grid-template-columns:1fr 1fr;gap:2px}\n  .rxopt{border:0;background:transparent;border-radius:7px;padding:7px 8px;text-align:left;font-size:9px;color:#405b69;cursor:pointer}\n  .rxopt:hover{background:#f0f5f7;color:#123f68}\n  .grid{display:grid;grid-template-columns:1fr;gap:3px}\n  .fav{display:flex;align-items:center;gap:5px;border:1px solid #e8ecef;border-radius:9px;padding:5px 6px;background:#fff}\n  .fmain{flex:1;min-width:0}.fcode{font:700 8px Consolas,monospace;color:#8b989e}.fname{font-size:9.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#304750}\n  .star{border:0;background:transparent;font-size:15px;color:#c2c9cd;cursor:pointer;padding:0 2px}.star.on{color:#d5a021}\n  .fuse,.use{border:0;background:#eef4f7;color:#285970;border-radius:6px;padding:4px 7px;font-size:8.5px;font-weight:700;cursor:pointer;white-space:nowrap}\n  .use{background:#123f68;color:#fff}\n  .wrap{border:1px solid #e6ebee;border-radius:9px;overflow:auto;max-height:205px}\n  .tbl{width:100%;border-collapse:collapse;font-size:9px}.tbl th{background:#f7f9fa;padding:5px;text-align:left;position:sticky;top:0;color:#7e8c93;font-size:8px}.tbl td{padding:5px;border-top:1px solid #eef1f3}\n  .code{font:700 8px Consolas,monospace;color:#5c7582;white-space:nowrap}.nm{font-weight:650;line-height:1.15;color:#324852}\n  .status{margin-top:5px;min-height:12px;color:#8a989f;font-size:8px}.status.ok{color:#4a7a5b}.status.err{color:#b14a4a}\n  .empty{padding:7px;text-align:center;color:#9ca8ad;font-size:8.5px}\n  .med{border:1px solid #e5eaed;background:#fbfcfd;border-radius:9px;padding:7px}.medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}\n  .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:8px;font-weight:700;margin-bottom:3px;color:#697b84}\n  .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px \"Segoe UI\";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}\n  .mactions{text-align:right;margin-top:6px}.mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}\n  .settings{display:none;position:absolute;inset:0;background:#fff;z-index:100;overflow:auto}.settings.open{display:block}\n  .shead{position:sticky;top:0;background:#fff;border-bottom:1px solid #edf1f3;padding:10px 11px;display:flex;align-items:center;justify-content:space-between;z-index:2}\n  .stxt{font-size:12px;font-weight:750;color:#2d4653}.sclose{border:0;background:#f2f5f7;color:#506671;width:27px;height:27px;border-radius:7px;cursor:pointer;font-size:16px}\n  .sbody{padding:10px}.sunit{font-size:9px;color:#85939a;margin-bottom:8px}.snote{font-size:8.5px;color:#7b8b93;line-height:1.35;margin-bottom:8px}\n  .sactions{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}.sbtn{border:1px solid #dce4e8;background:#fff;color:#34586a;border-radius:8px;padding:6px 8px;font-size:9px;font-weight:700;cursor:pointer}.sbtn.primary{background:#123f68;color:#fff;border-color:#123f68}.sbtn.danger{color:#a34d4d}\n  .stextarea{width:100%;min-height:155px;border:1px solid #dfe5e8;border-radius:9px;padding:8px;font:9px/1.4 Consolas,monospace;outline:none;resize:vertical}.stextarea:focus{border-color:#b9cbd4;box-shadow:0 0 0 3px rgba(18,63,104,.06)}\n  .sfoot{font-size:8px;color:#9aa5aa;margin-top:7px}\n  .launch{position:fixed;right:10px;bottom:18px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;width:46px;height:46px;font-size:9px;font-weight:800;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.22)}\n  @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}\n  `;\n  document.head.appendChild(css);\n\n  const panel=document.createElement('div');\n  panel.id='om30pa';\n  panel.innerHTML=`\n  <div class=\"oh\">\n    <div class=\"ot\">Controle de Salas - Procedimentos</div>\n    <div class=\"ha\"><button class=\"og\" title=\"Configurar favoritos da unidade\">⚙</button><button class=\"omin\" title=\"Minimizar\">—</button><button class=\"ox\" title=\"Fechar\">×</button></div>\n  </div>\n  <div class=\"oinfo\"><b>${esc(UNIT)}</b></div>\n  <div class=\"tabs\">\n    <button class=\"tab on\" data-t=\"raiox\" title=\"Radiografias e RX\">Raio X</button>\n    <button class=\"tab\" data-t=\"exames\" title=\"Coletas e exames internos\">Exames</button>\n    <button class=\"tab\" data-t=\"medicacao\" title=\"Medicação aplicada no local\">Medicação</button>\n    <button class=\"tab\" data-t=\"enfermagem\" title=\"Procedimentos de enfermagem\">Enfermagem</button>\n  </div>\n  <div class=\"obody\">\n    <div class=\"searchrow\"><input class=\"search\" placeholder=\"Buscar radiografia...\"><button class=\"searchbtn\" title=\"Pesquisar\">Pesquisar</button></div>\n    <div class=\"rx sect\"></div><div class=\"uf sect\"></div><div class=\"lf sect\"></div><div class=\"medc sect\"></div><div class=\"res sect\"></div><div class=\"status\"></div>\n  </div>\n  <div class=\"settings\">\n    <div class=\"shead\"><div class=\"stxt\">Favoritos da unidade</div><button class=\"sclose\">×</button></div>\n    <div class=\"sbody\">\n      <div class=\"sunit\">${esc(UNIT)}</div>\n      <div class=\"snote\">Importe um ou mais arquivos .txt ou cole a lista abaixo. Pode separar por [RAIO X], [EXAMES], [MEDICAÇÃO] e [ENFERMAGEM].</div>\n      <div class=\"sactions\">\n        <button class=\"sbtn primary simpor\">Importar TXT</button>\n        <button class=\"sbtn sadd\">Adicionar texto</button>\n        <button class=\"sbtn danger sclear\">Limpar importados</button>\n        <input class=\"sfile\" type=\"file\" accept=\".txt,text/plain\" multiple hidden>\n      </div>\n      <textarea class=\"stextarea\" placeholder=\"[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR\"></textarea>\n      <div class=\"sfoot\">v0.3.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>\n    </div>\n  </div>`;\n  document.body.appendChild(panel);\n\n  function loadPos(){\n    try{return JSON.parse(localStorage.getItem(STORE_POS)||'null')}catch{return null}\n  }\n  function savePos(){\n    const r=panel.getBoundingClientRect();\n    localStorage.setItem(STORE_POS,JSON.stringify({left:Math.round(r.left),top:Math.round(r.top)}));\n  }\n  function applyPos(){\n    const p=loadPos();\n    if(!p) return;\n    const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);\n    const maxT=Math.max(0,window.innerHeight-panel.offsetHeight);\n    panel.style.left=Math.min(Math.max(0,p.left),maxL)+'px';\n    panel.style.top=Math.min(Math.max(0,p.top),maxT)+'px';\n    panel.style.right='auto';\n    panel.style.bottom='auto';\n  }\n\n  let dragging=false,dragDX=0,dragDY=0;\n  const head=q('.oh',panel);\n  head.addEventListener('mousedown',e=>{\n    if(e.target.closest('button')) return;\n    const r=panel.getBoundingClientRect();\n    dragging=true;\n    dragDX=e.clientX-r.left;\n    dragDY=e.clientY-r.top;\n    panel.style.left=r.left+'px';\n    panel.style.top=r.top+'px';\n    panel.style.right='auto';\n    panel.style.bottom='auto';\n    e.preventDefault();\n  });\n  document.addEventListener('mousemove',e=>{\n    if(!dragging) return;\n    const w=panel.offsetWidth,h=panel.offsetHeight;\n    const left=Math.min(Math.max(0,e.clientX-dragDX),Math.max(0,window.innerWidth-w));\n    const top=Math.min(Math.max(0,e.clientY-dragDY),Math.max(0,window.innerHeight-h));\n    panel.style.left=left+'px';\n    panel.style.top=top+'px';\n  });\n  document.addEventListener('mouseup',()=>{\n    if(!dragging) return;\n    dragging=false;\n    savePos();\n  });\n  window.addEventListener('resize',()=>applyPos());\n  setTimeout(applyPos,0);\n\n  const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30 PA'; document.body.appendChild(launch);\n  const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};\n  let tipo='raiox',timer;\n\n  function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}\n  function tipoNativo(t=tipo){\n    if(t==='raiox'||t==='exames') return 'exame';\n    if(t==='medicacao') return 'medicamento';\n    if(t==='enfermagem') return 'procedimento';\n    return t;\n  }\n  function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||[]);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}\n\n  async function resolveDef(d){\n    const xs=await buscar(d.type,d.query||d.code||d.name);\n    return xs.find(x=>norm(code(d.type,x))===norm(d.code))||xs[0]||null;\n  }\n\n  async function usar(tipo,item){\n    try{\n      const nt=tipoNativo(tipo);\n      if(nt==='medicamento'){composer(item);status('Medicamento selecionado. Preencha via e posologia.');return}\n      status('Incluindo '+name(nt,item)+'...');\n      await incluirSimples(nt,item);\n      status(name(nt,item)+' incluído. O destino da sala continua sendo definido pelo Saúde Simples.','ok');\n    }catch(e){console.error(e);status(e.message||String(e),'err')}\n  }\n\n  function renderFavs(){\n    const nt=tipoNativo();\n    const base=defs();\n    const locais=favLocal(nt)\n      .filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(name(nt,x)))\n      .filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(name(nt,x)));\n\n    const itens=[];\n    const seen=new Set();\n\n    base.forEach(d=>{\n      const k=(d.code||'')+'|'+d.name;\n      if(!seen.has(k)){seen.add(k);itens.push({kind:'base',data:d})}\n    });\n\n    locais.forEach(x=>{\n      const k=code(nt,x)+'|'+name(nt,x);\n      if(!seen.has(k)){seen.add(k);itens.push({kind:'local',data:x})}\n    });\n\n    if(!itens.length){\n      E.uf.innerHTML='';\n      E.lf.innerHTML='';\n      return;\n    }\n\n    E.uf.innerHTML='<div class=\"stitle\"><span>Favoritos</span></div><div class=\"grid\">'+itens.map((it,i)=>{\n      const d=it.data;\n      const cd=it.kind==='base'?(d.code||''):code(nt,d);\n      const nm=it.kind==='base'?d.name:name(nt,d);\n      return '<div class=\"fav\" data-i=\"'+i+'\"><button class=\"star '+(it.kind==='local'?'on':'')+'\">'+(it.kind==='local'?'★':'☆')+'</button><div class=\"fmain\"><div class=\"fcode\">'+esc(cd)+'</div><div class=\"fname\">'+esc(nm)+'</div></div><button class=\"fuse\">Usar</button></div>'\n    }).join('')+'</div>';\n\n    E.lf.innerHTML='';\n\n    qa('.fav',E.uf).forEach(c=>{\n      const it=itens[+c.dataset.i];\n      const star=q('.star',c);\n      const btn=q('.fuse',c);\n\n      if(it.kind==='base'){\n        star.onclick=async()=>{\n          try{\n            const resolved=await resolveDef(it.data);\n            if(!resolved) throw new Error('Não localizado.');\n            const on=toggleFav(nt,resolved);\n            star.textContent=on?'★':'☆';\n            star.classList.toggle('on',on);\n          }catch(e){status(e.message,'err')}\n        };\n        btn.onclick=async()=>{\n          try{\n            status('Localizando '+it.data.name+'...');\n            const resolved=await resolveDef(it.data);\n            if(!resolved) throw new Error('Não localizado.');\n            usar(tipo,resolved);\n          }catch(e){status(e.message,'err')}\n        };\n      } else {\n        star.onclick=()=>{toggleFav(nt,it.data);renderFavs()};\n        btn.onclick=()=>usar(tipo,it.data);\n      }\n    });\n  }\n\n  function renderTable(xs){\n    if(!xs.length){E.r.innerHTML='<div class=\"stitle\">Tabela SIGTAP / resultados</div><div class=\"wrap\"><div class=\"empty\">Nenhum resultado.</div></div>';return}\n    const nt=tipoNativo();\n    const med=nt==='medicamento';\n    E.r.innerHTML='<div class=\"stitle\"><span>'+(med?'Medicamentos disponíveis no local':'Tabela SIGTAP — resultados')+'</span><span class=\"muted\">'+xs.length+' resultado(s)</span></div><div class=\"wrap\"><table class=\"tbl\"><thead><tr><th>★</th><th>'+(med?'Código':'Código SIGTAP')+'</th><th>'+(med?'Medicamento':'Procedimento')+'</th><th></th></tr></thead><tbody>'+xs.map((x,i)=>'<tr data-i=\"'+i+'\"><td><button class=\"star '+(isFav(nt,x)?'on':'')+'\">'+(isFav(nt,x)?'★':'☆')+'</button></td><td class=\"code\">'+esc(code(tipo,x))+'</td><td><div class=\"nm\">'+esc(name(tipo,x))+'</div></td><td><button class=\"use\">'+(med?'Selecionar':'Usar + incluir')+'</button></td></tr>').join('')+'</tbody></table></div>';\n    qa('tbody tr',E.r).forEach(tr=>{const it=xs[+tr.dataset.i];const st=q('.star',tr);st.onclick=()=>{const on=toggleFav(nt,it);st.textContent=on?'★':'☆';st.classList.toggle('on',on);renderFavs()};q('.use',tr).onclick=()=>usar(tipo,it)});\n  }\n\n  function renderRX(){\n    E.rx.innerHTML='<div class=\"rxpick\"><button class=\"rxtrigger\"><span class=\"rxlabel\">Região</span><span class=\"rxvalue\">Escolher região</span><span class=\"rxchev\">⌄</span></button><div class=\"rxmenu\">'+gruposRX.map((g,i)=>'<button class=\"rxopt\" data-i=\"'+i+'\">'+esc(g[0])+'</button>').join('')+'</div></div>';\n    const menu=q('.rxmenu',E.rx),trigger=q('.rxtrigger',E.rx),value=q('.rxvalue',E.rx);\n    trigger.onclick=()=>menu.classList.toggle('open');\n    qa('.rxopt',E.rx).forEach(b=>b.onclick=()=>{\n      const g=gruposRX[+b.dataset.i];\n      value.textContent=g[0];\n      menu.classList.remove('open');\n      pesquisar(g[1],true);\n    });\n  }\n\n  function updatePlaceholder(){\n    const map={raiox:'Buscar radiografia...',exames:'Buscar exame ou código SIGTAP...',medicacao:'Buscar medicamento...',enfermagem:'Buscar procedimento ou código...'};\n    E.s.placeholder=map[tipo]||'Pesquisar...';\n  }\n\n  function openSettings(){E.settings.classList.add('open')}\n  function closeSettings(){E.settings.classList.remove('open')}\n\n  async function importFiles(files){\n    const all=[];\n    for(const file of files){\n      const txt=await file.text();\n      all.push(...parseUnitTxt(txt,file.name));\n    }\n    if(!all.length){status('Nenhum favorito reconhecido nos TXT.','err');return}\n    const list=mergeUnitCustom(all);\n    renderFavs();\n    status(list.length+' favorito(s) configurado(s) para a unidade.','ok');\n    closeSettings();\n  }\n\n  function addTextFavorites(){\n    const list=parseUnitTxt(E.sta.value,'');\n    if(!list.length){status('Não consegui reconhecer itens no texto.','err');return}\n    const merged=mergeUnitCustom(list);\n    E.sta.value='';\n    renderFavs();\n    status(merged.length+' favorito(s) configurado(s) para a unidade.','ok');\n    closeSettings();\n  }\n\n  function clearUnitFavorites(){\n    const s=unitStore();\n    delete s[UNITKEY];\n    setUnitStore(s);\n    renderFavs();\n    status('Lista importada da unidade removida.','ok');\n    closeSettings();\n  }\n\n  function composer(item){\n    E.mc.innerHTML='<div class=\"stitle\"><span>Preparar medicamento</span><span class=\"muted\">preencha e inclua direto no prontuário</span></div><div class=\"med\"><div class=\"medname\">'+esc(name('medicamento',item))+'</div><div class=\"mgrid\"><div class=\"field\"><label>Via de administração *</label><select class=\"mvia\"><option value=\"\">Selecione...</option>'+vias().map(x=>'<option value=\"'+esc(x.v)+'\">'+esc(x.t)+'</option>').join('')+'</select></div><div class=\"field\"><label>Posologia *</label><input class=\"mpos\" placeholder=\"Ex.: 1 comprimido agora\"></div><div class=\"field\" style=\"grid-column:1/-1\"><label>Observação</label><textarea class=\"mobs\" placeholder=\"Opcional\"></textarea></div></div><div class=\"mactions\"><button class=\"btn madd\">Incluir medicamento</button></div></div>';\n    q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};\n    q('.mpos',E.mc)?.focus();\n  }\n\n  async function pesquisar(forcado=null,grupo=false){\n    const termo=clean(forcado??E.s.value);\n    if(tipo==='raiox'&&!termo){renderRX();E.r.innerHTML='';status('');return}\n    if(termo.length<2){status('Digite pelo menos 2 caracteres.');return}\n    const nt=tipoNativo();\n    const n=norm(termo);\n    if(tipo==='raiox'&&!grupo&&['RADIOGRAFIA','RX','RAIO X','RAIO-X'].includes(n)){renderRX();E.r.innerHTML='';status('');return}\n    E.rx.innerHTML='';\n    try{\n      status('Pesquisando “'+traduz(nt,termo)+'”...');\n      let xs=await buscar(nt,termo);\n      if(tipo==='raiox') xs=xs.filter(x=>/RADIOGRAFIA/i.test(name(nt,x)));\n      if(tipo==='exames') xs=xs.filter(x=>!/RADIOGRAFIA/i.test(name(nt,x)));\n      renderTable(xs);\n      status(xs.length+' resultado(s).')\n    }catch(e){console.error(e);status(e.message||String(e),'err')}\n  }\n\n  qa('.tab',panel).forEach(b=>b.onclick=()=>{qa('.tab',panel).forEach(x=>x.classList.remove('on'));b.classList.add('on');tipo=b.dataset.t;E.s.value='';E.r.innerHTML='';E.rx.innerHTML='';E.mc.innerHTML='';renderFavs();updatePlaceholder();if(tipo==='raiox'){renderRX()}status('');E.s.focus()});\n  q('.searchbtn',panel).onclick=()=>pesquisar();\n  E.s.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pesquisar()}};\n  E.s.oninput=()=>{clearTimeout(timer);if(E.s.value.trim().length>=3)timer=setTimeout(()=>pesquisar(),350)};\n  q('.og',panel).onclick=openSettings;\n  q('.omin',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};\n  q('.sclose',panel).onclick=closeSettings;\n  q('.simpor',panel).onclick=()=>E.file.click();\n  E.file.onchange=async()=>{await importFiles([...E.file.files]);E.file.value=''};\n  q('.sadd',panel).onclick=addTextFavorites;\n  q('.sclear',panel).onclick=clearUnitFavorites;\n  q('.ox',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};\n  launch.onclick=()=>{launch.style.display='none';panel.style.display='block';applyPos();E.s.focus()};\n\n  renderFavs();\n  renderRX();\n  updatePlaceholder();\n  status('');\n  console.info('[OM30 PA] v0.3.1 carregada para',UNIT);\n})();";
 
-  function executar(codigo) {
+  const MANIFEST_URL =
+    'https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/om30-scripts/procedimentos-pa/manifest.json';
+
+  const STORE = {
+    CODE: 'OM30_PA_CACHED_APP_CODE',
+    VERSION: 'OM30_PA_CACHED_APP_VERSION',
+    LAST_CHECK: 'OM30_PA_LAST_UPDATE_CHECK'
+  };
+
+  const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+  if (globalThis.__OM30_PA_SAFE_LOADER_STARTED__) return;
+  globalThis.__OM30_PA_SAFE_LOADER_STARTED__ = true;
+
+  function requestText(url, timeout = 5000) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        timeout,
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        onload: r => {
+          if (r.status >= 200 && r.status < 300) resolve(r.responseText);
+          else reject(new Error('HTTP ' + r.status));
+        },
+        ontimeout: () => reject(new Error('Timeout')),
+        onerror: () => reject(new Error('Falha de rede'))
+      });
+    });
+  }
+
+  function executar(codigo, versao, origem) {
     const fn = new Function(
       'window',
       'document',
@@ -31,7 +68,7 @@
       'URLSearchParams',
       'setTimeout',
       'clearTimeout',
-      codigo + '\n//# sourceURL=OM30-Procedimentos-PA-remote.js'
+      codigo + '\n//# sourceURL=OM30-Procedimentos-PA-app.js'
     );
 
     fn(
@@ -47,29 +84,117 @@
       unsafeWindow.setTimeout.bind(unsafeWindow),
       unsafeWindow.clearTimeout.bind(unsafeWindow)
     );
+
+    console.info(
+      '[OM30 PA] App v' + versao + ' carregado de ' + origem +
+      ' (loader ' + LOADER_VERSION + ').'
+    );
   }
 
-  GM_xmlhttpRequest({
-    method: 'GET',
-    url: APP_URL + '?_=' + Date.now(),
-    headers: {
-      'Cache-Control': 'no-cache'
-    },
-    onload(response) {
-      if (response.status < 200 || response.status >= 300) {
-        console.error('[OM30 PA] Falha ao carregar atualização:', response.status);
-        return;
+  function validarSintaxe(codigo) {
+    new Function(
+      'window',
+      'document',
+      'localStorage',
+      'fetch',
+      'getComputedStyle',
+      'Event',
+      'Node',
+      'CSS',
+      'URLSearchParams',
+      'setTimeout',
+      'clearTimeout',
+      codigo
+    );
+  }
+
+  function parseVersion(v) {
+    return String(v || '0.0.0')
+      .split('.')
+      .map(n => parseInt(n, 10) || 0)
+      .slice(0, 3);
+  }
+
+  function versionMaior(a, b) {
+    const A = parseVersion(a);
+    const B = parseVersion(b);
+    for (let i = 0; i < 3; i++) {
+      if ((A[i] || 0) > (B[i] || 0)) return true;
+      if ((A[i] || 0) < (B[i] || 0)) return false;
+    }
+    return false;
+  }
+
+  async function atualizarEmSegundoPlano(versaoEmUso) {
+    const agora = Date.now();
+    const ultima = await GM_getValue(STORE.LAST_CHECK, 0);
+
+    if (agora - Number(ultima || 0) < CHECK_INTERVAL_MS) return;
+    await GM_setValue(STORE.LAST_CHECK, agora);
+
+    try {
+      const manifest = JSON.parse(
+        await requestText(MANIFEST_URL + '?t=' + agora, 4500)
+      );
+
+      if (
+        !manifest ||
+        manifest.schema !== 1 ||
+        manifest.format !== 'plain-js' ||
+        !manifest.version ||
+        !manifest.app_url
+      ) {
+        throw new Error('Manifesto inválido');
       }
 
-      try {
-        executar(response.responseText);
-        console.info('[OM30 PA] Aplicação carregada diretamente do GitHub.');
-      } catch (erro) {
-        console.error('[OM30 PA] Erro ao executar aplicação remota:', erro);
-      }
-    },
-    onerror(erro) {
-      console.error('[OM30 PA] Não foi possível acessar o GitHub.', erro);
+      if (!versionMaior(manifest.version, versaoEmUso)) return;
+
+      const codigoNovo = await requestText(
+        manifest.app_url + '?v=' + encodeURIComponent(manifest.version),
+        6500
+      );
+
+      validarSintaxe(codigoNovo);
+
+      await GM_setValue(STORE.CODE, codigoNovo);
+      await GM_setValue(STORE.VERSION, manifest.version);
+
+      console.info(
+        '[OM30 PA] Atualização v' + manifest.version +
+        ' salva localmente. Entrará na próxima página.'
+      );
+    } catch (err) {
+      console.warn(
+        '[OM30 PA] Atualização remota indisponível. Mantendo versão local.',
+        err
+      );
     }
-  });
+  }
+
+  async function boot() {
+    let codigo = await GM_getValue(STORE.CODE, '');
+    let versao = await GM_getValue(STORE.VERSION, '');
+
+    if (codigo) {
+      try {
+        validarSintaxe(codigo);
+        executar(codigo, versao || 'cache', 'cache local');
+        atualizarEmSegundoPlano(versao || FALLBACK_VERSION);
+        return;
+      } catch (err) {
+        console.warn('[OM30 PA] Cache local inválido. Usando versão embutida.', err);
+      }
+    }
+
+    // Funciona mesmo sem GitHub/rede: há uma cópia estável dentro do Tampermonkey.
+    executar(FALLBACK_APP, FALLBACK_VERSION, 'fallback embutido');
+
+    // Salva a cópia estável localmente para os próximos acessos.
+    await GM_setValue(STORE.CODE, FALLBACK_APP);
+    await GM_setValue(STORE.VERSION, FALLBACK_VERSION);
+
+    atualizarEmSegundoPlano(FALLBACK_VERSION);
+  }
+
+  boot();
 })();

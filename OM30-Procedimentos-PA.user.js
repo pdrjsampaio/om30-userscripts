@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.5.2
+// @version      1.5.3
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V152__) return;
-  window.__OM30_PA_V152__ = true;
+  if (window.__OM30_PA_V153__) return;
+  window.__OM30_PA_V153__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -342,6 +342,7 @@
   .om30-cs-native-body{display:none;border:1px solid #d7dde0;border-top:0;background:#fff}
   .om30-cs-native-body.open{display:block}
   .om30-cs-native-body #om30pa.om30-inline{display:block!important}
+  #om30-controle-salas-section > .portlet > .portlet-header{color:#c62828!important}
   @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
@@ -376,7 +377,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.5.2 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.5.3 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   document.body.appendChild(panel);
@@ -849,5 +850,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.5.2 carregada para',UNIT);
+  console.info('[OM30 PA] v1.5.3 carregada para',UNIT);
 })();

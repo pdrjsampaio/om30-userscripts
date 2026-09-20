@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      0.2.4
+// @version      0.3.0
 // @description  Busca rápida de Exames, Procedimentos/CIDs e Medicamentos no Pronto Atendimento.
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V024__) return;
-  window.__OM30_PA_V024__ = true;
+  if (window.__OM30_PA_V030__) return;
+  window.__OM30_PA_V030__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -28,6 +28,7 @@
   if (!q('#prontuario_exame_token') || !q('#prontuario_procedimento_token') || !q('#prontuario_medicamento_token')) return;
 
   const STORE = 'OM30_PA_FAVORITOS_PC_V1';
+  const STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2';
 
   function unitName(){
     return qa('a.nav-link,.navbar a,.navbar-nav a').map(x=>clean(x.innerText)).find(t=>/\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA';
@@ -115,6 +116,73 @@
   }
   function favLocal(tipo){return Object.values(favs()).filter(x=>x.unit===UNITKEY&&x.type===tipo).map(x=>x.item)}
 
+  function unitStore(){try{return JSON.parse(localStorage.getItem(STORE_UNIT)||'{}')}catch{return {}}}
+  function setUnitStore(v){localStorage.setItem(STORE_UNIT,JSON.stringify(v))}
+  function unitCustom(){return unitStore()[UNITKEY]||[]}
+  function saveUnitCustom(list){const s=unitStore();s[UNITKEY]=list;setUnitStore(s)}
+
+  function logicalFromText(v){
+    const n=norm(v);
+    if(/RAIO|RADIOGRAF|\\bRX\\b/.test(n)) return 'raiox';
+    if(/MEDIC/.test(n)) return 'medicacao';
+    if(/ENFERMAG|PROCED/.test(n)) return 'enfermagem';
+    if(/EXAME|COLETA|LABORAT/.test(n)) return 'exames';
+    return '';
+  }
+
+  function nativeFromLogical(g){
+    if(g==='raiox'||g==='exames') return 'exame';
+    if(g==='medicacao') return 'medicamento';
+    if(g==='enfermagem') return 'procedimento';
+    return '';
+  }
+
+  function parseUnitTxt(text,hint=''){
+    let grupo=logicalFromText(hint);
+    const out=[];
+    for(const raw of String(text||'').split(/\\r?\\n/)){
+      const line=clean(raw);
+      if(!line||/^#|^\\/\\//.test(line)) continue;
+      const heading=line.replace(/^\\[|\\]$/g,'');
+      const hg=logicalFromText(heading);
+      if(/^\\[.*\\]$/.test(line)||/^(RAIO X|RX|RADIOGRAFIA|EXAMES?|MEDICA(CAO|ÇÃO)|ENFERMAGEM|PROCEDIMENTOS?)$/i.test(line)){
+        if(hg) grupo=hg;
+        continue;
+      }
+
+      let parts=line.split(/\\s*[|;\\t]\\s*/).filter(Boolean);
+      let lineGrupo='';
+      if(parts.length>=3){
+        const g=logicalFromText(parts[0]);
+        if(g){lineGrupo=g;parts.shift()}
+      }
+      const g=lineGrupo||grupo||logicalFromText(line);
+      if(!g) continue;
+
+      let codigo='',nome='';
+      if(parts.length>=2){codigo=clean(parts[0]);nome=clean(parts.slice(1).join(' | '))}
+      else {
+        const m=line.match(/^(\\d{3,14})\\s*[-–—:]\\s*(.+)$/);
+        if(m){codigo=m[1];nome=clean(m[2])}
+        else {nome=line}
+      }
+      if(!nome) continue;
+      out.push({type:nativeFromLogical(g),group:g,code:codigo,name:nome,query:codigo||nome});
+    }
+    return out;
+  }
+
+  function mergeUnitCustom(items){
+    const map=new Map();
+    for(const x of [...unitCustom(),...items]){
+      const k=(x.group||'')+'|'+(x.code||'')+'|'+norm(x.name||'');
+      map.set(k,x);
+    }
+    const list=[...map.values()];
+    saveUnitCustom(list);
+    return list;
+  }
+
   function visible(el){
     if(!el) return false;
     const s=getComputedStyle(el),r=el.getBoundingClientRect();
@@ -189,83 +257,106 @@
   const css=document.createElement('style');
   css.textContent=`
   #om30pa{
-    position:fixed;right:14px;bottom:14px;width:380px;max-width:calc(100vw - 28px);
-    max-height:68vh;background:#fff;border:1px solid #e5eaee;border-radius:14px;
-    box-shadow:0 14px 36px rgba(20,40,55,.18);z-index:2147483646;
-    font-family:"Segoe UI",Arial,sans-serif;color:#22343e;overflow:hidden
+    position:fixed;right:14px;bottom:14px;width:370px;max-width:calc(100vw - 28px);
+    max-height:66vh;background:#fff;border:1px solid #e8ecef;border-radius:16px;
+    box-shadow:0 16px 44px rgba(26,45,58,.17);z-index:2147483646;
+    font-family:"Segoe UI",Arial,sans-serif;color:#263942;overflow:hidden
   }
   #om30pa *{box-sizing:border-box}
   .oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;align-items:center;justify-content:space-between}
-  .ot{font-size:13px;font-weight:700;letter-spacing:.1px}
-  .os{font-size:9px;opacity:.76;margin-top:1px}
-  .ox{border:0;background:transparent;color:#fff;font-size:19px;line-height:1;cursor:pointer;padding:2px 4px}
-  .oinfo{padding:4px 10px;background:#f8fafb;border-bottom:1px solid #edf1f3;font-size:9px;color:#73838c}
-  .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;padding:6px;background:#f7f9fa;border-bottom:1px solid #edf1f3}
-  .tab{border:0;background:transparent;color:#61737d;padding:6px 4px;border-radius:8px;cursor:pointer;transition:.15s}
-  .tab:hover{background:#eef3f6}
-  .tab.on{background:#fff;color:#123f68;box-shadow:0 1px 5px rgba(30,55,70,.12)}
-  .tab b{display:block;font-size:10.5px;font-weight:750;white-space:nowrap}
-  .tab small{display:block;font-size:7.5px;font-weight:500;opacity:.7;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .obody{padding:8px;overflow:auto;max-height:calc(68vh - 98px)}
-  .searchrow{display:flex;align-items:center;gap:6px;background:#f7f9fa;border:1px solid #e1e7ea;border-radius:10px;padding:5px 6px}
-  .search{flex:1;border:0;background:transparent;outline:none;padding:5px 4px;font-size:11px;color:#2a3e49;min-width:0}
-  .search::placeholder{color:#98a5ac}
-  .searchbtn{width:30px;height:30px;border:0;border-radius:8px;background:#123f68;color:#fff;cursor:pointer;font-size:0;padding:0;position:relative}
-  .searchbtn:before{content:"⌕";font-size:18px;line-height:30px}
-  .hint{font-size:8.5px;color:#8b989f;margin:5px 2px 7px}
+  .ot{font-size:13px;font-weight:750;letter-spacing:.05px}
+  .ha{display:flex;align-items:center;gap:2px}
+  .og,.ox{width:27px;height:27px;border:0;background:transparent;color:#fff;border-radius:7px;cursor:pointer;display:grid;place-items:center;padding:0}
+  .og{font-size:15px}.ox{font-size:18px;line-height:1}.og:hover,.ox:hover{background:rgba(255,255,255,.12)}
+  .oinfo{padding:5px 10px;background:#fbfcfd;border-bottom:1px solid #edf1f3;font-size:9px;color:#7b8a92}
+  .tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;padding:5px 6px;background:#f6f8f9;border-bottom:1px solid #edf1f3}
+  .tab{border:0;background:transparent;color:#718089;padding:7px 3px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:700;transition:.15s}
+  .tab:hover{background:#edf2f5;color:#3d5968}
+  .tab.on{background:#fff;color:#123f68;box-shadow:0 1px 5px rgba(32,55,70,.11)}
+  .obody{padding:8px;overflow:auto;max-height:calc(66vh - 93px)}
+  .searchrow{display:flex;align-items:center;background:#f4f6f7;border:1px solid transparent;border-radius:999px;padding:3px 4px 3px 11px;transition:.15s}
+  .searchrow:focus-within{background:#fff;border-color:#cbd8df;box-shadow:0 0 0 3px rgba(18,63,104,.07)}
+  .search{flex:1;border:0;background:transparent;outline:none;padding:6px 2px;font-size:10.5px;color:#2d434f;min-width:0}
+  .search::placeholder{color:#99a5ab}
+  .searchbtn{width:29px;height:29px;border:0;border-radius:50%;background:#123f68;color:#fff;cursor:pointer;font-size:0;padding:0;position:relative;flex:none}
+  .searchbtn:before{content:"⌕";font-size:17px;line-height:29px}
   .sect{margin-top:7px}
-  .stitle{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:9.5px;font-weight:750;color:#415761;margin-bottom:4px}
-  .muted{font-weight:500;color:#9aa5aa;font-size:8px}
-  .chips{display:flex;flex-wrap:wrap;gap:4px}
-  .chip{border:1px solid #e0e7ea;background:#fff;border-radius:8px;padding:5px 7px;font-size:9px;font-weight:650;color:#405f70;cursor:pointer}
-  .chip:hover{background:#f5f8fa}
+  .stitle{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:9px;font-weight:750;color:#50636d;margin-bottom:4px}
+  .muted{font-weight:500;color:#a0aaaf;font-size:8px}
+  .rxpick{position:relative}
+  .rxtrigger{width:100%;border:1px solid #e3e8eb;background:#fff;border-radius:10px;padding:8px 9px;display:flex;align-items:center;gap:7px;cursor:pointer;text-align:left;color:#405660}
+  .rxtrigger:hover{background:#fafcfd}
+  .rxlabel{font-size:8px;color:#93a0a6;text-transform:uppercase;letter-spacing:.4px}
+  .rxvalue{flex:1;font-size:10px;font-weight:700;color:#2e4856}
+  .rxchev{font-size:12px;color:#91a0a7}
+  .rxmenu{display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:50;background:#fff;border:1px solid #e2e8eb;border-radius:10px;padding:4px;box-shadow:0 10px 25px rgba(30,50,63,.16)}
+  .rxmenu.open{display:grid;grid-template-columns:1fr 1fr;gap:2px}
+  .rxopt{border:0;background:transparent;border-radius:7px;padding:7px 8px;text-align:left;font-size:9px;color:#405b69;cursor:pointer}
+  .rxopt:hover{background:#f0f5f7;color:#123f68}
   .grid{display:grid;grid-template-columns:1fr;gap:3px}
-  .fav{display:flex;align-items:center;gap:5px;border:1px solid #e6ebee;border-radius:8px;padding:5px 6px;background:#fff}
-  .fmain{flex:1;min-width:0}
-  .fcode{font:700 8.5px Consolas,monospace;color:#7d8d95}
-  .fname{font-size:9.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#2e434e}
-  .fuse{border:0;background:#eef4f7;color:#285970;border-radius:6px;padding:4px 7px;font-size:9px;font-weight:700;cursor:pointer}
-  .wrap{border:1px solid #e4eaed;border-radius:9px;overflow:auto;max-height:205px}
-  .tbl{width:100%;border-collapse:collapse;font-size:9.5px}
-  .tbl th{background:#f7f9fa;padding:5px 6px;text-align:left;position:sticky;top:0;color:#71808a;font-size:8.5px}
-  .tbl td{padding:5px 6px;border-top:1px solid #edf1f3}
-  .code{font:700 8.5px Consolas,monospace;color:#557080;white-space:nowrap}
-  .nm{font-weight:650;line-height:1.15;color:#2d424d}
-  .star{border:0;background:transparent;font-size:15px;color:#bcc5ca;cursor:pointer;padding:0 2px}
-  .star.on{color:#d6a119}
-  .use{border:0;background:#123f68;color:#fff;border-radius:6px;padding:4px 7px;font-size:8.5px;font-weight:700;cursor:pointer;white-space:nowrap}
-  .status{margin-top:6px;padding:5px 7px;border-radius:7px;background:#f5f8fa;color:#6e7e87;font-size:8.5px}
-  .status.ok{background:#eef8f2;color:#3c7250}
-  .status.err{background:#fff0f0;color:#a24343}
-  .empty{padding:8px;text-align:center;color:#9aa6ac;font-size:9px}
-  .med{border:1px solid #e4eaed;background:#fafcfd;border-radius:9px;padding:7px}
-  .medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}
-  .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-  .field label{display:block;font-size:8.5px;font-weight:700;margin-bottom:3px;color:#60727c}
-  .field select,.field input,.field textarea{width:100%;border:1px solid #dbe3e7;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}
-  .field textarea{min-height:44px;resize:vertical}
-  .mactions{text-align:right;margin-top:6px}
-  .mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}
+  .fav{display:flex;align-items:center;gap:5px;border:1px solid #e8ecef;border-radius:9px;padding:5px 6px;background:#fff}
+  .fmain{flex:1;min-width:0}.fcode{font:700 8px Consolas,monospace;color:#8b989e}.fname{font-size:9.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#304750}
+  .star{border:0;background:transparent;font-size:15px;color:#c2c9cd;cursor:pointer;padding:0 2px}.star.on{color:#d5a021}
+  .fuse,.use{border:0;background:#eef4f7;color:#285970;border-radius:6px;padding:4px 7px;font-size:8.5px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .use{background:#123f68;color:#fff}
+  .wrap{border:1px solid #e6ebee;border-radius:9px;overflow:auto;max-height:205px}
+  .tbl{width:100%;border-collapse:collapse;font-size:9px}.tbl th{background:#f7f9fa;padding:5px;text-align:left;position:sticky;top:0;color:#7e8c93;font-size:8px}.tbl td{padding:5px;border-top:1px solid #eef1f3}
+  .code{font:700 8px Consolas,monospace;color:#5c7582;white-space:nowrap}.nm{font-weight:650;line-height:1.15;color:#324852}
+  .status{margin-top:5px;min-height:12px;color:#8a989f;font-size:8px}.status.ok{color:#4a7a5b}.status.err{color:#b14a4a}
+  .empty{padding:7px;text-align:center;color:#9ca8ad;font-size:8.5px}
+  .med{border:1px solid #e5eaed;background:#fbfcfd;border-radius:9px;padding:7px}.medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}
+  .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:8px;font-weight:700;margin-bottom:3px;color:#697b84}
+  .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}
+  .mactions{text-align:right;margin-top:6px}.mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}
+  .settings{display:none;position:absolute;inset:0;background:#fff;z-index:100;overflow:auto}.settings.open{display:block}
+  .shead{position:sticky;top:0;background:#fff;border-bottom:1px solid #edf1f3;padding:10px 11px;display:flex;align-items:center;justify-content:space-between;z-index:2}
+  .stxt{font-size:12px;font-weight:750;color:#2d4653}.sclose{border:0;background:#f2f5f7;color:#506671;width:27px;height:27px;border-radius:7px;cursor:pointer;font-size:16px}
+  .sbody{padding:10px}.sunit{font-size:9px;color:#85939a;margin-bottom:8px}.snote{font-size:8.5px;color:#7b8b93;line-height:1.35;margin-bottom:8px}
+  .sactions{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}.sbtn{border:1px solid #dce4e8;background:#fff;color:#34586a;border-radius:8px;padding:6px 8px;font-size:9px;font-weight:700;cursor:pointer}.sbtn.primary{background:#123f68;color:#fff;border-color:#123f68}.sbtn.danger{color:#a34d4d}
+  .stextarea{width:100%;min-height:155px;border:1px solid #dfe5e8;border-radius:9px;padding:8px;font:9px/1.4 Consolas,monospace;outline:none;resize:vertical}.stextarea:focus{border-color:#b9cbd4;box-shadow:0 0 0 3px rgba(18,63,104,.06)}
+  .sfoot{font-size:8px;color:#9aa5aa;margin-top:7px}
   .launch{position:fixed;right:14px;bottom:14px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;padding:7px 10px;font-size:9px;font-weight:750;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.2)}
-  @media(max-width:430px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
+  @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
 
   const panel=document.createElement('div');
   panel.id='om30pa';
   panel.innerHTML=`
-  <div class="oh"><div><div class="ot">OM30 — Procedimentos do Pronto Atendimento</div><div class="os">Busca rápida, favoritos e SIGTAP</div></div><button class="ox">×</button></div>
-  <div class="oinfo"><b>${esc(UNIT)}</b> · Ocupação ${esc(OCC||'—')} · v0.2.4</div>
-  <div class="tabs"><button class="tab on" data-t="raiox"><b>Raio X</b><small>Radiografias e RX</small></button><button class="tab" data-t="exames"><b>Exames</b><small>Coletas e exames internos</small></button><button class="tab" data-t="medicacao"><b>Medicação</b><small>Aplicação no local</small></button><button class="tab" data-t="enfermagem"><b>Enfermagem</b><small>Procedimentos de enfermagem</small></button></div>
+  <div class="oh">
+    <div class="ot">Controle de Salas - Procedimentos</div>
+    <div class="ha"><button class="og" title="Configurar favoritos da unidade">⚙</button><button class="ox" title="Fechar">×</button></div>
+  </div>
+  <div class="oinfo"><b>${esc(UNIT)}</b></div>
+  <div class="tabs">
+    <button class="tab on" data-t="raiox" title="Radiografias e RX">Raio X</button>
+    <button class="tab" data-t="exames" title="Coletas e exames internos">Exames</button>
+    <button class="tab" data-t="medicacao" title="Medicação aplicada no local">Medicação</button>
+    <button class="tab" data-t="enfermagem" title="Procedimentos de enfermagem">Enfermagem</button>
+  </div>
   <div class="obody">
-    <div class="searchrow"><input class="search" placeholder="Ex.: tórax, hemograma, hgt, pressão, dipirona..."><button class="btn searchbtn">Pesquisar</button></div>
-    <div class="hint">Aceita código SIGTAP, nome oficial e nomes populares. Ao escolher, o OM30 usa o fluxo nativo do Saúde Simples.</div>
-    <div class="rx sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status">Pronto.</div>
+    <div class="searchrow"><input class="search" placeholder="Buscar radiografia..."><button class="searchbtn" title="Pesquisar">Pesquisar</button></div>
+    <div class="rx sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
+  </div>
+  <div class="settings">
+    <div class="shead"><div class="stxt">Favoritos da unidade</div><button class="sclose">×</button></div>
+    <div class="sbody">
+      <div class="sunit">${esc(UNIT)}</div>
+      <div class="snote">Importe um ou mais arquivos .txt ou cole a lista abaixo. Pode separar por [RAIO X], [EXAMES], [MEDICAÇÃO] e [ENFERMAGEM].</div>
+      <div class="sactions">
+        <button class="sbtn primary simpor">Importar TXT</button>
+        <button class="sbtn sadd">Adicionar texto</button>
+        <button class="sbtn danger sclear">Limpar importados</button>
+        <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
+      </div>
+      <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
+      <div class="sfoot">v0.3.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+    </div>
   </div>`;
   document.body.appendChild(panel);
 
   const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30 PA'; document.body.appendChild(launch);
-  const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel)};
+  const E={s:q('.search',panel),r:q('.res',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer;
 
   function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}
@@ -275,7 +366,7 @@
     if(t==='enfermagem') return 'procedimento';
     return t;
   }
-  function defs(){const nt=tipoNativo();return (favoritosUnidade[UNITKEY]||[]).filter(x=>x.type===nt).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
+  function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||[]);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
 
   async function resolveDef(d){
     const xs=await buscar(d.type,d.query||d.code||d.name);
@@ -366,8 +457,55 @@
   }
 
   function renderRX(){
-    E.rx.innerHTML='<div class="stitle"><span>Radiografia — escolha a região</span><span class="muted">depois aparecem as opções SIGTAP</span></div><div class="chips">'+gruposRX.map(g=>'<button class="chip" data-q="'+esc(g[1])+'">'+esc(g[0])+'</button>').join('')+'</div>';
-    qa('.chip',E.rx).forEach(b=>b.onclick=()=>pesquisar(b.dataset.q,true));
+    E.rx.innerHTML='<div class="rxpick"><button class="rxtrigger"><span class="rxlabel">Região</span><span class="rxvalue">Escolher região</span><span class="rxchev">⌄</span></button><div class="rxmenu">'+gruposRX.map((g,i)=>'<button class="rxopt" data-i="'+i+'">'+esc(g[0])+'</button>').join('')+'</div></div>';
+    const menu=q('.rxmenu',E.rx),trigger=q('.rxtrigger',E.rx),value=q('.rxvalue',E.rx);
+    trigger.onclick=()=>menu.classList.toggle('open');
+    qa('.rxopt',E.rx).forEach(b=>b.onclick=()=>{
+      const g=gruposRX[+b.dataset.i];
+      value.textContent=g[0];
+      menu.classList.remove('open');
+      pesquisar(g[1],true);
+    });
+  }
+
+  function updatePlaceholder(){
+    const map={raiox:'Buscar radiografia...',exames:'Buscar exame ou código SIGTAP...',medicacao:'Buscar medicamento...',enfermagem:'Buscar procedimento ou código...'};
+    E.s.placeholder=map[tipo]||'Pesquisar...';
+  }
+
+  function openSettings(){E.settings.classList.add('open')}
+  function closeSettings(){E.settings.classList.remove('open')}
+
+  async function importFiles(files){
+    const all=[];
+    for(const file of files){
+      const txt=await file.text();
+      all.push(...parseUnitTxt(txt,file.name));
+    }
+    if(!all.length){status('Nenhum favorito reconhecido nos TXT.','err');return}
+    const list=mergeUnitCustom(all);
+    renderFavs();
+    status(list.length+' favorito(s) configurado(s) para a unidade.','ok');
+    closeSettings();
+  }
+
+  function addTextFavorites(){
+    const list=parseUnitTxt(E.sta.value,'');
+    if(!list.length){status('Não consegui reconhecer itens no texto.','err');return}
+    const merged=mergeUnitCustom(list);
+    E.sta.value='';
+    renderFavs();
+    status(merged.length+' favorito(s) configurado(s) para a unidade.','ok');
+    closeSettings();
+  }
+
+  function clearUnitFavorites(){
+    const s=unitStore();
+    delete s[UNITKEY];
+    setUnitStore(s);
+    renderFavs();
+    status('Lista importada da unidade removida.','ok');
+    closeSettings();
   }
 
   function composer(item){
@@ -378,11 +516,11 @@
 
   async function pesquisar(forcado=null,grupo=false){
     const termo=clean(forcado??E.s.value);
-    if(tipo==='raiox'&&!termo){renderRX();E.r.innerHTML='';status('Escolha uma região ou pesquise uma radiografia.');return}
+    if(tipo==='raiox'&&!termo){renderRX();E.r.innerHTML='';status('');return}
     if(termo.length<2){status('Digite pelo menos 2 caracteres.');return}
     const nt=tipoNativo();
     const n=norm(termo);
-    if(tipo==='raiox'&&!grupo&&['RADIOGRAFIA','RX','RAIO X','RAIO-X'].includes(n)){renderRX();E.r.innerHTML='';status('Escolha a região da radiografia.');return}
+    if(tipo==='raiox'&&!grupo&&['RADIOGRAFIA','RX','RAIO X','RAIO-X'].includes(n)){renderRX();E.r.innerHTML='';status('');return}
     E.rx.innerHTML='';
     try{
       status('Pesquisando “'+traduz(nt,termo)+'”...');
@@ -394,15 +532,22 @@
     }catch(e){console.error(e);status(e.message||String(e),'err')}
   }
 
-  qa('.tab',panel).forEach(b=>b.onclick=()=>{qa('.tab',panel).forEach(x=>x.classList.remove('on'));b.classList.add('on');tipo=b.dataset.t;E.s.value='';E.r.innerHTML='';E.rx.innerHTML='';E.mc.innerHTML='';renderFavs();if(tipo==='raiox'){renderRX();status('Escolha uma região ou pesquise uma radiografia.')}else status('Pronto.');E.s.focus()});
+  qa('.tab',panel).forEach(b=>b.onclick=()=>{qa('.tab',panel).forEach(x=>x.classList.remove('on'));b.classList.add('on');tipo=b.dataset.t;E.s.value='';E.r.innerHTML='';E.rx.innerHTML='';E.mc.innerHTML='';renderFavs();updatePlaceholder();if(tipo==='raiox'){renderRX()}status('');E.s.focus()});
   q('.searchbtn',panel).onclick=()=>pesquisar();
   E.s.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pesquisar()}};
   E.s.oninput=()=>{clearTimeout(timer);if(E.s.value.trim().length>=3)timer=setTimeout(()=>pesquisar(),350)};
+  q('.og',panel).onclick=openSettings;
+  q('.sclose',panel).onclick=closeSettings;
+  q('.simpor',panel).onclick=()=>E.file.click();
+  E.file.onchange=async()=>{await importFiles([...E.file.files]);E.file.value=''};
+  q('.sadd',panel).onclick=addTextFavorites;
+  q('.sclear',panel).onclick=clearUnitFavorites;
   q('.ox',panel).onclick=()=>{panel.style.display='none';launch.style.display='block'};
   launch.onclick=()=>{launch.style.display='none';panel.style.display='block';E.s.focus()};
 
   renderFavs();
   renderRX();
-  status('Escolha uma região ou pesquise uma radiografia.','ok');
-  console.info('[OM30 PA] v0.2.4 carregada para',UNIT);
+  updatePlaceholder();
+  status('');
+  console.info('[OM30 PA] v0.3.0 carregada para',UNIT);
 })();

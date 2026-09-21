@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.8.2
+// @version      1.8.3
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V182__) return;
-  window.__OM30_PA_V182__ = true;
+  if (window.__OM30_PA_V183__) return;
+  window.__OM30_PA_V183__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -770,6 +770,7 @@
   .revoked-note{margin-top:2px;color:#b23f3f;font-size:8px;font-weight:750;line-height:1.25}
   .revoked-pill{display:inline-block;border:1px solid #efc6c2;background:#fff0ee;color:#a83c35;border-radius:999px;padding:2px 5px;font-size:7px;font-weight:800;margin-top:3px}
   .use[disabled]{opacity:.55;cursor:default;background:#788a93}
+  .back-results{border:0;background:transparent;color:#174f78;font-size:8px;font-weight:800;padding:2px 0;margin:1px 0 2px;cursor:pointer}
   .med{border:1px solid #e5eaed;background:#fbfcfd;border-radius:9px;padding:7px}.medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}
   .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:8px;font-weight:700;margin-bottom:3px;color:#697b84}
   .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}
@@ -844,7 +845,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.8.2 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.8.3 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1283,8 +1284,9 @@
     const detalhe=tituloSugestoesSubstituicao(sugestoes)||'Escolha o procedimento atual correspondente ao atendimento:';
 
     E.r.innerHTML=
-      '<div class="stitle"><span>Procedimentos originados/substitutos após a revogação</span><span class="muted">SIGTAP '+esc(competencia)+'</span></div>'+
-      '<div class="muted" style="margin-bottom:5px">'+esc(detalhe)+'</div>'+
+      '<div class="stitle"><span>Originados da revogação</span><span class="muted">SIGTAP '+esc(competencia)+'</span></div>'+
+      '<button class="back-results">← Voltar aos resultados</button>'+
+      '<div class="muted" style="margin:4px 0 5px">'+esc(detalhe)+'</div>'+
       '<div class="wrap"><table class="tbl"><thead><tr><th>Código SIGTAP</th><th>Procedimento atual</th><th></th></tr></thead><tbody>'+
       resolvidos.map((r,i)=>
         '<tr data-i="'+i+'">'+
@@ -1297,6 +1299,19 @@
         '</tr>'
       ).join('')+
       '</tbody></table></div>';
+
+    const voltar=q('.back-results',E.r);
+    if(voltar){
+      voltar.onclick=()=>{
+        const termo=clean(E.s.value);
+        if(termo){
+          pesquisar(termo);
+        }else{
+          E.r.innerHTML='';
+          status('');
+        }
+      };
+    }
 
     qa('tbody tr',E.r).forEach(tr=>{
       const r=resolvidos[+tr.dataset.i];
@@ -1428,9 +1443,9 @@
           '<td><button class="star '+(isFav(nt,x)?'on':'')+'">'+(isFav(nt,x)?'★':'☆')+'</button></td>'+
           '<td class="code">'+esc(code(nt,x))+'</td>'+
           '<td><div class="nm">'+esc(name(nt,x))+'</div>'+
-            (rev?'<div class="revoked-pill">REVOGADO / NÃO VIGENTE</div><div class="revoked-note">Selecione para ver os procedimentos originados/substitutos.</div>':'')+
+            (rev?'<div class="revoked-pill">REVOGADO / NÃO VIGENTE</div><div class="revoked-note">Veja os procedimentos originados a partir desta revogação.</div>':'')+
           '</td>'+
-          '<td><button class="use" '+(selecionado?'disabled':'')+'>'+(selecionado?'Selecionado':'Selecionar')+'</button></td>'+
+          '<td><button class="use" '+(selecionado?'disabled':'')+'>'+(selecionado?'Selecionado':(rev?'Ver originados':'Selecionar'))+'</button></td>'+
         '</tr>';
       }).join('')+
       '</tbody></table></div>';
@@ -1526,7 +1541,7 @@
   }
 
   function composer(item){
-    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido ou 1 ampola de ___ mL"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
+    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
     q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';renderSelecionados();status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};
     q('.mpos',E.mc)?.focus();
   }
@@ -1651,5 +1666,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.8.2 carregada para',UNIT);
+  console.info('[OM30 PA] v1.8.3 carregada para',UNIT);
 })();

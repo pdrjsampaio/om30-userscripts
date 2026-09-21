@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.8.1
+// @version      1.8.2
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V181__) return;
-  window.__OM30_PA_V181__ = true;
+  if (window.__OM30_PA_V182__) return;
+  window.__OM30_PA_V182__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -447,12 +447,57 @@
   }
 
   function codigoLinhaExame(row){
-    return digits(q('.codigo_exame',row)?.value||'');
+    if(!row) return '';
+    const direto=digits(
+      row.dataset.om30Codigo ||
+      q('.codigo_exame',row)?.value ||
+      q('input[name*="[exame_token_codigo]"]',row)?.value ||
+      ''
+    );
+    if(direto.length>=10) return direto.slice(0,10);
+
+    const candidato=qa('input',row)
+      .map(el=>digits(el.value||''))
+      .find(v=>v.length===10);
+    return candidato||'';
+  }
+
+  function nomeLinhaExame(row){
+    return clean(
+      row?.dataset?.om30Nome ||
+      q('input[name*="[exame_token_nome]"]',row)?.value ||
+      q('.nome_exame',row)?.value ||
+      ''
+    );
   }
 
   function codigoLinhaProcedimento(row){
+    if(!row) return '';
+    const ds=digits(row.dataset.om30Codigo||'');
+    if(ds.length>=10) return ds.slice(0,10);
+
     const f=q('input[name*="[procedimento_token]"]',row);
-    return digits((f?.value||'').slice(0,10));
+    const fv=digits(f?.value||'');
+    if(fv.length>=10) return fv.slice(0,10);
+
+    const candidato=qa('input',row)
+      .map(el=>digits(el.value||''))
+      .find(v=>v.length===10);
+    return candidato||'';
+  }
+
+  function nomeLinhaProcedimento(row){
+    if(!row) return '';
+    if(clean(row.dataset.om30Nome)) return clean(row.dataset.om30Nome);
+
+    const f=q('input[name*="[procedimento_token]"]',row);
+    const parsed=parseCodigoNome(f?.value||'');
+    if(parsed.nome) return parsed.nome;
+
+    const candidato=qa('input[type="text"]',row)
+      .map(el=>clean(el.value))
+      .find(v=>v && /\D/.test(v) && v.length>3);
+    return candidato||'';
   }
 
   function linhaExameComCodigo(cd){
@@ -496,10 +541,21 @@
     return !!cond();
   }
 
+  async function esperarNovaLinha(selector,antes,timeout=3500,passo=50){
+    const inicio=Date.now();
+    while(Date.now()-inicio<timeout){
+      const nova=qa(selector).find(r=>!antes.has(r));
+      if(nova) return nova;
+      await sleep(passo);
+    }
+    return qa(selector).find(r=>!antes.has(r))||null;
+  }
+
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
   async function incluirSimples(tipo,item){
     const cd=code(tipo,item);
+    const nm=name(tipo,item);
 
     if(tipo==='exame'){
       const ja=linhaExameComCodigo(cd);
@@ -521,9 +577,12 @@
       if(tokens.length&&!mesmo){
         throw new Error('Existe outro exame aguardando inclusão na seção nativa de EXAMES.');
       }
-      if(!mesmo) tokenAdd(selector,tipo,item);
 
+      const antes=new Set(qa('tr.prontuario-exame-row'));
+
+      if(!mesmo) tokenAdd(selector,tipo,item);
       await sleep(100);
+
       const b=botaoIncluirExame();
       if(!b){
         if(tokenTemCodigo(selector,cd)) tokenClear(selector);
@@ -532,15 +591,28 @@
 
       b.click();
 
-      const entrou=await esperar(()=>!!linhaExameComCodigo(cd),2500);
-      if(!entrou){
-        if(tokenTemCodigo(selector,cd)) tokenClear(selector);
-        throw new Error('O Saúde Simples não criou a linha do exame após o + Incluir. O token foi limpo para não ficar preso.');
+      let row=await esperarNovaLinha('tr.prontuario-exame-row',antes,3500);
+      if(!row) row=linhaExameComCodigo(cd);
+
+      if(!row){
+        // Se o próprio Saúde Simples consumiu o token, considera a ação concluída
+        // sem inventar um erro falso; a lista nativa continua sendo a fonte real.
+        const consumido=!tokenTemCodigo(selector,cd);
+        if(consumido){
+          renderSelecionados?.();
+          return {already:false,row:null,confirmedByToken:true};
+        }
+
+        tokenClear(selector);
+        throw new Error('Não foi possível confirmar a inclusão do exame no prontuário.');
       }
+
+      row.dataset.om30Codigo=digits(cd).slice(0,10);
+      row.dataset.om30Nome=nm;
 
       if(tokenTemCodigo(selector,cd)) tokenClear(selector);
       renderSelecionados?.();
-      return {already:false,row:linhaExameComCodigo(cd)};
+      return {already:false,row};
     }
 
     const ja=linhaProcedimentoComCodigo(cd);
@@ -556,9 +628,12 @@
     if(tokens.length&&!mesmo){
       throw new Error('Existe outro procedimento aguardando inclusão na seção nativa de PROCEDIMENTOS/CIDS.');
     }
-    if(!mesmo) tokenAdd(selector,tipo,item);
 
+    const antes=new Set(qa('tr.prontuario-lancamento-bpa-row'));
+
+    if(!mesmo) tokenAdd(selector,tipo,item);
     await sleep(100);
+
     const b=botaoIncluirProcedimento();
     if(!b){
       if(tokenTemCodigo(selector,cd)) tokenClear(selector);
@@ -567,15 +642,26 @@
 
     b.click();
 
-    const entrou=await esperar(()=>!!linhaProcedimentoComCodigo(cd),2500);
-    if(!entrou){
-      if(tokenTemCodigo(selector,cd)) tokenClear(selector);
-      throw new Error('O Saúde Simples não criou a linha do procedimento após o + Incluir. O token foi limpo para não ficar preso.');
+    let row=await esperarNovaLinha('tr.prontuario-lancamento-bpa-row',antes,3500);
+    if(!row) row=linhaProcedimentoComCodigo(cd);
+
+    if(!row){
+      const consumido=!tokenTemCodigo(selector,cd);
+      if(consumido){
+        renderSelecionados?.();
+        return {already:false,row:null,confirmedByToken:true};
+      }
+
+      tokenClear(selector);
+      throw new Error('Não foi possível confirmar a inclusão do procedimento no prontuário.');
     }
+
+    row.dataset.om30Codigo=digits(cd).slice(0,10);
+    row.dataset.om30Nome=nm;
 
     if(tokenTemCodigo(selector,cd)) tokenClear(selector);
     renderSelecionados?.();
-    return {already:false,row:linhaProcedimentoComCodigo(cd)};
+    return {already:false,row};
   }
 
   function vias(){
@@ -758,7 +844,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.8.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.8.2 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1084,7 +1170,7 @@
         .filter(r=>t==='raiox'?r.classList.contains('radiografia'):!r.classList.contains('radiografia'))
         .map(r=>({
           codigo:codigoLinhaExame(r),
-          nome:clean(q('input[name*="[exame_token_nome]"]',r)?.value||'')
+          nome:nomeLinhaExame(r)
         }))
         .filter(x=>x.codigo||x.nome);
     }
@@ -1093,7 +1179,10 @@
       return qa('tr.prontuario-lancamento-bpa-row')
         .filter(rowAtiva)
         .filter(r=>r.classList.contains('procedimento-enfermagem'))
-        .map(r=>parseCodigoNome(q('input[name*="[procedimento_token]"]',r)?.value||''))
+        .map(r=>({
+          codigo:codigoLinhaProcedimento(r),
+          nome:nomeLinhaProcedimento(r)
+        }))
         .filter(x=>x.codigo||x.nome);
     }
 
@@ -1365,12 +1454,32 @@
   }
 
   function renderRX(){
-    E.rx.innerHTML='<div class="rxpick"><button class="rxtrigger"><span class="rxlabel">Região</span><span class="rxvalue">Escolher região</span><span class="rxchev">⌄</span></button><div class="rxmenu">'+gruposRX.map((g,i)=>'<button class="rxopt" data-i="'+i+'">'+esc(g[0])+'</button>').join('')+'</div></div>';
-    const menu=q('.rxmenu',E.rx),trigger=q('.rxtrigger',E.rx),value=q('.rxvalue',E.rx);
+    E.rx.innerHTML=
+      '<div class="rxpick">'+
+        '<button class="rxtrigger"><span class="rxlabel">Região</span><span class="rxvalue">Escolher região</span><span class="rxchev">⌄</span></button>'+
+        '<button class="rxreset" style="display:none">← Voltar às regiões</button>'+
+        '<div class="rxmenu">'+gruposRX.map((g,i)=>'<button class="rxopt" data-i="'+i+'">'+esc(g[0])+'</button>').join('')+'</div>'+
+      '</div>';
+
+    const menu=q('.rxmenu',E.rx);
+    const trigger=q('.rxtrigger',E.rx);
+    const value=q('.rxvalue',E.rx);
+    const reset=q('.rxreset',E.rx);
+
     trigger.onclick=()=>menu.classList.toggle('open');
+
+    reset.onclick=()=>{
+      E.s.value='';
+      E.r.innerHTML='';
+      status('');
+      renderRX();
+      E.s.focus();
+    };
+
     qa('.rxopt',E.rx).forEach(b=>b.onclick=()=>{
       const g=gruposRX[+b.dataset.i];
       value.textContent=g[0];
+      reset.style.display='inline-flex';
       menu.classList.remove('open');
       pesquisar(g[1],true);
     });
@@ -1417,7 +1526,7 @@
   }
 
   function composer(item){
-    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Digite a posologia prescrita"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
+    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido ou 1 ampola de ___ mL"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
     q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';renderSelecionados();status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};
     q('.mpos',E.mc)?.focus();
   }
@@ -1450,7 +1559,7 @@
       return;
     }
 
-    E.rx.innerHTML='';
+    if(tipo!=='raiox') E.rx.innerHTML='';
 
     try{
       const cod=digits(termo);
@@ -1542,5 +1651,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.8.1 carregada para',UNIT);
+  console.info('[OM30 PA] v1.8.2 carregada para',UNIT);
 })();

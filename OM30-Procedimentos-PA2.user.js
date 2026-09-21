@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA2
 // @namespace    https://om30.com.br/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Procedimentos PA em janela flutuante, sem criar seção Controle de Salas no prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -124,14 +124,40 @@
     ['Bacia / Pelve / Quadril','RADIOGRAFIA BACIA']
   ];
 
+  const favoritosPadraoPA=[
+    {type:'exame',group:'raiox',code:'0204030153',name:'RADIOGRAFIA DE TORAX (PA E PERFIL)',query:'0204030153'},
+    {type:'exame',group:'raiox',code:'0204050120',name:'RADIOGRAFIA DE ABDOMEN AGUDO (MINIMO DE 3 INCIDENCIAS)',query:'0204050120'},
+
+    {type:'exame',group:'exames',code:'0202020380',name:'HEMOGRAMA COMPLETO',query:'0202020380'},
+    {type:'exame',group:'exames',code:'0202010694',name:'DOSAGEM DE UREIA',query:'0202010694'},
+    {type:'exame',group:'exames',code:'0202010317',name:'DOSAGEM DE CREATININA',query:'0202010317'},
+    {type:'exame',group:'exames',code:'0202010635',name:'DOSAGEM DE SODIO',query:'0202010635'},
+    {type:'exame',group:'exames',code:'0202010600',name:'DOSAGEM DE POTASSIO',query:'0202010600'},
+    {type:'exame',group:'exames',code:'0202010643',name:'DOSAGEM DE TRANSAMINASE GLUTAMICO-OXALACETICA (TGO)',query:'0202010643'},
+    {type:'exame',group:'exames',code:'0202010651',name:'DOSAGEM DE TRANSAMINASE GLUTAMICO-PIRUVICA (TGP)',query:'0202010651'},
+    {type:'exame',group:'exames',code:'0202030202',name:'DOSAGEM DE PROTEINA C REATIVA',query:'0202030202'},
+    {type:'exame',group:'exames',code:'0202050017',name:'ANALISE DE CARACTERES FISICOS, ELEMENTOS E SEDIMENTO DA URINA',query:'0202050017'},
+
+    {type:'medicamento',group:'medicacao',code:'1035',name:'DIPIRONA 500 MG CP',query:'1035'},
+    {type:'medicamento',group:'medicacao',code:'1681',name:'DIPIRONA SODICA 500 MG/ML INJ',query:'1681'},
+    {type:'medicamento',group:'medicacao',code:'1680',name:'DEXAMETASONA 4 MG/ML, INJ - 2,5 ML',query:'1680'},
+    {type:'medicamento',group:'medicacao',code:'1678',name:'DICLOFENACO SAL SODICO, 25 MG/ML SOLUCAO INJETAVE',query:'1678'},
+    {type:'medicamento',group:'medicacao',code:'1271',name:'ESCOPOLAMINA BUTILBROMETO, 20MG/ML, SOL INJ 1ML',query:'1271'},
+    {type:'medicamento',group:'medicacao',code:'1672',name:'ONDANSETRONA CLORIDRATO, 2MG/ML, INJ, 4ML',query:'1672'},
+    {type:'medicamento',group:'medicacao',code:'937',name:'DIMENIDRATO ASSOCIADO COM PIRIDOXINA',query:'937'},
+    {type:'medicamento',group:'medicacao',code:'966',name:'CETOPROFENO 1MG/ML',query:'966'},
+    {type:'medicamento',group:'medicacao',code:'1660',name:'TENOXICAM 20 MG INJETAVEL',query:'1660'},
+    {type:'medicamento',group:'medicacao',code:'1545',name:'TRAMADOL CLORIDRATO 50 MG/ML SOLUCAO INJETAVEL 2 M',query:'1545'},
+    {type:'medicamento',group:'medicacao',code:'1519',name:'PROMETAZINA CLORIDRATO 25 MG',query:'1519'},
+
+    {type:'procedimento',group:'enfermagem',code:'0214010015',name:'GLICEMIA CAPILAR',query:'0214010015'},
+    {type:'procedimento',group:'enfermagem',code:'0301100039',name:'AFERIÇÃO DE PRESSÃO ARTERIAL',query:'0301100039'},
+    {type:'procedimento',group:'enfermagem',code:'0301100284',name:'CURATIVO SIMPLES',query:'0301100284'},
+    {type:'procedimento',group:'enfermagem',code:'0401010066',name:'EXCISÃO E/OU SUTURA SIMPLES DE PEQUENAS LESÕES / FERIMENTOS DE PELE / ANEXOS E MUCOSA',query:'0401010066'}
+  ];
+
   const favoritosUnidade={
-    'UNIDADE TESTE GUARUJA':[
-      {type:'exame',code:'0202020380',name:'HEMOGRAMA COMPLETO',query:'HEMOGRAMA'},
-      {type:'exame',code:'0204030153',name:'RADIOGRAFIA DE TORAX (PA E PERFIL)',query:'RADIOGRAFIA TORAX'},
-      {type:'procedimento',code:'0214010015',name:'GLICEMIA CAPILAR',query:'GLICEMIA'},
-      {type:'procedimento',code:'0301100039',name:'AFERIÇÃO DE PRESSÃO ARTERIAL',query:'PRESSAO'},
-      {type:'medicamento',code:'1035',name:'DIPIRONA 500 MG CP',query:'DIPIRONA 500 MG'}
-    ]
+    'UNIDADE TESTE GUARUJA':favoritosPadraoPA
   };
 
   // ============================================================
@@ -414,6 +440,17 @@
   function setUnitStore(v){localStorage.setItem(STORE_UNIT,JSON.stringify(v))}
   function unitCustom(){return unitStore()[UNITKEY]||[]}
   function saveUnitCustom(list){const s=unitStore();s[UNITKEY]=list;setUnitStore(s)}
+
+  function unitCustomKey(x){
+    return (x.group||'')+'|'+(x.code||'')+'|'+norm(x.name||'');
+  }
+
+  function removeUnitCustom(item){
+    const alvo=unitCustomKey(item);
+    const list=unitCustom().filter(x=>unitCustomKey(x)!==alvo);
+    saveUnitCustom(list);
+    return list;
+  }
 
   function logicalFromText(v){
     const n=norm(v);
@@ -762,7 +799,38 @@
     };
   }
 
+  const VIAS_FIXAS_MEDICAMENTOS=[
+    {ids:['1678'],nome:/DICLOFENACO SAL SODICO/i,via:'INTRAMUSCULAR'},
+    {ids:['1519'],nome:/PROMETAZINA CLORIDRATO/i,via:'INTRAMUSCULAR'}
+  ];
+
+  function restricaoViaMedicamento(item){
+    const ids=[
+      clean(item?.id),
+      clean(item?.codigo),
+      clean(item?.codigo_externo),
+      clean(code('medicamento',item))
+    ].filter(Boolean);
+    const nm=norm(name('medicamento',item));
+
+    return VIAS_FIXAS_MEDICAMENTOS.find(r=>
+      r.ids.some(id=>ids.includes(id)) || r.nome.test(nm)
+    )||null;
+  }
+
+  function opcaoViaPorNome(nomeVia){
+    const alvo=norm(nomeVia);
+    return vias().find(x=>norm(x.t)===alvo)||null;
+  }
+
   async function incluirMedicamento(item,via,pos,obs){
+    const restricao=restricaoViaMedicamento(item);
+    if(restricao){
+      const fixa=opcaoViaPorNome(restricao.via);
+      if(!fixa) throw new Error('Via '+restricao.via+' não está disponível no Saúde Simples.');
+      via=fixa.v;
+    }
+
     if(!via) throw new Error('Selecione a via de administração.');
     if(!clean(pos)) throw new Error('Informe a posologia.');
 
@@ -1052,7 +1120,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.0.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.1.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1428,7 +1496,7 @@
     timerSelecionados=setTimeout(renderSelecionados,100);
   });
   observerSelecionados.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style']});
-  function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||[]);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
+  function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||favoritosPadraoPA);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
 
   async function resolveDef(d){
     const termo=d.code||d.query||d.name;
@@ -1558,6 +1626,8 @@
 
   function renderFavs(){
     const nt=tipoNativo();
+    const custom=unitCustom();
+    const usandoImportados=custom.length>0;
     const base=defs();
     const locais=favLocal(nt)
       .filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(name(nt,x)))
@@ -1568,7 +1638,10 @@
 
     base.forEach(d=>{
       const k=(d.code||'')+'|'+d.name;
-      if(!seen.has(k)){seen.add(k);itens.push({kind:'base',data:d})}
+      if(!seen.has(k)){
+        seen.add(k);
+        itens.push({kind:usandoImportados?'imported':'base',data:d});
+      }
     });
 
     locais.forEach(x=>{
@@ -1584,9 +1657,12 @@
 
     E.uf.innerHTML='<div class="stitle"><span>Favoritos</span></div><div class="grid">'+itens.map((it,i)=>{
       const d=it.data;
-      const cd=it.kind==='base'?(d.code||''):code(nt,d);
-      const nm=it.kind==='base'?d.name:name(nt,d);
-      return '<div class="fav" data-i="'+i+'"><button class="star '+(it.kind==='local'?'on':'')+'">'+(it.kind==='local'?'★':'☆')+'</button><div class="fmain"><div class="fcode">'+esc(cd)+'</div><div class="fname">'+esc(nm)+'</div></div><button class="fuse">Selecionar</button></div>'
+      const ehDef=it.kind==='base'||it.kind==='imported';
+      const cd=ehDef?(d.code||''):code(nt,d);
+      const nm=ehDef?d.name:name(nt,d);
+      const marcado=it.kind==='imported'||it.kind==='local';
+      const titulo=it.kind==='imported'?'Remover da lista importada':'Favorito';
+      return '<div class="fav" data-i="'+i+'"><button class="star '+(marcado?'on':'')+'" title="'+titulo+'">'+(marcado?'★':'☆')+'</button><div class="fmain"><div class="fcode">'+esc(cd)+'</div><div class="fname">'+esc(nm)+'</div></div><button class="fuse">Selecionar</button></div>'
     }).join('')+'</div>';
 
     E.lf.innerHTML='';
@@ -1596,7 +1672,21 @@
       const star=q('.star',c);
       const btn=q('.fuse',c);
 
-      if(it.kind==='base'){
+      if(it.kind==='imported'){
+        star.onclick=()=>{
+          removeUnitCustom(it.data);
+          renderFavs();
+          status('Item removido da lista importada.','ok');
+        };
+        btn.onclick=async()=>{
+          try{
+            status('Localizando '+it.data.name+'...');
+            const resolved=await resolveDef(it.data);
+            if(!resolved) throw new Error('Não localizado.');
+            usar(tipo,resolved);
+          }catch(e){status(e.message,'err')}
+        };
+      }else if(it.kind==='base'){
         star.onclick=async()=>{
           try{
             const resolved=await resolveDef(it.data);
@@ -1614,7 +1704,7 @@
             usar(tipo,resolved);
           }catch(e){status(e.message,'err')}
         };
-      } else {
+      }else{
         star.onclick=()=>{toggleFav(nt,it.data);renderFavs()};
         btn.onclick=()=>usar(tipo,it.data);
       }
@@ -1751,6 +1841,10 @@
 
   function composer(item){
     const vo=viasOrganizadas();
+    const restricao=restricaoViaMedicamento(item);
+    const viaFixa=restricao?opcaoViaPorNome(restricao.via):null;
+    const principais=restricao?(viaFixa?[viaFixa]:[]):vo.principais;
+
     E.mc.innerHTML=
       '<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div>'+
       '<div class="med">'+
@@ -1758,10 +1852,13 @@
         '<div class="mgrid">'+
           '<div class="field">'+
             '<label>Via de administração *</label>'+
-            '<select class="mvia"><option value="">Selecione...</option>'+
-              vo.principais.map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+
+            '<select class="mvia" '+(restricao?'disabled':'')+'>'+
+              (restricao?'':'<option value="">Selecione...</option>')+
+              principais.map(x=>'<option value="'+esc(x.v)+'" '+(restricao?'selected':'')+'>'+esc(x.t)+'</option>').join('')+
             '</select>'+
-            (vo.outras.length?'<button class="morevias" type="button">+ Outras vias</button>':'')+
+            (restricao
+              ?'<div class="muted" style="margin-top:4px;font-weight:700">Via fixa: Intramuscular</div>'
+              :(vo.outras.length?'<button class="morevias" type="button">+ Outras vias</button>':''))+
           '</div>'+
           '<div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido"></div>'+
           '<div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div>'+
@@ -1771,6 +1868,11 @@
 
     const viaSel=q('.mvia',E.mc);
     const more=q('.morevias',E.mc);
+
+    if(restricao&&!viaFixa){
+      status('Via Intramuscular não encontrada no Saúde Simples.','err');
+    }
+
     if(more){
       let aberto=false;
       more.onclick=()=>{
@@ -1790,7 +1892,24 @@
         }
       };
     }
-    q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';renderSelecionados();status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};
+
+    q('.madd',E.mc).onclick=async()=>{
+      try{
+        status('Incluindo medicamento...');
+        await incluirMedicamento(
+          item,
+          q('.mvia',E.mc).value,
+          q('.mpos',E.mc).value,
+          q('.mobs',E.mc).value
+        );
+        E.mc.innerHTML='';
+        renderSelecionados();
+        status('Medicamento incluído.','ok');
+      }catch(e){
+        status(e.message,'err');
+      }
+    };
+
     q('.mpos',E.mc)?.focus();
   }
 
@@ -1918,5 +2037,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA2] v1.0.0 carregada para',UNIT);
+  console.info('[OM30 PA2] v1.1.0 carregada para',UNIT);
 })();

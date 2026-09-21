@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.8.4
+// @version      1.9.0
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V184__) return;
-  window.__OM30_PA_V184__ = true;
+  if (window.__OM30_PA_V190__) return;
+  window.__OM30_PA_V190__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -71,11 +71,42 @@
     exame:{
       'RX':'RADIOGRAFIA','RAIO X':'RADIOGRAFIA','RAIO-X':'RADIOGRAFIA',
       'RX TORAX':'RADIOGRAFIA TORAX','RAIO X TORAX':'RADIOGRAFIA TORAX',
-      'HC':'HEMOGRAMA COMPLETO','SANGUE':'HEMOGRAMA'
+      'HC':'HEMOGRAMA COMPLETO','SANGUE':'HEMOGRAMA',
+      'AIDS':'HIV','HIV AIDS':'HIV','HIV/AIDS':'HIV',
+      'PAPANICOLAU':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PAPANICOLAOU':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PAPA NICOLAU':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PREVENTIVO':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PREVENTIVO COLO DO UTERO':'CITOPATOLOGICO CERVICO VAGINAL'
     },
     procedimento:{
       'HGT':'GLICEMIA','DEXTRO':'GLICEMIA','PA':'PRESSAO ARTERIAL',
-      'PRESSAO':'PRESSAO ARTERIAL','AFERIR PRESSAO':'PRESSAO ARTERIAL'
+      'PRESSAO':'PRESSAO ARTERIAL','AFERIR PRESSAO':'PRESSAO ARTERIAL',
+      'AIDS':'HIV','HIV AIDS':'HIV','HIV/AIDS':'HIV',
+      'PAPANICOLAU':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PAPANICOLAOU':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PAPA NICOLAU':'CITOPATOLOGICO CERVICO VAGINAL',
+      'PREVENTIVO':'CITOPATOLOGICO CERVICO VAGINAL'
+    }
+  };
+
+  const buscaInteligenteExtra={
+    exame:{
+      'AIDS':['HIV','ANTI-HIV'],
+      'HIV/AIDS':['HIV','ANTI-HIV'],
+      'HIV AIDS':['HIV','ANTI-HIV'],
+      'PAPANICOLAU':['CITOPATOLOGICO CERVICO VAGINAL','CITOPATOLOGICO'],
+      'PAPANICOLAOU':['CITOPATOLOGICO CERVICO VAGINAL','CITOPATOLOGICO'],
+      'PAPA NICOLAU':['CITOPATOLOGICO CERVICO VAGINAL','CITOPATOLOGICO'],
+      'PREVENTIVO':['CITOPATOLOGICO CERVICO VAGINAL','COLO UTERO']
+    },
+    procedimento:{
+      'AIDS':['HIV','ANTI-HIV'],
+      'HIV/AIDS':['HIV','ANTI-HIV'],
+      'HIV AIDS':['HIV','ANTI-HIV'],
+      'HGT':['GLICEMIA'],
+      'DEXTRO':['GLICEMIA'],
+      'PA':['PRESSAO ARTERIAL']
     }
   };
 
@@ -250,6 +281,34 @@
     return k?map[k]:txt;
   }
 
+  function consultasInteligentes(tipo,termo){
+    const bruto=clean(termo);
+    if(/^\d{10}$/.test(digits(bruto))) return [bruto];
+
+    const n=norm(bruto);
+    const out=[bruto,traduz(tipo,bruto)];
+    const extras=buscaInteligenteExtra[tipo]||{};
+
+    for(const [chave,valores] of Object.entries(extras)){
+      if(n===chave||n.includes(chave)){
+        out.push(...valores);
+      }
+    }
+
+    return [...new Set(out.map(clean).filter(Boolean))];
+  }
+
+  function mergeResultadosBusca(listas){
+    const map=new Map();
+    for(const xs of listas){
+      for(const x of (Array.isArray(xs)?xs:[])){
+        const k=code('',x)||String(x.id||'')+'|'+name('',x);
+        if(!map.has(k)) map.set(k,x);
+      }
+    }
+    return [...map.values()];
+  }
+
   async function api(url){
     const r=await fetch(url,{credentials:'same-origin',headers:{Accept:'application/json, text/javascript, */*; q=0.01','X-Requested-With':'XMLHttpRequest'}});
     if(!r.ok) throw new Error('HTTP '+r.status);
@@ -257,20 +316,32 @@
   }
 
   async function buscarBruto(tipo,termo){
-    const t=traduz(tipo,termo);
-    let xs=[];
+    const consultas=consultasInteligentes(tipo,termo);
 
     if(tipo==='exame'){
-      xs=await api('/procedimentos/search.json?exame=1&q='+encodeURIComponent(t));
-    }else if(tipo==='procedimento'){
-      const occ=occupation();
-      if(!occ) throw new Error('Ocupação profissional não identificada no prontuário.');
-      xs=await api('/procedimentos/procedimentos_ocupacoes.json?'+new URLSearchParams({ocupacao_id:occ,q:t}));
-    }else if(tipo==='medicamento'){
-      xs=await api('/estoque/produtos/aplicacao_local?q='+encodeURIComponent(t));
+      const listas=await Promise.all(
+        consultas.map(t=>api('/procedimentos/search.json?exame=1&q='+encodeURIComponent(t)).catch(()=>[]))
+      );
+      return mergeResultadosBusca(listas);
     }
 
-    return Array.isArray(xs)?xs:[];
+    if(tipo==='procedimento'){
+      const occ=occupation();
+      if(!occ) throw new Error('Ocupação profissional não identificada no prontuário.');
+      const listas=await Promise.all(
+        consultas.map(t=>api('/procedimentos/procedimentos_ocupacoes.json?'+new URLSearchParams({ocupacao_id:occ,q:t})).catch(()=>[]))
+      );
+      return mergeResultadosBusca(listas);
+    }
+
+    if(tipo==='medicamento'){
+      const listas=await Promise.all(
+        consultas.map(t=>api('/estoque/produtos/aplicacao_local?q='+encodeURIComponent(t)).catch(()=>[]))
+      );
+      return mergeResultadosBusca(listas);
+    }
+
+    return [];
   }
 
   async function buscar(tipo,termo){
@@ -668,6 +739,26 @@
     return s?[...s.options].filter(o=>clean(o.value)&&clean(o.textContent)).map(o=>({v:o.value,t:clean(o.textContent)})):[];
   }
 
+  function viasOrganizadas(){
+    const all=vias();
+    const ordem=['ORAL','SUBCUTANEA','INTRAMUSCULAR','INTRAVENOSA'];
+    const principais=[];
+    const usadas=new Set();
+
+    for(const alvo of ordem){
+      const achou=all.find(x=>norm(x.t)===alvo);
+      if(achou){
+        principais.push(achou);
+        usadas.add(String(achou.v));
+      }
+    }
+
+    return {
+      principais,
+      outras:all.filter(x=>!usadas.has(String(x.v)))
+    };
+  }
+
   async function incluirMedicamento(item,via,pos,obs){
     if(!via) throw new Error('Selecione a via de administração.');
     if(!clean(pos)) throw new Error('Informe a posologia.');
@@ -741,7 +832,10 @@
   .stitle{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:9px;font-weight:750;color:#50636d;margin-bottom:4px}
   .muted{font-weight:500;color:#a0aaaf;font-size:8px}
   .rxpick{position:relative}
-  .rxtrigger{width:100%;border:1px solid #e3e8eb;background:#fff;border-radius:10px;padding:8px 9px;display:flex;align-items:center;gap:7px;cursor:pointer;text-align:left;color:#405660}
+  .rxselect{position:relative}
+  .rxtrigger{width:100%;border:1px solid #e3e8eb;background:#fff;border-radius:10px;padding:8px 36px 8px 9px;display:flex;align-items:center;gap:7px;cursor:pointer;text-align:left;color:#405660}
+  .rxclear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:20px;height:20px;border:0;border-radius:50%;background:#eef3f5;color:#647983;font-size:14px;line-height:20px;padding:0;cursor:pointer;display:grid;place-items:center}
+  .rxclear:hover{background:#e1e9ed;color:#274c60}
   .rxtrigger:hover{background:#fafcfd}
   .rxlabel{font-size:8px;color:#93a0a6;text-transform:uppercase;letter-spacing:.4px}
   .rxvalue{flex:1;font-size:10px;font-weight:700;color:#2e4856}
@@ -774,6 +868,7 @@
   .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:8px;font-weight:700;margin-bottom:3px;color:#697b84}
   .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}
   .mactions{text-align:right;margin-top:6px}.mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}
+  .morevias{margin-top:4px;border:0;background:transparent;color:#285970;padding:2px 0;font-size:8px;font-weight:800;cursor:pointer}
   .settings{display:none;position:absolute;inset:0;background:#fff;z-index:100;overflow:auto}.settings.open{display:block}
   .shead{position:sticky;top:0;background:#fff;border-bottom:1px solid #edf1f3;padding:10px 11px;display:flex;align-items:center;justify-content:space-between;z-index:2}
   .stxt{font-size:12px;font-weight:750;color:#2d4653}.sclose{border:0;background:#f2f5f7;color:#506671;width:27px;height:27px;border-radius:7px;cursor:pointer;font-size:16px}
@@ -851,7 +946,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.8.4 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.9.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1099,13 +1194,23 @@
   });
   observerProntuario.observe(document.documentElement,{childList:true,subtree:true});
   const E={s:q('.search',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
-  let tipo='raiox',timer;
+  let tipo='raiox',timer,rxRegiaoAtual=null;
 
   function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}
   function tipoNativo(t=tipo){
     if(t==='raiox'||t==='exames') return 'exame';
     if(t==='medicacao') return 'medicamento';
     if(t==='enfermagem') return 'procedimento';
+    return t;
+  }
+
+  function grupoLogicoParaItem(t,item){
+    if(['raiox','exames','medicacao','enfermagem'].includes(t)) return t;
+    if(t==='procedimento') return 'enfermagem';
+    if(t==='medicamento') return 'medicacao';
+    if(t==='exame'){
+      return /RADIOGRAFIA/i.test(name('exame',item))?'raiox':'exames';
+    }
     return t;
   }
 
@@ -1121,7 +1226,7 @@
         .filter(rowAtiva)
         .filter(r=>{
           const g=clean(r.dataset.om30Grupo||'');
-          if(g) return g===t;
+          if(g) return grupoLogicoParaItem(g,{nome:nomeLinhaExame(r)})===t;
           return t==='raiox'
             ? r.classList.contains('radiografia')
             : !r.classList.contains('radiografia');
@@ -1138,7 +1243,7 @@
         .filter(rowAtiva)
         .filter(r=>{
           const g=clean(r.dataset.om30Grupo||'');
-          return g?g==='enfermagem':r.classList.contains('procedimento-enfermagem');
+          return g?grupoLogicoParaItem(g,{nome:nomeLinhaProcedimento(r)})==='enfermagem':r.classList.contains('procedimento-enfermagem');
         })
         .map(r=>({
           codigo:codigoLinhaProcedimento(r),
@@ -1305,7 +1410,7 @@
       const r=await incluirSimples(nt,validado);
 
       if(r?.row){
-        r.row.dataset.om30Grupo=tipo;
+        r.row.dataset.om30Grupo=grupoLogicoParaItem(tipo,validado);
         r.row.dataset.om30Codigo=digits(code(nt,validado)).slice(0,10);
         r.row.dataset.om30Nome=name(nt,validado);
       }
@@ -1435,27 +1540,43 @@
     });
   }
 
-  function renderRX(regiaoAtual=''){
+  function renderRX(){
     E.rx.innerHTML=
       '<div class="rxpick">'+
-        '<button class="rxtrigger" title="Clique para escolher ou trocar a região">'+
-          '<span class="rxlabel">Região</span>'+
-          '<span class="rxvalue">'+esc(regiaoAtual||'Escolher região')+'</span>'+
-          '<span class="rxchev">⌄</span>'+
-        '</button>'+
+        '<div class="rxselect">'+
+          '<button class="rxtrigger" title="Clique para escolher ou trocar a região">'+
+            '<span class="rxlabel">Região</span>'+
+            '<span class="rxvalue">'+esc(rxRegiaoAtual?.[0]||'Escolher região')+'</span>'+
+            '<span class="rxchev">⌄</span>'+
+          '</button>'+
+          (rxRegiaoAtual?'<button class="rxclear" title="Limpar região" aria-label="Limpar região">×</button>':'')+
+        '</div>'+
         '<div class="rxmenu">'+gruposRX.map((g,i)=>'<button class="rxopt" data-i="'+i+'">'+esc(g[0])+'</button>').join('')+'</div>'+
       '</div>';
 
     const menu=q('.rxmenu',E.rx);
     const trigger=q('.rxtrigger',E.rx);
-    const value=q('.rxvalue',E.rx);
+    const clear=q('.rxclear',E.rx);
 
     trigger.onclick=()=>menu.classList.toggle('open');
 
+    if(clear){
+      clear.onclick=e=>{
+        e.preventDefault();
+        e.stopPropagation();
+        rxRegiaoAtual=null;
+        E.r.innerHTML='';
+        status('');
+        renderRX();
+        E.s.focus();
+      };
+    }
+
     qa('.rxopt',E.rx).forEach(b=>b.onclick=()=>{
       const g=gruposRX[+b.dataset.i];
-      value.textContent=g[0];
+      rxRegiaoAtual=g;
       menu.classList.remove('open');
+      renderRX();
       pesquisar(g[1],true);
     });
   }
@@ -1501,7 +1622,46 @@
   }
 
   function composer(item){
-    E.mc.innerHTML='<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div><div class="med"><div class="medname">'+esc(name('medicamento',item))+'</div><div class="mgrid"><div class="field"><label>Via de administração *</label><select class="mvia"><option value="">Selecione...</option>'+vias().map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+'</select></div><div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido"></div><div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div></div><div class="mactions"><button class="btn madd">Incluir medicamento</button></div></div>';
+    const vo=viasOrganizadas();
+    E.mc.innerHTML=
+      '<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div>'+
+      '<div class="med">'+
+        '<div class="medname">'+esc(name('medicamento',item))+'</div>'+
+        '<div class="mgrid">'+
+          '<div class="field">'+
+            '<label>Via de administração *</label>'+
+            '<select class="mvia"><option value="">Selecione...</option>'+
+              vo.principais.map(x=>'<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>').join('')+
+            '</select>'+
+            (vo.outras.length?'<button class="morevias" type="button">+ Outras vias</button>':'')+
+          '</div>'+
+          '<div class="field"><label>Posologia *</label><input class="mpos" placeholder="Ex.: 1 comprimido"></div>'+
+          '<div class="field" style="grid-column:1/-1"><label>Observação</label><textarea class="mobs" placeholder="Opcional"></textarea></div>'+
+        '</div>'+
+        '<div class="mactions"><button class="btn madd">Incluir medicamento</button></div>'+
+      '</div>';
+
+    const viaSel=q('.mvia',E.mc);
+    const more=q('.morevias',E.mc);
+    if(more){
+      let aberto=false;
+      more.onclick=()=>{
+        aberto=!aberto;
+        if(aberto){
+          for(const x of vo.outras){
+            if(![...viaSel.options].some(o=>String(o.value)===String(x.v))){
+              viaSel.insertAdjacentHTML('beforeend','<option value="'+esc(x.v)+'">'+esc(x.t)+'</option>');
+            }
+          }
+          more.textContent='− Ocultar outras vias';
+        }else{
+          const extras=new Set(vo.outras.map(x=>String(x.v)));
+          if(extras.has(String(viaSel.value))) viaSel.value='';
+          [...viaSel.options].forEach(o=>{if(extras.has(String(o.value))) o.remove()});
+          more.textContent='+ Outras vias';
+        }
+      };
+    }
     q('.madd',E.mc).onclick=async()=>{try{status('Incluindo medicamento...');await incluirMedicamento(item,q('.mvia',E.mc).value,q('.mpos',E.mc).value,q('.mobs',E.mc).value);E.mc.innerHTML='';renderSelecionados();status('Medicamento incluído.','ok')}catch(e){status(e.message,'err')}};
     q('.mpos',E.mc)?.focus();
   }
@@ -1626,5 +1786,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.8.4 carregada para',UNIT);
+  console.info('[OM30 PA] v1.9.0 carregada para',UNIT);
 })();

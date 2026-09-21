@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.9.1
+// @version      1.9.2
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V191__) return;
-  window.__OM30_PA_V191__ = true;
+  if (window.__OM30_PA_V192__) return;
+  window.__OM30_PA_V192__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -872,8 +872,23 @@
   .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}
   .mactions{text-align:right;margin-top:6px}.mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}
   .morevias{margin-top:4px;border:0;background:transparent;color:#285970;padding:2px 0;font-size:8px;font-weight:800;cursor:pointer}
-  .settings{display:none;position:absolute;inset:0;background:#fff;z-index:100;overflow:auto}.settings.open{display:block}
-  .shead{position:sticky;top:0;background:#fff;border-bottom:1px solid #edf1f3;padding:10px 11px;display:flex;align-items:center;justify-content:space-between;z-index:2}
+  .settings{
+    display:none;
+    position:static!important;
+    inset:auto!important;
+    width:auto!important;
+    max-width:none!important;
+    max-height:none!important;
+    margin:8px!important;
+    background:#fff;
+    border:1px solid #dfe6ea;
+    border-radius:10px;
+    box-shadow:0 4px 14px rgba(30,50,63,.08);
+    z-index:auto!important;
+    overflow:visible
+  }
+  .settings.open{display:block}
+  .shead{position:static;background:#fff;border-bottom:1px solid #edf1f3;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;z-index:auto}
   .stxt{font-size:12px;font-weight:750;color:#2d4653}.sclose{border:0;background:#f2f5f7;color:#506671;width:27px;height:27px;border-radius:7px;cursor:pointer;font-size:16px}
   .sbody{padding:10px}.sunit{font-size:9px;color:#85939a;margin-bottom:8px}.snote{font-size:8.5px;color:#7b8b93;line-height:1.35;margin-bottom:8px}
   .sactions{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}.sbtn{border:1px solid #dce4e8;background:#fff;color:#34586a;border-radius:8px;padding:6px 8px;font-size:9px;font-weight:700;cursor:pointer}.sbtn.primary{background:#123f68;color:#fff;border-color:#123f68}.sbtn.danger{color:#a34d4d}
@@ -949,7 +964,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.9.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.9.2 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1604,7 +1619,7 @@
     E.s.placeholder=map[tipo]||'Pesquisar...';
   }
 
-  function openSettings(){E.settings.classList.add('open')}
+  function openSettings(){E.settings.classList.toggle('open')}
   function closeSettings(){E.settings.classList.remove('open')}
 
   async function importFiles(files){
@@ -1808,5 +1823,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.9.1 carregada para',UNIT);
+  console.info('[OM30 PA] v1.9.2 carregada para',UNIT);
 })();

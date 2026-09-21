@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.8.3
+// @version      1.8.4
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V183__) return;
-  window.__OM30_PA_V183__ = true;
+  if (window.__OM30_PA_V184__) return;
+  window.__OM30_PA_V184__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -27,7 +27,6 @@
 
   const STORE = 'OM30_PA_FAVORITOS_PC_V1';
   const STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2';
-  const STORE_POS = 'OM30_PA_POSICAO_V1';
 
   function unitName(){
     return qa('a.nav-link,.navbar a,.navbar-nav a').map(x=>clean(x.innerText)).find(t=>/\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA';
@@ -715,10 +714,10 @@
   const css=document.createElement('style');
   css.textContent=`
   #om30pa{
-    position:fixed;right:14px;bottom:14px;width:370px;max-width:calc(100vw - 28px);
-    max-height:66vh;background:#fff;border:1px solid #e8ecef;border-radius:16px;
-    box-shadow:0 16px 44px rgba(26,45,58,.17);z-index:2147483646;
-    font-family:"Segoe UI",Arial,sans-serif;color:#263942;overflow:hidden
+    position:static;width:100%;max-width:100%;max-height:none;
+    background:#fff;border:0;border-radius:0;box-shadow:none;z-index:auto;
+    font-family:"Segoe UI",Arial,sans-serif;color:#263942;overflow:visible;
+    left:auto;right:auto;top:auto;bottom:auto;transform:none
   }
   #om30pa *{box-sizing:border-box}
   .oh{background:#123f68;color:#fff;padding:10px 12px;display:flex;align-items:center;justify-content:space-between}
@@ -782,8 +781,15 @@
   .sactions{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}.sbtn{border:1px solid #dce4e8;background:#fff;color:#34586a;border-radius:8px;padding:6px 8px;font-size:9px;font-weight:700;cursor:pointer}.sbtn.primary{background:#123f68;color:#fff;border-color:#123f68}.sbtn.danger{color:#a34d4d}
   .stextarea{width:100%;min-height:155px;border:1px solid #dfe5e8;border-radius:9px;padding:8px;font:9px/1.4 Consolas,monospace;outline:none;resize:vertical}.stextarea:focus{border-color:#b9cbd4;box-shadow:0 0 0 3px rgba(18,63,104,.06)}
   .sfoot{font-size:8px;color:#9aa5aa;margin-top:7px}
-  .launch{position:fixed;right:10px;bottom:18px;z-index:2147483645;border:0;border-radius:999px;background:#123f68;color:#fff;width:46px;height:46px;font-size:9px;font-weight:800;cursor:pointer;display:none;box-shadow:0 6px 18px rgba(20,45,65,.22)}
-  #om30pa.om30-inline{position:relative;inset:auto;width:100%;max-width:none;max-height:none;border:0;border-radius:0;box-shadow:none;background:#fff}
+  #om30pa.om30-inline{
+    position:static!important;
+    inset:auto!important;
+    left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;
+    width:100%!important;max-width:100%!important;max-height:none!important;
+    margin:0!important;transform:none!important;z-index:auto!important;
+    border:0!important;border-radius:0!important;box-shadow:none!important;
+    background:#fff!important;overflow:visible!important
+  }
   #om30pa.om30-inline .oh{cursor:default;border-radius:0;background:#fff;color:#294858;padding:8px 10px;border-bottom:1px solid #e8edef}
   #om30pa.om30-inline .ot{font-size:11px}
   #om30pa.om30-inline .og{color:#315a70;background:#eef4f7}
@@ -811,7 +817,7 @@
   .om30-cs-native-body.open{display:block}
   .om30-cs-native-body #om30pa.om30-inline{display:block!important}
   #om30-controle-salas-section > .portlet > .portlet-header{color:#c62828!important}
-  @media(max-width:420px){#om30pa{width:calc(100vw - 20px);right:10px;bottom:10px}.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
+  @media(max-width:420px){.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
 
@@ -845,7 +851,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.8.3 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.8.4 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1041,63 +1047,8 @@
     },250);
   }
 
-  function loadPos(){
-    try{return JSON.parse(localStorage.getItem(STORE_POS)||'null')}catch{return null}
-  }
-  function savePos(){
-    const r=panel.getBoundingClientRect();
-    localStorage.setItem(STORE_POS,JSON.stringify({left:Math.round(r.left),top:Math.round(r.top)}));
-  }
-  function applyPos(){
-    if(INLINE_MODE) return;
-    const p=loadPos();
-    if(!p) return;
-    const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
-    const maxT=Math.max(0,window.innerHeight-panel.offsetHeight);
-    panel.style.left=Math.min(Math.max(0,p.left),maxL)+'px';
-    panel.style.top=Math.min(Math.max(0,p.top),maxT)+'px';
-    panel.style.right='auto';
-    panel.style.bottom='auto';
-  }
 
-  let dragging=false,dragDX=0,dragDY=0;
-  const head=q('.oh',panel);
-  head.addEventListener('mousedown',e=>{
-    if(INLINE_MODE) return;
-    if(e.target.closest('button')) return;
-    const r=panel.getBoundingClientRect();
-    dragging=true;
-    dragDX=e.clientX-r.left;
-    dragDY=e.clientY-r.top;
-    panel.style.left=r.left+'px';
-    panel.style.top=r.top+'px';
-    panel.style.right='auto';
-    panel.style.bottom='auto';
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove',e=>{
-    if(!dragging) return;
-    const w=panel.offsetWidth,h=panel.offsetHeight;
-    const left=Math.min(Math.max(0,e.clientX-dragDX),Math.max(0,window.innerWidth-w));
-    const top=Math.min(Math.max(0,e.clientY-dragDY),Math.max(0,window.innerHeight-h));
-    panel.style.left=left+'px';
-    panel.style.top=top+'px';
-  });
-  document.addEventListener('mouseup',()=>{
-    if(!dragging) return;
-    dragging=false;
-    savePos();
-  });
-  window.addEventListener('resize',()=>applyPos());
-  setTimeout(applyPos,0);
-
-  // Mantido apenas como objeto interno para compatibilidade com handlers antigos.
-  // Não é anexado ao DOM: este script não tem mais launcher/modo flutuante.
-  const launch=document.createElement('button');
-  launch.className='launch';
-  launch.textContent='OM30';
-  launch.type='button';
-  launch.style.display='none';
+  const launch={style:{display:'none'}};
 
   // Saúde Simples pode reconstruir o formulário após uma validação por AJAX.
   // Se nossa seção for removida junto, recria automaticamente no novo DOM.
@@ -1168,7 +1119,13 @@
     if(t==='raiox'||t==='exames'){
       return qa('tr.prontuario-exame-row')
         .filter(rowAtiva)
-        .filter(r=>t==='raiox'?r.classList.contains('radiografia'):!r.classList.contains('radiografia'))
+        .filter(r=>{
+          const g=clean(r.dataset.om30Grupo||'');
+          if(g) return g===t;
+          return t==='raiox'
+            ? r.classList.contains('radiografia')
+            : !r.classList.contains('radiografia');
+        })
         .map(r=>({
           codigo:codigoLinhaExame(r),
           nome:nomeLinhaExame(r)
@@ -1179,7 +1136,10 @@
     if(t==='enfermagem'){
       return qa('tr.prontuario-lancamento-bpa-row')
         .filter(rowAtiva)
-        .filter(r=>r.classList.contains('procedimento-enfermagem'))
+        .filter(r=>{
+          const g=clean(r.dataset.om30Grupo||'');
+          return g?g==='enfermagem':r.classList.contains('procedimento-enfermagem');
+        })
         .map(r=>({
           codigo:codigoLinhaProcedimento(r),
           nome:nomeLinhaProcedimento(r)
@@ -1343,6 +1303,13 @@
 
       status('Selecionando '+name(nt,validado)+'...');
       const r=await incluirSimples(nt,validado);
+
+      if(r?.row){
+        r.row.dataset.om30Grupo=tipo;
+        r.row.dataset.om30Codigo=digits(code(nt,validado)).slice(0,10);
+        r.row.dataset.om30Nome=name(nt,validado);
+      }
+
       renderSelecionados();
 
       if(r?.already){
@@ -1468,33 +1435,26 @@
     });
   }
 
-  function renderRX(){
+  function renderRX(regiaoAtual=''){
     E.rx.innerHTML=
       '<div class="rxpick">'+
-        '<button class="rxtrigger"><span class="rxlabel">Região</span><span class="rxvalue">Escolher região</span><span class="rxchev">⌄</span></button>'+
-        '<button class="rxreset" style="display:none">← Voltar às regiões</button>'+
+        '<button class="rxtrigger" title="Clique para escolher ou trocar a região">'+
+          '<span class="rxlabel">Região</span>'+
+          '<span class="rxvalue">'+esc(regiaoAtual||'Escolher região')+'</span>'+
+          '<span class="rxchev">⌄</span>'+
+        '</button>'+
         '<div class="rxmenu">'+gruposRX.map((g,i)=>'<button class="rxopt" data-i="'+i+'">'+esc(g[0])+'</button>').join('')+'</div>'+
       '</div>';
 
     const menu=q('.rxmenu',E.rx);
     const trigger=q('.rxtrigger',E.rx);
     const value=q('.rxvalue',E.rx);
-    const reset=q('.rxreset',E.rx);
 
     trigger.onclick=()=>menu.classList.toggle('open');
-
-    reset.onclick=()=>{
-      E.s.value='';
-      E.r.innerHTML='';
-      status('');
-      renderRX();
-      E.s.focus();
-    };
 
     qa('.rxopt',E.rx).forEach(b=>b.onclick=()=>{
       const g=gruposRX[+b.dataset.i];
       value.textContent=g[0];
-      reset.style.display='inline-flex';
       menu.classList.remove('open');
       pesquisar(g[1],true);
     });
@@ -1666,5 +1626,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.8.3 carregada para',UNIT);
+  console.info('[OM30 PA] v1.8.4 carregada para',UNIT);
 })();

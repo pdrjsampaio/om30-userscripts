@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.9.0
+// @version      1.9.1
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V190__) return;
-  window.__OM30_PA_V190__ = true;
+  if (window.__OM30_PA_V191__) return;
+  window.__OM30_PA_V191__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -826,6 +826,9 @@
   .searchrow:focus-within{background:#fff;border-color:#cbd8df;box-shadow:0 0 0 3px rgba(18,63,104,.07)}
   .search{flex:1;border:0;background:transparent;outline:none;padding:6px 2px;font-size:10.5px;color:#2d434f;min-width:0}
   .search::placeholder{color:#99a5ab}
+  .searchclear{display:none;width:22px;height:22px;border:0;border-radius:50%;background:#e7edf0;color:#60747e;cursor:pointer;font-size:14px;line-height:22px;padding:0;flex:none;place-items:center}
+  .searchclear.show{display:grid}
+  .searchclear:hover{background:#d9e3e7;color:#274c60}
   .searchbtn{width:29px;height:29px;border:0;border-radius:50%;background:#123f68;color:#fff;cursor:pointer;font-size:0;padding:0;position:relative;flex:none}
   .searchbtn:before{content:"⌕";font-size:17px;line-height:29px}
   .sect{margin-top:7px}
@@ -931,7 +934,7 @@
     <button class="tab" data-t="enfermagem" title="Procedimentos de enfermagem">Enfermagem</button>
   </div>
   <div class="obody">
-    <div class="searchrow"><input class="search" placeholder="Buscar radiografia..."><button class="searchbtn" title="Pesquisar">Pesquisar</button></div>
+    <div class="searchrow"><input class="search" placeholder="Buscar radiografia..."><button class="searchclear" title="Limpar pesquisa" aria-label="Limpar pesquisa">×</button><button class="searchbtn" title="Pesquisar">Pesquisar</button></div>
     <div class="rx sect"></div><div class="sel sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
   </div>
   <div class="settings">
@@ -946,7 +949,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.9.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.9.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1193,10 +1196,25 @@
     timerRemontagem=setTimeout(garantirControleSalas,80);
   });
   observerProntuario.observe(document.documentElement,{childList:true,subtree:true});
-  const E={s:q('.search',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
+  const E={s:q('.search',panel),clear:q('.searchclear',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer,rxRegiaoAtual=null;
 
   function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}
+
+  function atualizarBotaoLimparBusca(){
+    E.clear?.classList.toggle('show',!!clean(E.s?.value));
+  }
+
+  function limparPesquisa(){
+    clearTimeout(timer);
+    E.s.value='';
+    E.r.innerHTML='';
+    E.mc.innerHTML='';
+    status('');
+    if(tipo==='raiox') renderRX();
+    atualizarBotaoLimparBusca();
+    E.s.focus();
+  }
   function tipoNativo(t=tipo){
     if(t==='raiox'||t==='exames') return 'exame';
     if(t==='medicacao') return 'medicamento';
@@ -1739,6 +1757,7 @@
     b.classList.add('on');
     tipo=b.dataset.t;
     E.s.value='';
+    atualizarBotaoLimparBusca();
     E.r.innerHTML='';
     E.rx.innerHTML='';
     E.mc.innerHTML='';
@@ -1750,8 +1769,10 @@
     E.s.focus();
   });
   q('.searchbtn',panel).onclick=()=>pesquisar();
+  E.clear.onclick=()=>limparPesquisa();
   E.s.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pesquisar()}};
   E.s.oninput=()=>{
+    atualizarBotaoLimparBusca();
     clearTimeout(timer);
     const v=E.s.value.trim();
 
@@ -1782,9 +1803,10 @@
   q('.ox',panel).onclick=()=>{};
   launch.onclick=()=>{};
 
+  atualizarBotaoLimparBusca();
   renderFavs();
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.9.0 carregada para',UNIT);
+  console.info('[OM30 PA] v1.9.1 carregada para',UNIT);
 })();

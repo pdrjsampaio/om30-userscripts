@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.9.3
+// @version      1.9.4
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -27,6 +27,7 @@
 
   const STORE = 'OM30_PA_FAVORITOS_PC_V1';
   const STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2';
+  const STORE_DEFAULT_HIDDEN = 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1';
 
   function unitName(){
     return qa('a.nav-link,.navbar a,.navbar-nav a').map(x=>clean(x.innerText)).find(t=>/\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA';
@@ -437,6 +438,30 @@
   function setUnitStore(v){localStorage.setItem(STORE_UNIT,JSON.stringify(v))}
   function unitCustom(){return unitStore()[UNITKEY]||[]}
   function saveUnitCustom(list){const s=unitStore();s[UNITKEY]=list;setUnitStore(s)}
+
+  function defaultHiddenStore(){
+    try{return JSON.parse(localStorage.getItem(STORE_DEFAULT_HIDDEN)||'{}')}catch{return {}}
+  }
+
+  function setDefaultHiddenStore(v){
+    localStorage.setItem(STORE_DEFAULT_HIDDEN,JSON.stringify(v));
+  }
+
+  function defaultFavKey(x){
+    return (x.group||'')+'|'+(x.code||'')+'|'+norm(x.name||'');
+  }
+
+  function defaultHiddenKeys(){
+    return new Set(defaultHiddenStore()[UNITKEY]||[]);
+  }
+
+  function hideDefaultFavorite(item){
+    const s=defaultHiddenStore();
+    const xs=new Set(s[UNITKEY]||[]);
+    xs.add(defaultFavKey(item));
+    s[UNITKEY]=[...xs];
+    setDefaultHiddenStore(s);
+  }
 
   function unitCustomKey(x){
     return (x.group||'')+'|'+(x.code||'')+'|'+norm(x.name||'');
@@ -1032,7 +1057,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.9.3 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.9.4 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1401,7 +1426,20 @@
     timerSelecionados=setTimeout(renderSelecionados,100);
   });
   observerSelecionados.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style']});
-  function defs(){const nt=tipoNativo();const custom=unitCustom();const src=custom.length?custom:(favoritosUnidade[UNITKEY]||favoritosPadraoPA);return src.filter(x=>x.type===nt).filter(x=>!x.group||x.group===tipo).filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||'')).filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''))}
+  function defs(){
+    const nt=tipoNativo();
+    const custom=unitCustom();
+    const usandoImportados=custom.length>0;
+    const src=usandoImportados?custom:(favoritosUnidade[UNITKEY]||favoritosPadraoPA);
+    const ocultos=usandoImportados?new Set():defaultHiddenKeys();
+
+    return src
+      .filter(x=>usandoImportados||!ocultos.has(defaultFavKey(x)))
+      .filter(x=>x.type===nt)
+      .filter(x=>!x.group||x.group===tipo)
+      .filter(x=>tipo!=='raiox'||/RADIOGRAFIA/i.test(x.name||''))
+      .filter(x=>tipo!=='exames'||!/RADIOGRAFIA/i.test(x.name||''));
+  }
 
   async function resolveDef(d){
     const termo=d.code||d.query||d.name;
@@ -1565,8 +1603,8 @@
       const ehDef=it.kind==='base'||it.kind==='imported';
       const cd=ehDef?(d.code||''):code(nt,d);
       const nm=ehDef?d.name:name(nt,d);
-      const marcado=it.kind==='imported'||it.kind==='local';
-      const titulo=it.kind==='imported'?'Remover da lista importada':'Favorito';
+      const marcado=it.kind==='base'||it.kind==='imported'||it.kind==='local';
+      const titulo=(it.kind==='imported'||it.kind==='base')?'Remover dos favoritos':'Favorito';
       return '<div class="fav" data-i="'+i+'"><button class="star '+(marcado?'on':'')+'" title="'+titulo+'">'+(marcado?'★':'☆')+'</button><div class="fmain"><div class="fcode">'+esc(cd)+'</div><div class="fname">'+esc(nm)+'</div></div><button class="fuse">Selecionar</button></div>'
     }).join('')+'</div>';
 
@@ -1592,14 +1630,10 @@
           }catch(e){status(e.message,'err')}
         };
       }else if(it.kind==='base'){
-        star.onclick=async()=>{
-          try{
-            const resolved=await resolveDef(it.data);
-            if(!resolved) throw new Error('Não localizado.');
-            const on=toggleFav(nt,resolved);
-            star.textContent=on?'★':'☆';
-            star.classList.toggle('on',on);
-          }catch(e){status(e.message,'err')}
+        star.onclick=()=>{
+          hideDefaultFavorite(it.data);
+          renderFavs();
+          status('Item removido dos favoritos.','ok');
         };
         btn.onclick=async()=>{
           try{
@@ -1942,5 +1976,5 @@
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.9.3 carregada para',UNIT);
+  console.info('[OM30 PA] v1.9.4 carregada para',UNIT);
 })();

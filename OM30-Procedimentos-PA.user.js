@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.8.0
+// @version      1.8.1
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V180__) return;
-  window.__OM30_PA_V180__ = true;
+  if (window.__OM30_PA_V181__) return;
+  window.__OM30_PA_V181__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -758,11 +758,13 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.8.0 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.8.1 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
-  document.body.appendChild(panel);
-
+  // O painel NÃO possui mais modo flutuante.
+  // Ele permanece fora do DOM até existir a seção nativa CONTROLE DE SALAS.
+  // Assim nunca aparece na fila de atendimentos ou em outra tela sem prontuário.
+  
   // O painel passa a ficar dentro de #new_prontuario quando montado inline.
   // Em HTML, <button> sem type dentro de <form> é submit por padrão.
   // Normaliza botões atuais e futuros para impedir finalização acidental.
@@ -1002,7 +1004,13 @@
   window.addEventListener('resize',()=>applyPos());
   setTimeout(applyPos,0);
 
-  const launch=document.createElement('button'); launch.className='launch'; launch.textContent='OM30'; launch.type='button'; document.body.appendChild(launch); if(INLINE_MODE) launch.style.display='none';
+  // Mantido apenas como objeto interno para compatibilidade com handlers antigos.
+  // Não é anexado ao DOM: este script não tem mais launcher/modo flutuante.
+  const launch=document.createElement('button');
+  launch.className='launch';
+  launch.textContent='OM30';
+  launch.type='button';
+  launch.style.display='none';
 
   // Saúde Simples pode reconstruir o formulário após uma validação por AJAX.
   // Se nossa seção for removida junto, recria automaticamente no novo DOM.
@@ -1011,7 +1019,22 @@
 
   function garantirControleSalas(){
     if(remontandoControleSalas) return;
-    if(!q('#new_prontuario')) return;
+
+    const formAtual=q('#new_prontuario');
+    if(!formAtual){
+      // A tela foi trocada (ex.: fila de atendimentos / retorno após salvar).
+      // O painel nunca pode sobreviver fora do bloco nativo do prontuário.
+      if(panel.isConnected) panel.remove();
+      const secaoOrfa=q('#om30-controle-salas-section');
+      if(secaoOrfa) secaoOrfa.remove();
+      INLINE_MODE=false;
+      return;
+    }
+
+    // Defesa adicional contra qualquer montagem antiga/flutuante.
+    if(panel.isConnected && !panel.closest('#om30-controle-salas-section')){
+      panel.remove();
+    }
 
     const secaoAtual=q('#om30-controle-salas-section');
     if(secaoAtual?.isConnected){
@@ -1506,18 +1529,18 @@
     timer=setTimeout(()=>pesquisar(),350);
   };
   q('.og',panel).onclick=openSettings;
-  q('.omin',panel).onclick=()=>{if(INLINE_MODE)return;panel.style.display='none';launch.style.display='block'};
+  q('.omin',panel).onclick=()=>{};
   q('.sclose',panel).onclick=closeSettings;
   q('.simpor',panel).onclick=()=>E.file.click();
   E.file.onchange=async()=>{await importFiles([...E.file.files]);E.file.value=''};
   q('.sadd',panel).onclick=addTextFavorites;
   q('.sclear',panel).onclick=clearUnitFavorites;
-  q('.ox',panel).onclick=()=>{if(INLINE_MODE)return;panel.style.display='none';launch.style.display='block'};
-  launch.onclick=()=>{launch.style.display='none';panel.style.display='block';applyPos();E.s.focus()};
+  q('.ox',panel).onclick=()=>{};
+  launch.onclick=()=>{};
 
   renderFavs();
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.8.0 carregada para',UNIT);
+  console.info('[OM30 PA] v1.8.1 carregada para',UNIT);
 })();

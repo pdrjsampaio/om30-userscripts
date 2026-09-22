@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.9.5
+// @version      1.9.6
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -15,8 +15,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PA_V192__) return;
-  window.__OM30_PA_V192__ = true;
+  if (window.__OM30_PA_V196__) return;
+  window.__OM30_PA_V196__ = true;
 
   const $ = window.jQuery;
   const q = (s,r=document) => r.querySelector(s);
@@ -954,7 +954,7 @@
   .selected-list{display:grid;grid-template-columns:1fr;gap:3px}
   .selected-item{display:flex;align-items:center;gap:7px;border:1px solid #dce8de;background:#f7fbf8;border-radius:8px;padding:6px 7px}
   .selected-mark{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:#e1f1e5;color:#39704a;font-size:10px;font-weight:900;flex:none}
-  .selected-main{min-width:0;flex:1}.selected-code{font:700 8px Consolas,monospace;color:#71837a}.selected-name{font-size:9px;font-weight:700;color:#30493a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .selected-main{min-width:0;flex:1}.selected-code{font:700 8px Consolas,monospace;color:#71837a}.selected-name{font-size:9px;font-weight:700;color:#30493a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n  .selected-remove{width:22px;height:22px;flex:none;border:0;border-radius:6px;background:transparent;color:#9a5555;font-size:16px;font-weight:800;line-height:20px;cursor:pointer;padding:0}.selected-remove:hover{background:#f8eaea;color:#b23f3f}
   .tbl tr.revoked td{background:#fff8f7}
   .revoked-note{margin-top:2px;color:#b23f3f;font-size:8px;font-weight:750;line-height:1.25}
   .revoked-pill{display:inline-block;border:1px solid #efc6c2;background:#fff0ee;color:#a83c35;border-radius:999px;padding:2px 5px;font-size:7px;font-weight:800;margin-top:3px}
@@ -1057,7 +1057,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.9.5 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.9.6 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1122,15 +1122,31 @@
       .trim();
   }
 
+  function formProntuarioAtual(){
+    const candidatos=[
+      q('#new_prontuario'),
+      ...qa('form[id^="edit_prontuario_"]'),
+      ...qa('form[action$="/prontuarios"]'),
+      ...qa('form[action*="/prontuarios/"]')
+    ].filter(Boolean);
+
+    const unicos=[...new Set(candidatos)];
+
+    return unicos.find(form=>
+      !!q('[name^="prontuario["]',form) ||
+      !!q('.column.ui-sortable .portlet-header',form)
+    )||null;
+  }
+
   function colunasNativasProntuario(){
-    const form=q('#new_prontuario');
+    const form=formProntuarioAtual();
     if(!form) return [];
 
     return qa('.column.ui-sortable',form).filter(col=>{
       // As seções principais do prontuário são filhas diretas de um OL.
-      // Isso exclui colunas internas, como o bloco de CID dentro da Evolução.
+      // Aceita tanto criação (#new_prontuario) quanto retorno/edição (edit_prontuario_*).
       return col.parentElement?.tagName==='OL' &&
-             col.closest('#new_prontuario')===form &&
+             col.closest('form')===form &&
              !!col.querySelector(':scope > .portlet > .portlet-header');
     });
   }
@@ -1164,16 +1180,21 @@
   function criarOpcaoControleSalas(){
     if(q('#om30-controle-salas-section')) return true;
 
-    const notificacao=localizarColunaNativa('NOTIFICAÇÃO COMPULSÓRIA');
-    if(!notificacao?.parentNode) return false;
+    const colunas=colunasNativasProntuario();
+    if(!colunas.length) return false;
 
-    // Clona A SEÇÃO NATIVA INTEIRA, não apenas o header.
-    // Estrutura real:
-    // .column.ui-sortable
-    //   .portlet
-    //     .portlet-header
-    //     .portlet-content
-    const nova=notificacao.cloneNode(true);
+    const notificacao=localizarColunaNativa('NOTIFICAÇÃO COMPULSÓRIA');
+    const evolucao=
+      localizarColunaNativa('EVOLUÇÃO CLÍNICA') ||
+      colunas.find(col=>tituloColuna(col).includes('EVOLUÇÃO')) ||
+      null;
+
+    // No retorno ao médico algumas variações do formulário não exibem
+    // NOTIFICAÇÃO COMPULSÓRIA. Usa outra seção nativa apenas como molde.
+    const modelo=notificacao||evolucao||colunas[0];
+    if(!modelo?.parentNode) return false;
+
+    const nova=modelo.cloneNode(true);
     nova.id='om30-controle-salas-section';
 
     const portlet=nova.querySelector(':scope > .portlet');
@@ -1182,7 +1203,7 @@
 
     if(!portlet || !header || !content) return false;
 
-    // Remove qualquer conteúdo/IDs clonados da Notificação.
+    // Remove conteúdo, scripts e IDs clonados da seção usada como molde.
     content.replaceChildren();
     for(const el of [nova,...nova.querySelectorAll('[id]')]){
       if(el!==nova) el.removeAttribute('id');
@@ -1190,12 +1211,19 @@
     nova.querySelectorAll('script').forEach(s=>s.remove());
 
     trocarTituloHeader(header,'CONTROLE DE SALAS');
-
-    // Mantém exatamente o mesmo visual nativo fechado.
     content.style.display='none';
 
-    // Insere a COLUNA INTEIRA como irmã imediatamente anterior à Notificação.
-    notificacao.parentNode.insertBefore(nova,notificacao);
+    // Ordem preferida:
+    // 1) imediatamente antes de NOTIFICAÇÃO COMPULSÓRIA;
+    // 2) logo depois de EVOLUÇÃO CLÍNICA no retorno;
+    // 3) depois da seção usada como molde.
+    if(notificacao?.parentNode){
+      notificacao.parentNode.insertBefore(nova,notificacao);
+    }else if(evolucao?.parentNode){
+      evolucao.parentNode.insertBefore(nova,evolucao.nextSibling);
+    }else{
+      modelo.parentNode.insertBefore(nova,modelo.nextSibling);
+    }
 
     content.appendChild(panel);
     panel.classList.add('om30-inline');
@@ -1228,7 +1256,7 @@
     });
 
     console.info(
-      '[OM30 PA] CONTROLE DE SALAS inserido como .column.ui-sortable nativa antes de NOTIFICAÇÃO COMPULSÓRIA.'
+      '[OM30 PA] CONTROLE DE SALAS inserido no formulário nativo do prontuário.'
     );
 
     return true;
@@ -1247,7 +1275,7 @@
       }else if(tentativas>=120){
         clearInterval(timerControleSalas);
         console.warn(
-          '[OM30 PA] Não encontrei a coluna nativa NOTIFICAÇÃO COMPULSÓRIA em 30 segundos.'
+          '[OM30 PA] Não encontrei um formulário/uma seção nativa de prontuário em 30 segundos.'
         );
       }
     },250);
@@ -1264,10 +1292,9 @@
   function garantirControleSalas(){
     if(remontandoControleSalas) return;
 
-    const formAtual=q('#new_prontuario');
+    const formAtual=formProntuarioAtual();
     if(!formAtual){
-      // A tela foi trocada (ex.: fila de atendimentos / retorno após salvar).
-      // O painel nunca pode sobreviver fora do bloco nativo do prontuário.
+      // Fora de um formulário de prontuário o painel não deve permanecer no DOM.
       if(panel.isConnected) panel.remove();
       const secaoOrfa=q('#om30-controle-salas-section');
       if(secaoOrfa) secaoOrfa.remove();
@@ -1346,6 +1373,42 @@
     return m?{codigo:m[1],nome:clean(m[2])}:{codigo:'',nome:s};
   }
 
+  function removerLinhaNativa(row){
+    if(!row || !rowAtiva(row)) return false;
+
+    const remover=qa('a,button,input[type="button"],input[type="submit"]',row).find(el=>{
+      const texto=norm(
+        el.getAttribute('title') ||
+        el.getAttribute('aria-label') ||
+        el.innerText ||
+        el.value ||
+        ''
+      );
+      const classes=String(el.className||'').toLowerCase();
+
+      return texto==='×' ||
+             texto==='X' ||
+             /REMOVER|EXCLUIR/.test(texto) ||
+             /remove|delete/.test(classes);
+    });
+
+    if(remover){
+      remover.click();
+      return true;
+    }
+
+    const destroy=q('input[name$="[_destroy]"]',row);
+    if(destroy){
+      destroy.value='1';
+      destroy.dispatchEvent(new Event('input',{bubbles:true}));
+      destroy.dispatchEvent(new Event('change',{bubbles:true}));
+      row.style.display='none';
+      return true;
+    }
+
+    return false;
+  }
+
   function selecionadosNativos(t=tipo){
     if(t==='raiox'||t==='exames'){
       return qa('tr.prontuario-exame-row')
@@ -1359,7 +1422,8 @@
         })
         .map(r=>({
           codigo:codigoLinhaExame(r),
-          nome:nomeLinhaExame(r)
+          nome:nomeLinhaExame(r),
+          row:r
         }))
         .filter(x=>x.codigo||x.nome);
     }
@@ -1373,7 +1437,8 @@
         })
         .map(r=>({
           codigo:codigoLinhaProcedimento(r),
-          nome:nomeLinhaProcedimento(r)
+          nome:nomeLinhaProcedimento(r),
+          row:r
         }))
         .filter(x=>x.codigo||x.nome);
     }
@@ -1387,7 +1452,7 @@
             .map(el=>clean(el.value))
             .filter(Boolean);
           const nome=candidatos.find(v=>/\D/.test(v)&&v.length>2)||clean(r.innerText||'');
-          return {codigo:'',nome};
+          return {codigo:'',nome,row:r};
         })
         .filter(x=>x.nome);
     }
@@ -1402,20 +1467,39 @@
 
   function renderSelecionados(){
     if(!E?.sel) return;
+
     const xs=selecionadosNativos(tipo);
+
     E.sel.innerHTML=
       '<div class="stitle"><span>Selecionados neste atendimento</span><span class="muted">'+xs.length+'</span></div>'+
       (xs.length
-        ?'<div class="selected-list">'+xs.map(x=>
+        ?'<div class="selected-list">'+xs.map((x,i)=>
           '<div class="selected-item">'+
             '<div class="selected-mark">✓</div>'+
             '<div class="selected-main">'+
               (x.codigo?'<div class="selected-code">'+esc(x.codigo)+'</div>':'')+
               '<div class="selected-name">'+esc(x.nome||'Item selecionado')+'</div>'+
             '</div>'+
+            '<button type="button" class="selected-remove" data-i="'+i+'" title="Remover dos selecionados" aria-label="Remover dos selecionados">×</button>'+
           '</div>'
         ).join('')+'</div>'
         :'<div class="empty">Nenhum item selecionado nesta categoria.</div>');
+
+    qa('.selected-remove',E.sel).forEach(btn=>{
+      btn.addEventListener('click',e=>{
+        e.preventDefault();
+        e.stopPropagation();
+
+        const item=xs[Number(btn.dataset.i)];
+        if(!item?.row) return;
+
+        if(removerLinhaNativa(item.row)){
+          setTimeout(renderSelecionados,80);
+        }else{
+          status('Não foi possível remover este item com segurança.','err');
+        }
+      });
+    });
   }
 
   let timerSelecionados=null;

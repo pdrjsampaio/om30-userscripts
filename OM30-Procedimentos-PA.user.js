@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.9.6
+// @version      1.9.7
 // @description  Controle de Salas - Procedimentos integrado ao prontuário.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios/*
@@ -960,7 +960,7 @@
   .revoked-pill{display:inline-block;border:1px solid #efc6c2;background:#fff0ee;color:#a83c35;border-radius:999px;padding:2px 5px;font-size:7px;font-weight:800;margin-top:3px}
   .use[disabled]{opacity:.55;cursor:default;background:#788a93}
   .back-results{border:0;background:transparent;color:#174f78;font-size:8px;font-weight:800;padding:2px 0;margin:1px 0 2px;cursor:pointer}
-  .med{border:1px solid #e5eaed;background:#fbfcfd;border-radius:9px;padding:7px}.medname{font-size:10px;font-weight:800;color:#2d4f61;margin-bottom:6px}
+  .med{border:1px solid #e5eaed;background:#fbfcfd;border-radius:9px;padding:7px}.medhead{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}.medname{font-size:10px;font-weight:800;color:#2d4f61;flex:1;min-width:0}.medcancel{width:22px;height:22px;flex:none;border:0;border-radius:6px;background:transparent;color:#9a5555;font-size:16px;font-weight:800;line-height:20px;cursor:pointer;padding:0}.medcancel:hover{background:#f8eaea;color:#b23f3f}
   .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.field label{display:block;font-size:8px;font-weight:700;margin-bottom:3px;color:#697b84}
   .field select,.field input,.field textarea{width:100%;border:1px solid #dfe5e8;border-radius:7px;padding:6px 7px;font:10px "Segoe UI";background:#fff;outline:none}.field textarea{min-height:42px;resize:vertical}
   .mactions{text-align:right;margin-top:6px}.mactions .btn{border:0;border-radius:7px;background:#123f68;color:#fff;padding:6px 9px;font-size:9px;font-weight:700;cursor:pointer}
@@ -1057,7 +1057,7 @@
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.9.6 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v1.9.7 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1871,7 +1871,10 @@
     E.mc.innerHTML=
       '<div class="stitle"><span>Preparar medicamento</span><span class="muted">preencha e inclua direto no prontuário</span></div>'+
       '<div class="med">'+
-        '<div class="medname">'+esc(name('medicamento',item))+'</div>'+
+        '<div class="medhead">'+
+          '<div class="medname">'+esc(name('medicamento',item))+'</div>'+
+          '<button type="button" class="medcancel" title="Cancelar seleção do medicamento" aria-label="Cancelar seleção do medicamento">×</button>'+
+        '</div>'+
         '<div class="mgrid">'+
           '<div class="field">'+
             '<label>Via de administração *</label>'+
@@ -1891,6 +1894,17 @@
 
     const viaSel=q('.mvia',E.mc);
     const more=q('.morevias',E.mc);
+    const cancelar=q('.medcancel',E.mc);
+
+    if(cancelar){
+      cancelar.onclick=e=>{
+        e.preventDefault();
+        e.stopPropagation();
+        E.mc.innerHTML='';
+        status('Seleção de medicamento cancelada.');
+        E.s?.focus();
+      };
+    }
 
     if(restricao&&!viaFixa){
       status('Via Intramuscular não encontrada no Saúde Simples.','err');

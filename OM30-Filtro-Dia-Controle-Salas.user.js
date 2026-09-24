@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Filtro de Dia Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.4.0
-// @description  Substitui o filtro visual nativo por um filtro OM30 compacto de data, mantendo a escolha após F5 e retorno da ficha.
+// @version      1.5.0
+// @description  Substitui o filtro visual nativo por um filtro OM30 compacto de data, mantendo a escolha sem reaplicações visuais repetidas.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Filtro-Dia-Controle-Salas.user.js
@@ -65,13 +65,11 @@
   function save(d) {
     if (!validISO(d)) return false;
     localStorage.setItem(KEY, JSON.stringify({ data:d, dataInicial:d, dataFinal:d, salvoEm:new Date().toISOString() }));
-    setStatus(`Salvo: ${br(d)}`, 'ok', d);
     return true;
   }
 
   function clearSaved() {
     localStorage.removeItem(KEY); LEGACY.forEach(k => localStorage.removeItem(k));
-    setStatus('Sem data salva', '', '');
   }
 
   function roots(vm) {
@@ -180,44 +178,63 @@
     const filter=control?.$refs?.filtroMunicipe; if (!filter) return;
     const f=findFetch(filter); state.fetchVM=f;
 
-    // Sempre que o próprio Saúde Simples refizer a busca, recoloca a data salva
-    // antes da chamada nativa. Assim a atualização da fila não apaga o filtro.
-    if (f && !f.__om30Dia130) {
+    if (f && !f.__om30Dia150) {
       const original=f.fetchFilter;
       f.fetchFilter=function(...args) {
         const d=getSaved();
         if (d && !state.applying) setDates(filter,d);
         return original.apply(this,args);
       };
-      f.__om30Dia130=true;
+      f.__om30Dia150=true;
     }
 
-    if (!control.__om30Dia130) {
+    if (!control.__om30Dia150) {
       const original=control.atualizarListagemFila;
       control.atualizarListagemFila=function(...args) {
         const d=getSaved(); if (d) setDates(this.$refs?.filtroMunicipe,d);
         return original.apply(this,args);
       };
-      control.__om30Dia130=true;
+      control.__om30Dia150=true;
     }
   }
 
-  async function applySaved(force=true) {
+  async function applySaved(manual=false) {
     if (state.applying) return;
     const d=getSaved(); if (!d) return;
     let c=findControl(); if (!c) c=await waitControl();
     if (!c) throw new Error('Controle de Salas não encontrado.');
     state.control=c; installHooks(c);
+
     const filter=c.$refs.filtroMunicipe, f=findFetch(filter);
-    state.applying=true; setStatus(`Aplicando ${br(d)}...`,'loading',d);
+    const [antesInicial, antesFinal]=currentDates(filter);
+    const jaEstaAplicado=antesInicial===d && antesFinal===d;
+
+    state.applying=true;
+    if (manual) setStatus('', 'loading', d);
+
     try {
-      if (!setDates(filter,d)) throw new Error('Campos de Data Inicial/Data Final não encontrados.');
-      for (const vm of tree(filter,120)) if (typeof vm.$nextTick==='function') await new Promise(r=>vm.$nextTick(r));
+      if (!jaEstaAplicado && !setDates(filter,d)) {
+        throw new Error('Campos de Data Inicial/Data Final não encontrados.');
+      }
+
+      if (!manual && jaEstaAplicado) {
+        log('Data já estava aplicada:', d);
+        return;
+      }
+
+      for (const vm of tree(filter,120)) {
+        if (typeof vm.$nextTick==='function') await new Promise(r=>vm.$nextTick(r));
+      }
+
       await sleep(250);
       let r=f?.fetchFilter ? f.fetchFilter() : c.atualizarListagemFila();
       if (r?.then) await r;
-      setStatus('', 'ok', d); log('Data restaurada:',d);
-    } finally { state.applying=false; }
+
+      if (manual) setStatus('', 'ok', d);
+      log(manual ? 'Data aplicada manualmente:' : 'Data restaurada automaticamente:', d);
+    } finally {
+      state.applying=false;
+    }
   }
 
   function nativeFilterButton(control) {
@@ -280,21 +297,18 @@
   function mountPanel(control, p) {
     if (!p || !control) return false;
 
-    // Preferência: logo abaixo do componente onde o Saúde Simples mostra o nome/local selecionado.
     const nomeLocal=control?.$refs?.selecaoGuiche?.$el;
     if (nomeLocal?.parentNode) {
       if (nomeLocal.nextSibling !== p) nomeLocal.parentNode.insertBefore(p, nomeLocal.nextSibling);
       return true;
     }
 
-    // Fallback: ocupa exatamente a região do filtro nativo que foi ocultado.
     const native=nativeFilterButton(control);
     if (native?.parentNode) {
       if (native.previousSibling !== p) native.parentNode.insertBefore(p,native);
       return true;
     }
 
-    // Último fallback: imediatamente antes da listagem da fila.
     const list=control?.$refs?.listagemFila?.$el;
     if (list?.parentNode) {
       if (list.previousSibling !== p) list.parentNode.insertBefore(p,list);
@@ -329,8 +343,11 @@
     }
 
     mountPanel(control,p);
+
     const saved=getSaved();
-    if (saved) setStatus('', 'ok', saved);
+    const input=p.querySelector('#om30fd-data');
+    if (saved && input && document.activeElement !== input) input.value=saved;
+
     return p;
   }
 
@@ -346,24 +363,24 @@
     panel(c);
 
     if (getSaved()) {
-      try { await applySaved(true); } catch(e) { setStatus('Falha: '+e.message,'err',getSaved()); }
-      // O Rails/Vue ainda pode terminar de montar a tela após o primeiro carregamento.
-      setTimeout(()=>applySaved(true).catch(()=>{}),1400);
-      setTimeout(()=>applySaved(true).catch(()=>{}),3500);
+      try { await applySaved(false); } catch(e) { setStatus('Falha: '+e.message,'err',getSaved()); }
     }
 
-    setInterval(async()=>{
+    setInterval(()=>{
       if (!pageOk() || state.applying) return;
       const now=findControl(); if (!now) return;
+
       hideNativeFilter(now);
       panel(now);
+
       const f=findFetch(now.$refs?.filtroMunicipe);
       if (now!==state.control || f!==state.fetchVM) {
         state.control=now;
         state.fetchVM=f;
         installHooks(now);
-        panel(now);
-        if(getSaved()) try{await applySaved(true);}catch{}
+
+        const d=getSaved();
+        if (d) setDates(now.$refs?.filtroMunicipe,d);
       }
     },1500);
   }

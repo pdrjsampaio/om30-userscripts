@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Filtro de Dia Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.5.0
-// @description  Substitui o filtro visual nativo por um filtro OM30 compacto de data, mantendo a escolha sem reaplicações visuais repetidas.
+// @version      1.6.0
+// @description  Substitui o filtro visual nativo por um filtro OM30 compacto de data, mantendo a escolha e o estado “Aplicado” persistente até a data ser alterada.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Filtro-Dia-Controle-Salas.user.js
@@ -218,6 +218,7 @@
       }
 
       if (!manual && jaEstaAplicado) {
+        setStatus('', 'ok', d);
         log('Data já estava aplicada:', d);
         return;
       }
@@ -230,7 +231,7 @@
       let r=f?.fetchFilter ? f.fetchFilter() : c.atualizarListagemFila();
       if (r?.then) await r;
 
-      if (manual) setStatus('', 'ok', d);
+      setStatus('', 'ok', d);
       log(manual ? 'Data aplicada manualmente:' : 'Data restaurada automaticamente:', d);
     } finally {
       state.applying=false;
@@ -270,14 +271,12 @@
 `; document.head.appendChild(s);
   }
 
-  let statusTimer=null;
   function setStatus(msg, cls='', date='') {
     const box=document.querySelector('#om30-filtro-dia'); if (!box) return;
     const st=box.querySelector('#om30fd-status');
     const input=box.querySelector('#om30fd-data');
     const aplicar=box.querySelector('#om30fd-aplicar');
     if (date && input) input.value=date;
-    if (statusTimer) { clearTimeout(statusTimer); statusTimer=null; }
 
     if (aplicar) {
       aplicar.disabled = cls === 'loading';
@@ -287,10 +286,6 @@
     if (st) {
       st.className = cls === 'err' ? 'err' : '';
       st.textContent = cls === 'err' ? msg : '';
-    }
-
-    if (cls === 'ok' && aplicar) {
-      statusTimer=setTimeout(()=>{ aplicar.textContent='Aplicar'; },900);
     }
   }
 
@@ -327,7 +322,7 @@
       const saved=getSaved();
       p=document.createElement('div');
       p.id='om30-filtro-dia';
-      p.innerHTML=`<div class="om30fd-row"><div class="om30fd-field"><label>Data da fila</label><input id="om30fd-data" type="date" value="${saved||today()}"></div><button id="om30fd-aplicar" type="button">Aplicar</button><button id="om30fd-hoje" type="button">Hoje</button><span id="om30fd-status"></span></div>`;
+      p.innerHTML=`<div class="om30fd-row"><div class="om30fd-field"><label>Data da fila</label><input id="om30fd-data" type="date" value="${saved||today()}"></div><button id="om30fd-aplicar" type="button">${saved?'Aplicado ✓':'Aplicar'}</button><button id="om30fd-hoje" type="button">Hoje</button><span id="om30fd-status"></span></div>`;
 
       const input=p.querySelector('#om30fd-data');
       p.querySelector('#om30fd-aplicar').onclick=async()=>{
@@ -339,6 +334,10 @@
         input.value=today(); save(input.value);
         try{await applySaved(true);}catch(e){setStatus('Falha: '+e.message,'err',input.value);}
       };
+      input.addEventListener('change', ()=>{
+        if (input.value !== getSaved()) setStatus('', '', input.value);
+        else setStatus('', 'ok', input.value);
+      });
       input.addEventListener('keydown', e=>{ if(e.key==='Enter') p.querySelector('#om30fd-aplicar').click(); });
     }
 

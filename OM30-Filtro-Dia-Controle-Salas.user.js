@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Filtro de Dia Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.3.0
-// @description  Substitui o filtro visual nativo por um filtro OM30 de data, mantendo a escolha após F5 e retorno da ficha.
+// @version      1.4.0
+// @description  Substitui o filtro visual nativo por um filtro OM30 compacto de data, mantendo a escolha após F5 e retorno da ficha.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Filtro-Dia-Controle-Salas.user.js
@@ -216,7 +216,7 @@
       await sleep(250);
       let r=f?.fetchFilter ? f.fetchFilter() : c.atualizarListagemFila();
       if (r?.then) await r;
-      setStatus(`Ativo: ${br(d)}`,'ok',d); log('Data restaurada:',d);
+      setStatus('', 'ok', d); log('Data restaurada:',d);
     } finally { state.applying=false; }
   }
 
@@ -236,26 +236,45 @@
     if (document.querySelector('#om30fd-style')) return;
     const s=document.createElement('style'); s.id='om30fd-style'; s.textContent=`
 #btn_filtro_modal.om30fd-native-hidden{display:none!important}
-#om30-filtro-dia{display:block;width:100%;box-sizing:border-box;margin:8px 0 10px 0;padding:9px 10px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;font-family:Arial,sans-serif;color:#172033}
-#om30-filtro-dia .om30fd-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}
-#om30-filtro-dia .om30fd-field{min-width:180px;max-width:230px;flex:0 0 210px}
-#om30-filtro-dia label{display:block;font-size:11px;font-weight:700;margin:0 0 4px;color:#334155}
-#om30-filtro-dia input{width:100%;height:34px;box-sizing:border-box;border:1px solid #b8c4d2;border-radius:5px;background:#fff;padding:4px 8px;font-size:12px;color:#172033}
-#om30-filtro-dia button{height:34px;border:1px solid #b8c4d2;border-radius:5px;background:#fff;color:#172033;font-size:11px;font-weight:700;cursor:pointer;padding:0 12px}
-#om30-filtro-dia #om30fd-aplicar{background:#203a5f;color:#fff;border-color:#203a5f}
-#om30-filtro-dia button:hover{filter:brightness(.98)}
-#om30fd-status{align-self:center;margin-left:2px;font-size:10px;color:#64748b;min-width:115px}
-#om30fd-status.ok{color:#166534}#om30fd-status.err{color:#b42318}#om30fd-status.loading{color:#1d4ed8}
-#om30-filtro-dia .om30fd-note{width:100%;margin-top:5px;font-size:9px;color:#7c8798}
-@media(max-width:700px){#om30-filtro-dia .om30fd-field{flex:1 1 170px;max-width:none}#om30fd-status{width:100%;margin-top:2px}}
+#om30-filtro-dia{display:block;width:100%;box-sizing:border-box;margin:7px 0 9px;padding:9px 11px;background:#fff;border:1px solid #d5dee8;border-left:3px solid #203a5f;border-radius:5px;font-family:Arial,sans-serif;color:#172033}
+#om30-filtro-dia .om30fd-row{display:flex;align-items:flex-end;gap:7px;flex-wrap:wrap}
+#om30-filtro-dia .om30fd-field{flex:0 0 178px;min-width:160px}
+#om30-filtro-dia label{display:block;margin:0 0 4px;font-size:10px;line-height:1.1;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.25px}
+#om30-filtro-dia input{width:100%;height:32px;box-sizing:border-box;border:1px solid #bcc8d6;border-radius:4px;background:#fff;padding:4px 8px;font-size:12px;color:#172033;outline:none}
+#om30-filtro-dia input:focus{border-color:#48658a;box-shadow:0 0 0 2px rgba(32,58,95,.08)}
+#om30-filtro-dia button{height:32px;border:1px solid #bcc8d6;border-radius:4px;background:#fff;color:#26364b;font-size:10px;font-weight:700;cursor:pointer;padding:0 12px;transition:background .12s,border-color .12s}
+#om30-filtro-dia button:hover{background:#f4f7fa;border-color:#9eacbd}
+#om30-filtro-dia #om30fd-aplicar{min-width:76px;background:#203a5f;color:#fff;border-color:#203a5f}
+#om30-filtro-dia #om30fd-aplicar:hover{background:#192f4d;border-color:#192f4d}
+#om30-filtro-dia #om30fd-aplicar:disabled{opacity:.65;cursor:default}
+#om30fd-status{display:none;width:100%;margin-top:6px;padding:6px 8px;border-radius:4px;font-size:10px;line-height:1.25}
+#om30fd-status.err{display:block;background:#fff4f2;border:1px solid #f1c4be;color:#a53125}
+@media(max-width:700px){#om30-filtro-dia .om30fd-field{flex:1 1 170px}#om30-filtro-dia #om30fd-aplicar{flex:1 0 auto}}
 `; document.head.appendChild(s);
   }
 
+  let statusTimer=null;
   function setStatus(msg, cls='', date='') {
     const box=document.querySelector('#om30-filtro-dia'); if (!box) return;
-    const st=box.querySelector('#om30fd-status'), input=box.querySelector('#om30fd-data');
+    const st=box.querySelector('#om30fd-status');
+    const input=box.querySelector('#om30fd-data');
+    const aplicar=box.querySelector('#om30fd-aplicar');
     if (date && input) input.value=date;
-    if (st) { st.className=cls; st.textContent=msg; }
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer=null; }
+
+    if (aplicar) {
+      aplicar.disabled = cls === 'loading';
+      aplicar.textContent = cls === 'loading' ? 'Aplicando...' : (cls === 'ok' ? 'Aplicado ✓' : 'Aplicar');
+    }
+
+    if (st) {
+      st.className = cls === 'err' ? 'err' : '';
+      st.textContent = cls === 'err' ? msg : '';
+    }
+
+    if (cls === 'ok' && aplicar) {
+      statusTimer=setTimeout(()=>{ aplicar.textContent='Aplicar'; },900);
+    }
   }
 
   function mountPanel(control, p) {
@@ -294,7 +313,7 @@
       const saved=getSaved();
       p=document.createElement('div');
       p.id='om30-filtro-dia';
-      p.innerHTML=`<div class="om30fd-row"><div class="om30fd-field"><label>Data da fila</label><input id="om30fd-data" type="date" value="${saved||today()}"></div><button id="om30fd-aplicar" type="button">Aplicar</button><button id="om30fd-hoje" type="button">Hoje</button><span id="om30fd-status" class="${saved?'ok':''}">${saved?'Ativo: '+br(saved):'Selecione a data.'}</span><div class="om30fd-note">A mesma data é usada em Data Inicial e Data Final. O filtro antigo do sistema fica oculto.</div></div>`;
+      p.innerHTML=`<div class="om30fd-row"><div class="om30fd-field"><label>Data da fila</label><input id="om30fd-data" type="date" value="${saved||today()}"></div><button id="om30fd-aplicar" type="button">Aplicar</button><button id="om30fd-hoje" type="button">Hoje</button><span id="om30fd-status"></span></div>`;
 
       const input=p.querySelector('#om30fd-data');
       p.querySelector('#om30fd-aplicar').onclick=async()=>{
@@ -311,7 +330,7 @@
 
     mountPanel(control,p);
     const saved=getSaved();
-    if (saved) setStatus(`Ativo: ${br(saved)}`,'ok',saved);
+    if (saved) setStatus('', 'ok', saved);
     return p;
   }
 

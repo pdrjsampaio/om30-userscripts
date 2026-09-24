@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Filtro de Dia Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.2.0
-// @description  Mantém a data escolhida no Controle de Salas - Medicação, com seletor visível e restauração após F5 ou retorno da ficha.
+// @version      1.3.0
+// @description  Substitui o filtro visual nativo por um filtro OM30 de data, mantendo a escolha após F5 e retorno da ficha.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Filtro-Dia-Controle-Salas.user.js
@@ -180,28 +180,25 @@
     const filter=control?.$refs?.filtroMunicipe; if (!filter) return;
     const f=findFetch(filter); state.fetchVM=f;
 
-    if (f && !f.__om30Dia120) {
+    // Sempre que o próprio Saúde Simples refizer a busca, recoloca a data salva
+    // antes da chamada nativa. Assim a atualização da fila não apaga o filtro.
+    if (f && !f.__om30Dia130) {
       const original=f.fetchFilter;
       f.fetchFilter=function(...args) {
-        const r=original.apply(this,args);
-        const capture=()=>setTimeout(()=>{
-          if (state.applying) return;
-          const [a,b]=currentDates(filter);
-          if (a && b && a===b) { save(a); const input=document.querySelector('#om30fd-data'); if (input) input.value=a; }
-        },100);
-        if (r?.then) return r.then(x=>{capture();return x;},e=>Promise.reject(e));
-        capture(); return r;
+        const d=getSaved();
+        if (d && !state.applying) setDates(filter,d);
+        return original.apply(this,args);
       };
-      f.__om30Dia120=true;
+      f.__om30Dia130=true;
     }
 
-    if (!control.__om30Dia120) {
+    if (!control.__om30Dia130) {
       const original=control.atualizarListagemFila;
       control.atualizarListagemFila=function(...args) {
         const d=getSaved(); if (d) setDates(this.$refs?.filtroMunicipe,d);
         return original.apply(this,args);
       };
-      control.__om30Dia120=true;
+      control.__om30Dia130=true;
     }
   }
 
@@ -223,48 +220,132 @@
     } finally { state.applying=false; }
   }
 
+  function nativeFilterButton(control) {
+    return control?.$el?.querySelector?.('#btn_filtro_modal') || document.querySelector('#btn_filtro_modal');
+  }
+
+  function hideNativeFilter(control) {
+    const btn=nativeFilterButton(control);
+    if (!btn) return;
+    btn.classList.add('om30fd-native-hidden');
+    btn.setAttribute('aria-hidden','true');
+    btn.tabIndex=-1;
+  }
+
   function style() {
     if (document.querySelector('#om30fd-style')) return;
     const s=document.createElement('style'); s.id='om30fd-style'; s.textContent=`
-#om30-filtro-dia{position:fixed;right:18px;top:84px;z-index:2147483000;width:270px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.14);font-family:Arial,sans-serif;color:#172033;overflow:hidden}
-#om30-filtro-dia .h{background:#132238;color:#fff;padding:9px 11px}#om30-filtro-dia .h strong{font-size:12px}#om30-filtro-dia .h small{display:block;color:#cbd5e1;font-size:10px;margin-top:2px}
-#om30-filtro-dia .b{padding:10px 11px}#om30-filtro-dia label{display:block;font-size:10px;font-weight:700;margin-bottom:5px;color:#334155}#om30-filtro-dia input{width:100%;height:32px;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:6px;padding:4px 7px;font-size:12px}
-#om30-filtro-dia .a{display:grid;grid-template-columns:1fr auto auto;gap:6px;margin-top:8px}#om30-filtro-dia button{height:30px;border:1px solid #b8c4d2;border-radius:6px;background:#f8fafc;color:#172033;font-size:10px;font-weight:700;cursor:pointer;padding:0 9px}#om30-filtro-dia #om30fd-aplicar{background:#203a5f;color:#fff;border-color:#203a5f}
-#om30fd-status{margin-top:8px;font-size:10px;min-height:14px;color:#64748b}#om30fd-status.ok{color:#166534}#om30fd-status.err{color:#b42318}#om30fd-status.loading{color:#1d4ed8}.note{margin-top:5px;font-size:9px;color:#7c8798}`; document.head.appendChild(s);
+#btn_filtro_modal.om30fd-native-hidden{display:none!important}
+#om30-filtro-dia{display:block;width:100%;box-sizing:border-box;margin:8px 0 10px 0;padding:9px 10px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;font-family:Arial,sans-serif;color:#172033}
+#om30-filtro-dia .om30fd-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}
+#om30-filtro-dia .om30fd-field{min-width:180px;max-width:230px;flex:0 0 210px}
+#om30-filtro-dia label{display:block;font-size:11px;font-weight:700;margin:0 0 4px;color:#334155}
+#om30-filtro-dia input{width:100%;height:34px;box-sizing:border-box;border:1px solid #b8c4d2;border-radius:5px;background:#fff;padding:4px 8px;font-size:12px;color:#172033}
+#om30-filtro-dia button{height:34px;border:1px solid #b8c4d2;border-radius:5px;background:#fff;color:#172033;font-size:11px;font-weight:700;cursor:pointer;padding:0 12px}
+#om30-filtro-dia #om30fd-aplicar{background:#203a5f;color:#fff;border-color:#203a5f}
+#om30-filtro-dia button:hover{filter:brightness(.98)}
+#om30fd-status{align-self:center;margin-left:2px;font-size:10px;color:#64748b;min-width:115px}
+#om30fd-status.ok{color:#166534}#om30fd-status.err{color:#b42318}#om30fd-status.loading{color:#1d4ed8}
+#om30-filtro-dia .om30fd-note{width:100%;margin-top:5px;font-size:9px;color:#7c8798}
+@media(max-width:700px){#om30-filtro-dia .om30fd-field{flex:1 1 170px;max-width:none}#om30fd-status{width:100%;margin-top:2px}}
+`; document.head.appendChild(s);
   }
 
   function setStatus(msg, cls='', date='') {
     const box=document.querySelector('#om30-filtro-dia'); if (!box) return;
     const st=box.querySelector('#om30fd-status'), input=box.querySelector('#om30fd-data');
-    if (date && input) input.value=date; if (st) { st.className=cls; st.textContent=msg; }
+    if (date && input) input.value=date;
+    if (st) { st.className=cls; st.textContent=msg; }
   }
 
-  function panel() {
-    if (!pageOk() || document.querySelector('#om30-filtro-dia')) return;
-    style(); const saved=getSaved();
-    const p=document.createElement('div'); p.id='om30-filtro-dia'; p.innerHTML=`<div class="h"><strong>OM30 · Filtro do dia</strong><small>Controle de Salas · Medicação</small></div><div class="b"><label>Data da fila</label><input id="om30fd-data" type="date" value="${saved||today()}"><div class="a"><button id="om30fd-aplicar">Aplicar e salvar</button><button id="om30fd-hoje">Hoje</button><button id="om30fd-limpar">Limpar</button></div><div id="om30fd-status" class="${saved?'ok':''}">${saved?'Salvo: '+br(saved):'Escolha uma data e clique em Aplicar e salvar.'}</div><div class="note">Data Inicial e Data Final ficam iguais. Nenhum outro filtro é alterado.</div></div>`;
-    document.body.appendChild(p);
-    const input=p.querySelector('#om30fd-data');
-    p.querySelector('#om30fd-aplicar').onclick=async()=>{ if(!validISO(input.value)) return setStatus('Selecione uma data válida.','err'); save(input.value); try{await applySaved(true);}catch(e){setStatus('Falha: '+e.message,'err',input.value);} };
-    p.querySelector('#om30fd-hoje').onclick=async()=>{ input.value=today(); save(input.value); try{await applySaved(true);}catch(e){setStatus('Falha: '+e.message,'err',input.value);} };
-    p.querySelector('#om30fd-limpar').onclick=()=>{ clearSaved(); input.value=today(); };
+  function mountPanel(control, p) {
+    if (!p || !control) return false;
+
+    // Preferência: logo abaixo do componente onde o Saúde Simples mostra o nome/local selecionado.
+    const nomeLocal=control?.$refs?.selecaoGuiche?.$el;
+    if (nomeLocal?.parentNode) {
+      if (nomeLocal.nextSibling !== p) nomeLocal.parentNode.insertBefore(p, nomeLocal.nextSibling);
+      return true;
+    }
+
+    // Fallback: ocupa exatamente a região do filtro nativo que foi ocultado.
+    const native=nativeFilterButton(control);
+    if (native?.parentNode) {
+      if (native.previousSibling !== p) native.parentNode.insertBefore(p,native);
+      return true;
+    }
+
+    // Último fallback: imediatamente antes da listagem da fila.
+    const list=control?.$refs?.listagemFila?.$el;
+    if (list?.parentNode) {
+      if (list.previousSibling !== p) list.parentNode.insertBefore(p,list);
+      return true;
+    }
+    return false;
+  }
+
+  function panel(control) {
+    if (!pageOk()) return null;
+    style();
+    hideNativeFilter(control);
+
+    let p=document.querySelector('#om30-filtro-dia');
+    if (!p) {
+      const saved=getSaved();
+      p=document.createElement('div');
+      p.id='om30-filtro-dia';
+      p.innerHTML=`<div class="om30fd-row"><div class="om30fd-field"><label>Data da fila</label><input id="om30fd-data" type="date" value="${saved||today()}"></div><button id="om30fd-aplicar" type="button">Aplicar</button><button id="om30fd-hoje" type="button">Hoje</button><span id="om30fd-status" class="${saved?'ok':''}">${saved?'Ativo: '+br(saved):'Selecione a data.'}</span><div class="om30fd-note">A mesma data é usada em Data Inicial e Data Final. O filtro antigo do sistema fica oculto.</div></div>`;
+
+      const input=p.querySelector('#om30fd-data');
+      p.querySelector('#om30fd-aplicar').onclick=async()=>{
+        if(!validISO(input.value)) return setStatus('Selecione uma data válida.','err');
+        save(input.value);
+        try{await applySaved(true);}catch(e){setStatus('Falha: '+e.message,'err',input.value);}
+      };
+      p.querySelector('#om30fd-hoje').onclick=async()=>{
+        input.value=today(); save(input.value);
+        try{await applySaved(true);}catch(e){setStatus('Falha: '+e.message,'err',input.value);}
+      };
+      input.addEventListener('keydown', e=>{ if(e.key==='Enter') p.querySelector('#om30fd-aplicar').click(); });
+    }
+
+    mountPanel(control,p);
+    const saved=getSaved();
+    if (saved) setStatus(`Ativo: ${br(saved)}`,'ok',saved);
+    return p;
   }
 
   async function init() {
     if (!pageOk()) return;
-    panel();
-    const c=await waitControl(); if (!c) return setStatus('Controle de Salas não encontrado.','err');
-    state.control=c; installHooks(c);
+    style();
+
+    const c=await waitControl();
+    if (!c) return;
+
+    state.control=c;
+    installHooks(c);
+    panel(c);
+
     if (getSaved()) {
       try { await applySaved(true); } catch(e) { setStatus('Falha: '+e.message,'err',getSaved()); }
+      // O Rails/Vue ainda pode terminar de montar a tela após o primeiro carregamento.
       setTimeout(()=>applySaved(true).catch(()=>{}),1400);
       setTimeout(()=>applySaved(true).catch(()=>{}),3500);
     }
+
     setInterval(async()=>{
       if (!pageOk() || state.applying) return;
       const now=findControl(); if (!now) return;
+      hideNativeFilter(now);
+      panel(now);
       const f=findFetch(now.$refs?.filtroMunicipe);
-      if (now!==state.control || f!==state.fetchVM) { state.control=now; state.fetchVM=f; installHooks(now); if(getSaved()) try{await applySaved(true);}catch{} }
+      if (now!==state.control || f!==state.fetchVM) {
+        state.control=now;
+        state.fetchVM=f;
+        installHooks(now);
+        panel(now);
+        if(getSaved()) try{await applySaved(true);}catch{}
+      }
     },1500);
   }
 

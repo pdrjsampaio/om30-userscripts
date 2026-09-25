@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Via de Administração Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.3.2
-// @description  Exibe a via de administração dos medicamentos pendentes abaixo da Sala em um único indicador compacto, sem quebra visual, com cache persistente entre atualizações da fila.
+// @version      1.3.3
+// @description  Exibe a via de administração dos medicamentos pendentes abaixo da Sala em um único indicador compacto com o prefixo VIA, sem quebra visual e com cache persistente entre atualizações da fila.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Via-Controle-Salas.user.js
@@ -208,7 +208,7 @@
     s.id = 'om30-via-style';
     s.textContent = `
       .om30-via-inline{display:flex;align-items:center;justify-content:center;margin-top:3px;min-height:15px;line-height:1;max-width:100%;overflow:hidden}
-      .om30-via-badge{display:block;max-width:78px;padding:2px 6px;border:0;border-radius:4px;color:#fff;font-size:9px;line-height:1.15;font-weight:800;letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 1px rgba(15,23,42,.14)}
+      .om30-via-badge{display:block;max-width:88px;padding:2px 6px;border:0;border-radius:4px;color:#fff;font-size:9px;line-height:1.15;font-weight:800;letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 1px rgba(15,23,42,.14)}
       .om30-via-im{background:#6d3fb3}
       .om30-via-iv{background:#1f5f9f}
       .om30-via-sc{background:#0f766e}
@@ -216,7 +216,7 @@
       .om30-via-parenteral{background:#8a4c17}
       .om30-via-multipla{background:#334155}
       .om30-via-outros{background:#475569}
-      .om30-via-loading{display:block;max-width:78px;padding:2px 6px;border-radius:4px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap;overflow:hidden}
+      .om30-via-loading{display:block;max-width:88px;padding:2px 6px;border-radius:4px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap;overflow:hidden}
       .om30-via-empty{color:#8793a1;font-size:9px;line-height:1.2;white-space:nowrap}
     `;
     document.head.appendChild(s);
@@ -241,24 +241,24 @@
 
   function renderLoading(box) {
     box.dataset.om30Estado = 'loading';
-    box.innerHTML = '<span class="om30-via-loading">…</span>';
+    box.innerHTML = '<span class="om30-via-loading">VIA …</span>';
   }
 
   function renderErro(box) {
     box.dataset.om30Estado = 'erro';
-    box.innerHTML = '<span class="om30-via-empty" title="Não foi possível consultar a via">—</span>';
+    box.innerHTML = '<span class="om30-via-empty" title="Não foi possível consultar a via">VIA —</span>';
   }
 
   function renderVias(box, vias) {
     box.dataset.om30Estado = 'ok';
     if (!vias.length) {
-      box.innerHTML = '<span class="om30-via-empty" title="Nenhum medicamento pendente com via informada">—</span>';
+      box.innerHTML = '<span class="om30-via-empty" title="Nenhum medicamento pendente com via informada">VIA —</span>';
       return;
     }
 
     const badge = document.createElement('span');
     badge.className = `om30-via-badge ${classeResumo(vias)}`;
-    badge.textContent = vias.map(v => v.curto).join('/');
+    badge.textContent = `VIA ${vias.map(v => v.curto).join('/')}`;
     badge.title = `${vias.length > 1 ? 'Vias' : 'Via'} de administração: ${vias.map(v => v.completo).join(' + ')}`;
     box.replaceChildren(badge);
   }

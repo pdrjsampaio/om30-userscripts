@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Via de Administração Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.1.0
-// @description  Exibe a via de administração dos medicamentos pendentes abaixo da Sala, sem criar nova coluna, com cache persistente entre atualizações da fila.
+// @version      1.2.0
+// @description  Exibe a via de administração dos medicamentos pendentes de forma destacada abaixo da Sala, sem criar nova coluna, com cache persistente entre atualizações da fila.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Via-Controle-Salas.user.js
@@ -16,8 +16,8 @@
 
   const CONFIG = {
     concorrencia: 4,
-    cacheFrescoMs: 30000,
-    cachePersistenteMs: 30 * 60 * 1000,
+    cacheFrescoMs: 120000,
+    cachePersistenteMs: 60 * 60 * 1000,
     intervaloVarredura: 800,
     cacheKey: 'om30_via_controle_salas_cache_v1'
   };
@@ -179,14 +179,29 @@
     return promise;
   }
 
+  function classeVia(via) {
+    const n = normalizar(via?.curto);
+    if (n === 'IM') return 'om30-via-im';
+    if (n === 'IV' || n === 'EV') return 'om30-via-iv';
+    if (n === 'ORAL') return 'om30-via-oral';
+    if (n === 'PARENTERAL') return 'om30-via-parenteral';
+    return 'om30-via-outros';
+  }
+
   function style() {
     if (document.querySelector('#om30-via-style')) return;
     const s = document.createElement('style');
     s.id = 'om30-via-style';
     s.textContent = `
-      .om30-via-inline{display:flex;align-items:center;justify-content:center;gap:3px;flex-wrap:wrap;margin-top:3px;min-height:14px;line-height:1}
-      .om30-via-badge{display:inline-block;padding:1px 4px;border:1px solid #b8c4d1;border-radius:3px;background:#f7f9fb;color:#24364c;font-size:8px;line-height:1.25;font-weight:700;letter-spacing:.1px;white-space:nowrap}
-      .om30-via-loading,.om30-via-empty{color:#8793a1;font-size:8px;line-height:1.2}
+      .om30-via-inline{display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;margin-top:5px;min-height:18px;line-height:1}
+      .om30-via-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 7px;border:0;border-radius:999px;color:#fff;font-size:10px;line-height:1.1;font-weight:800;letter-spacing:.15px;white-space:nowrap;box-shadow:0 1px 2px rgba(15,23,42,.18)}
+      .om30-via-im{background:#6d3fb3}
+      .om30-via-iv{background:#1f5f9f}
+      .om30-via-oral{background:#24704a}
+      .om30-via-parenteral{background:#8a4c17}
+      .om30-via-outros{background:#334155}
+      .om30-via-loading{display:inline-block;padding:3px 7px;border-radius:999px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap}
+      .om30-via-empty{color:#8793a1;font-size:9px;line-height:1.2}
     `;
     document.head.appendChild(s);
   }
@@ -210,26 +225,26 @@
 
   function renderLoading(box) {
     box.dataset.om30Estado = 'loading';
-    box.innerHTML = '<span class="om30-via-loading">...</span>';
+    box.innerHTML = '<span class="om30-via-loading">VIA ...</span>';
   }
 
   function renderErro(box) {
     box.dataset.om30Estado = 'erro';
-    box.innerHTML = '<span class="om30-via-empty" title="Não foi possível consultar a via">—</span>';
+    box.innerHTML = '<span class="om30-via-empty" title="Não foi possível consultar a via">VIA —</span>';
   }
 
   function renderVias(box, vias) {
     box.dataset.om30Estado = 'ok';
     if (!vias.length) {
-      box.innerHTML = '<span class="om30-via-empty" title="Nenhum medicamento pendente com via informada">—</span>';
+      box.innerHTML = '<span class="om30-via-empty" title="Nenhum medicamento pendente com via informada">VIA —</span>';
       return;
     }
 
     const frag = document.createDocumentFragment();
     for (const via of vias) {
       const badge = document.createElement('span');
-      badge.className = 'om30-via-badge';
-      badge.textContent = via.curto;
+      badge.className = `om30-via-badge ${classeVia(via)}`;
+      badge.textContent = `VIA ${via.curto}`;
       badge.title = `Via de administração: ${via.completo}`;
       frag.appendChild(badge);
     }
@@ -303,7 +318,7 @@
     style();
     varrerFila();
     setInterval(varrerFila, CONFIG.intervaloVarredura);
-    log('Ativo. A via aparece abaixo de “Medicação”, sem criar nova coluna.');
+    log('Ativo. A via aparece destacada abaixo de “Medicação”, sem criar nova coluna.');
   }
 
   window.OM30ViaControleSalas = {

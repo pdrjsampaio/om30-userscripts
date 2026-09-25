@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Via de Administração Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.2.0
-// @description  Exibe a via de administração dos medicamentos pendentes de forma destacada abaixo da Sala, sem criar nova coluna, com cache persistente entre atualizações da fila.
+// @version      1.3.0
+// @description  Exibe a via de administração dos medicamentos pendentes abaixo da Sala em um único indicador compacto, com cache persistente entre atualizações da fila.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Via-Controle-Salas.user.js
@@ -64,17 +64,18 @@
 
   function nomeVia(via, id) {
     const n = normalizar(via);
-    if (n === 'INTRAMUSCULAR' || String(id) === '9') return { curto: 'IM', completo: via || 'INTRAMUSCULAR' };
-    if (n === 'INTRAVENOSA' || String(id) === '11') return { curto: 'IV', completo: via || 'INTRAVENOSA' };
-    if (n === 'ENDOVENOSA') return { curto: 'EV', completo: via };
-    if (n === 'ORAL' || String(id) === '12') return { curto: 'ORAL', completo: via || 'ORAL' };
-    if (n === 'PARENTERAL' || String(id) === '18') return { curto: 'PARENTERAL', completo: via || 'PARENTERAL' };
+    if (n === 'INTRAMUSCULAR' || String(id) === '9') return { curto: 'IM', completo: via || 'INTRAMUSCULAR', classe: 'im' };
+    if (n === 'INTRAVENOSA' || String(id) === '11') return { curto: 'IV', completo: via || 'INTRAVENOSA', classe: 'iv' };
+    if (n === 'ENDOVENOSA') return { curto: 'EV', completo: via, classe: 'iv' };
+    if (n === 'SUBCUTANEA' || n === 'SUBCUTÂNEA') return { curto: 'SC', completo: via || 'SUBCUTÂNEA', classe: 'sc' };
+    if (n === 'ORAL' || String(id) === '12') return { curto: 'ORAL', completo: via || 'ORAL', classe: 'oral' };
+    if (n === 'PARENTERAL' || String(id) === '18') return { curto: 'PARENT.', completo: via || 'PARENTERAL', classe: 'parenteral' };
     if (n) {
       const texto = limpar(via).toUpperCase();
-      return { curto: texto.length <= 14 ? texto : texto.slice(0, 14), completo: limpar(via) };
+      return { curto: texto.length <= 9 ? texto : texto.slice(0, 9) + '…', completo: limpar(via), classe: 'outros' };
     }
-    if (id) return { curto: `ID ${id}`, completo: `Tipo de uso ${id}` };
-    return { curto: '—', completo: 'Via não informada' };
+    if (id) return { curto: `ID ${id}`, completo: `Tipo de uso ${id}`, classe: 'outros' };
+    return { curto: '—', completo: 'Via não informada', classe: 'outros' };
   }
 
   function carregarCachePersistente() {
@@ -179,13 +180,16 @@
     return promise;
   }
 
-  function classeVia(via) {
-    const n = normalizar(via?.curto);
-    if (n === 'IM') return 'om30-via-im';
-    if (n === 'IV' || n === 'EV') return 'om30-via-iv';
-    if (n === 'ORAL') return 'om30-via-oral';
-    if (n === 'PARENTERAL') return 'om30-via-parenteral';
-    return 'om30-via-outros';
+  function classeResumo(vias) {
+    if (vias.length !== 1) return 'om30-via-multipla';
+    switch (vias[0]?.classe) {
+      case 'im': return 'om30-via-im';
+      case 'iv': return 'om30-via-iv';
+      case 'sc': return 'om30-via-sc';
+      case 'oral': return 'om30-via-oral';
+      case 'parenteral': return 'om30-via-parenteral';
+      default: return 'om30-via-outros';
+    }
   }
 
   function style() {
@@ -193,14 +197,16 @@
     const s = document.createElement('style');
     s.id = 'om30-via-style';
     s.textContent = `
-      .om30-via-inline{display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;margin-top:5px;min-height:18px;line-height:1}
-      .om30-via-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 7px;border:0;border-radius:999px;color:#fff;font-size:10px;line-height:1.1;font-weight:800;letter-spacing:.15px;white-space:nowrap;box-shadow:0 1px 2px rgba(15,23,42,.18)}
+      .om30-via-inline{display:flex;align-items:center;justify-content:center;margin-top:3px;min-height:16px;line-height:1}
+      .om30-via-badge{display:inline-flex;align-items:center;justify-content:center;max-width:100%;padding:2px 6px;border:0;border-radius:4px;color:#fff;font-size:9px;line-height:1.15;font-weight:800;letter-spacing:.1px;white-space:nowrap;box-shadow:0 1px 1px rgba(15,23,42,.14)}
       .om30-via-im{background:#6d3fb3}
       .om30-via-iv{background:#1f5f9f}
+      .om30-via-sc{background:#0f766e}
       .om30-via-oral{background:#24704a}
       .om30-via-parenteral{background:#8a4c17}
-      .om30-via-outros{background:#334155}
-      .om30-via-loading{display:inline-block;padding:3px 7px;border-radius:999px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap}
+      .om30-via-multipla{background:#334155}
+      .om30-via-outros{background:#475569}
+      .om30-via-loading{display:inline-block;padding:2px 6px;border-radius:4px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap}
       .om30-via-empty{color:#8793a1;font-size:9px;line-height:1.2}
     `;
     document.head.appendChild(s);
@@ -225,7 +231,7 @@
 
   function renderLoading(box) {
     box.dataset.om30Estado = 'loading';
-    box.innerHTML = '<span class="om30-via-loading">VIA ...</span>';
+    box.innerHTML = '<span class="om30-via-loading">VIA …</span>';
   }
 
   function renderErro(box) {
@@ -240,15 +246,11 @@
       return;
     }
 
-    const frag = document.createDocumentFragment();
-    for (const via of vias) {
-      const badge = document.createElement('span');
-      badge.className = `om30-via-badge ${classeVia(via)}`;
-      badge.textContent = `VIA ${via.curto}`;
-      badge.title = `Via de administração: ${via.completo}`;
-      frag.appendChild(badge);
-    }
-    box.replaceChildren(frag);
+    const badge = document.createElement('span');
+    badge.className = `om30-via-badge ${classeResumo(vias)}`;
+    badge.textContent = `VIA ${vias.map(v => v.curto).join(' + ')}`;
+    badge.title = `${vias.length > 1 ? 'Vias' : 'Via'} de administração: ${vias.map(v => v.completo).join(' + ')}`;
+    box.replaceChildren(badge);
   }
 
   function atualizarLinha(tr, salaIndex) {
@@ -318,7 +320,7 @@
     style();
     varrerFila();
     setInterval(varrerFila, CONFIG.intervaloVarredura);
-    log('Ativo. A via aparece destacada abaixo de “Medicação”, sem criar nova coluna.');
+    log('Ativo. A via aparece compacta abaixo de “Medicação”, sem criar nova coluna.');
   }
 
   window.OM30ViaControleSalas = {

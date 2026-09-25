@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         OM30 - Via de Administração Controle de Salas
 // @namespace    https://om30.com.br/
-// @version      1.3.1
-// @description  Exibe a via de administração dos medicamentos pendentes abaixo da Sala em um único indicador compacto, com cache persistente entre atualizações da fila.
+// @version      1.3.2
+// @description  Exibe a via de administração dos medicamentos pendentes abaixo da Sala em um único indicador compacto, sem quebra visual, com cache persistente entre atualizações da fila.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/aplicacoes_medicamentos*
-// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Via-Controle-Salas.meta.js
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Via-Controle-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Via-Controle-Salas.user.js
 // @grant        none
 // @run-at       document-idle
@@ -19,7 +19,8 @@
     cacheFrescoMs: 120000,
     cachePersistenteMs: 60 * 60 * 1000,
     intervaloVarredura: 800,
-    cacheKey: 'om30_via_controle_salas_cache_v1'
+    cacheKey: 'om30_via_controle_salas_cache_v2',
+    cacheKeyAntigo: 'om30_via_controle_salas_cache_v1'
   };
 
   const state = {
@@ -65,21 +66,30 @@
   function nomeVia(via, id) {
     const n = normalizar(via);
     if (n === 'INTRAMUSCULAR' || String(id) === '9') return { curto: 'IM', completo: via || 'INTRAMUSCULAR', classe: 'im' };
-    if (n === 'INTRAVENOSA' || String(id) === '11') return { curto: 'IV', completo: via || 'INTRAVENOSA', classe: 'iv' };
-    if (n === 'ENDOVENOSA') return { curto: 'EV', completo: via, classe: 'iv' };
-    if (n === 'SUBCUTANEA' || n === 'SUBCUTÂNEA') return { curto: 'SC', completo: via || 'SUBCUTÂNEA', classe: 'sc' };
+    if (n === 'INTRAVENOSA' || n === 'ENDOVENOSA' || String(id) === '11') return { curto: 'IV', completo: via || 'INTRAVENOSA', classe: 'iv' };
+    if (n === 'SUBCUTANEA') return { curto: 'SC', completo: via || 'SUBCUTÂNEA', classe: 'sc' };
     if (n === 'ORAL' || String(id) === '12') return { curto: 'ORAL', completo: via || 'ORAL', classe: 'oral' };
-    if (n === 'PARENTERAL' || String(id) === '18') return { curto: 'PARENT.', completo: via || 'PARENTERAL', classe: 'parenteral' };
+    if (n === 'PARENTERAL' || String(id) === '18') return { curto: 'PAR', completo: via || 'PARENTERAL', classe: 'parenteral' };
+    if (n === 'SUBLINGUAL') return { curto: 'SL', completo: via || 'SUBLINGUAL', classe: 'outros' };
+    if (n === 'INALATORIA' || n === 'INALACAO') return { curto: 'INAL', completo: via, classe: 'outros' };
+    if (n === 'TOPICA') return { curto: 'TOP', completo: via, classe: 'outros' };
+    if (n === 'NASAL') return { curto: 'NAS', completo: via, classe: 'outros' };
+    if (n === 'RETAL') return { curto: 'RET', completo: via, classe: 'outros' };
+    if (n === 'VAGINAL') return { curto: 'VAG', completo: via, classe: 'outros' };
+    if (n === 'INTRADERMICA') return { curto: 'ID', completo: via, classe: 'outros' };
+    if (n.includes('OFTALM') || n === 'OCULAR') return { curto: 'OCUL', completo: via, classe: 'outros' };
+    if (n.includes('OTOLOG') || n === 'AURICULAR') return { curto: 'OTO', completo: via, classe: 'outros' };
     if (n) {
       const texto = limpar(via).toUpperCase();
-      return { curto: texto.length <= 9 ? texto : texto.slice(0, 9) + '…', completo: limpar(via), classe: 'outros' };
+      return { curto: texto.length <= 6 ? texto : texto.slice(0, 5) + '…', completo: limpar(via), classe: 'outros' };
     }
-    if (id) return { curto: `ID ${id}`, completo: `Tipo de uso ${id}`, classe: 'outros' };
+    if (id) return { curto: `ID${id}`, completo: `Tipo de uso ${id}`, classe: 'outros' };
     return { curto: '—', completo: 'Via não informada', classe: 'outros' };
   }
 
   function carregarCachePersistente() {
     try {
+      sessionStorage.removeItem(CONFIG.cacheKeyAntigo);
       const bruto = JSON.parse(sessionStorage.getItem(CONFIG.cacheKey) || '{}');
       const agora = Date.now();
       for (const [id, item] of Object.entries(bruto)) {
@@ -197,8 +207,8 @@
     const s = document.createElement('style');
     s.id = 'om30-via-style';
     s.textContent = `
-      .om30-via-inline{display:flex;align-items:center;justify-content:center;margin-top:3px;min-height:16px;line-height:1}
-      .om30-via-badge{display:inline-flex;align-items:center;justify-content:center;max-width:100%;padding:2px 6px;border:0;border-radius:4px;color:#fff;font-size:9px;line-height:1.15;font-weight:800;letter-spacing:.1px;white-space:nowrap;box-shadow:0 1px 1px rgba(15,23,42,.14)}
+      .om30-via-inline{display:flex;align-items:center;justify-content:center;margin-top:3px;min-height:15px;line-height:1;max-width:100%;overflow:hidden}
+      .om30-via-badge{display:block;max-width:78px;padding:2px 6px;border:0;border-radius:4px;color:#fff;font-size:9px;line-height:1.15;font-weight:800;letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 1px rgba(15,23,42,.14)}
       .om30-via-im{background:#6d3fb3}
       .om30-via-iv{background:#1f5f9f}
       .om30-via-sc{background:#0f766e}
@@ -206,8 +216,8 @@
       .om30-via-parenteral{background:#8a4c17}
       .om30-via-multipla{background:#334155}
       .om30-via-outros{background:#475569}
-      .om30-via-loading{display:inline-block;padding:2px 6px;border-radius:4px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap}
-      .om30-via-empty{color:#8793a1;font-size:9px;line-height:1.2}
+      .om30-via-loading{display:block;max-width:78px;padding:2px 6px;border-radius:4px;background:#eef2f6;color:#657285;font-size:9px;font-weight:700;white-space:nowrap;overflow:hidden}
+      .om30-via-empty{color:#8793a1;font-size:9px;line-height:1.2;white-space:nowrap}
     `;
     document.head.appendChild(s);
   }
@@ -231,24 +241,24 @@
 
   function renderLoading(box) {
     box.dataset.om30Estado = 'loading';
-    box.innerHTML = '<span class="om30-via-loading">VIA …</span>';
+    box.innerHTML = '<span class="om30-via-loading">…</span>';
   }
 
   function renderErro(box) {
     box.dataset.om30Estado = 'erro';
-    box.innerHTML = '<span class="om30-via-empty" title="Não foi possível consultar a via">VIA —</span>';
+    box.innerHTML = '<span class="om30-via-empty" title="Não foi possível consultar a via">—</span>';
   }
 
   function renderVias(box, vias) {
     box.dataset.om30Estado = 'ok';
     if (!vias.length) {
-      box.innerHTML = '<span class="om30-via-empty" title="Nenhum medicamento pendente com via informada">VIA —</span>';
+      box.innerHTML = '<span class="om30-via-empty" title="Nenhum medicamento pendente com via informada">—</span>';
       return;
     }
 
     const badge = document.createElement('span');
     badge.className = `om30-via-badge ${classeResumo(vias)}`;
-    badge.textContent = `VIA ${vias.map(v => v.curto).join(' + ')}`;
+    badge.textContent = vias.map(v => v.curto).join('/');
     badge.title = `${vias.length > 1 ? 'Vias' : 'Via'} de administração: ${vias.map(v => v.completo).join(' + ')}`;
     box.replaceChildren(badge);
   }
@@ -312,6 +322,7 @@
   function limparCache() {
     state.cache.clear();
     sessionStorage.removeItem(CONFIG.cacheKey);
+    sessionStorage.removeItem(CONFIG.cacheKeyAntigo);
   }
 
   function init() {
@@ -320,7 +331,7 @@
     style();
     varrerFila();
     setInterval(varrerFila, CONFIG.intervaloVarredura);
-    log('Ativo. A via aparece compacta abaixo de “Medicação”, sem criar nova coluna.');
+    log('Ativo. A via aparece compacta abaixo de “Medicação”, sem quebrar a linha.');
   }
 
   window.OM30ViaControleSalas = {

@@ -1,3 +1,4 @@
+# Reexecução após ajuste da validação da v0.9.13.
 name: OM30 - Corrigir categorias GLPI
 
 on:

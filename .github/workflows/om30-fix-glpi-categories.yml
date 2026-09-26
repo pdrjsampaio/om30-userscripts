@@ -1,3 +1,4 @@
+# Segundo disparo: o workflow já existe no branch base.
 name: OM30 - Corrigir categorias GLPI
 
 on:
@@ -21,6 +22,7 @@ jobs:
       - name: Aplicar patch v0.9.14
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
@@ -156,10 +158,11 @@ jobs:
       - name: Commit da correção
         shell: bash
         run: |
+          set -euo pipefail
           rm -f .github/workflows/om30-fix-glpi-categories.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add OM30-WhatsApp-GLPI.user.js .github/workflows/om30-fix-glpi-categories.yml
+          git config user.name 'OM30 Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
           git diff --cached --check
-          git commit -m "fix: usar IDs confirmados das categorias GLPI"
-          git push origin HEAD:main
+          git commit -m 'fix: usar IDs confirmados das categorias GLPI'
+          git push

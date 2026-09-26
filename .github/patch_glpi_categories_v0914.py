@@ -12,9 +12,9 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 
 
 version_count = text.count('0.9.13')
-if version_count != 6:
+if version_count != 7:
     raise SystemExit(
-        f'versao: esperado 6 ocorrencias de 0.9.13, encontrado {version_count}'
+        f'versao: esperado 7 ocorrencias de 0.9.13, encontrado {version_count}'
     )
 text = text.replace('0.9.13', '0.9.14')
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Preencher Profissional - Saúde Simples
 // @namespace    saudesimples-guaruja
-// @version      4.26
+// @version      4.27
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.meta.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Preencher-Profissional.user.js
 // @description  Lê a Ficha de Cadastro (AcroForm ou PDF assinado/achatado), preenche o profissional, deduz órgão de classe pelo CBO e consulta CNS/CNES pelo CPF.
@@ -920,6 +920,8 @@
       if (j) { try { j(input).val(digitar).trigger('input').trigger('keyup'); } catch(e){} }
 
       let li = null;
+      let liCasouPorCodigo = false;
+      let liCasouPorNomeExato = false;
       for (let i=0; i<32 && !li; i++) {
         await espera(160);
         if (j && i % 6 === 5) { try { j(input).trigger('keyup'); } catch(e){} }
@@ -930,14 +932,21 @@
           .filter(x => x.textContent.trim() && !/buscando|carregando|procurando|nenhum|searching|no results/i.test(x.textContent));
         if (!lis.length) continue;
 
-        // Para CBO normalizado, o código 4110-10/411010 ganha prioridade absoluta.
-        if (codigo) li = lis.find(x => soDig(x.textContent).includes(codigo));
-        if (!li) li = lis.find(x => norm(x.textContent) === alvo);
+        // Em modo strict (ocupação), NUNCA escolher por semelhança parcial.
+        // Ex.: "Médico Clínico" não pode casar com "Médico oncologista clínico".
+        if (codigo) {
+          li = lis.find(x => codigoCboExato(x.textContent, codigo));
+          liCasouPorCodigo = !!li;
+        }
         if (!li) {
+          li = lis.find(x => nomeCboExato(x.textContent, termo));
+          liCasouPorNomeExato = !!li;
+        }
+        if (!li && !opts.strict) {
           let best=null, bs=0;
           for (const x of lis) { const sc=overlapCbo(alvo, x.textContent); if(sc>bs){bs=sc;best=x;} }
           if (best && bs >= 0.6) li=best;
-          else if (!opts.strict) li=lis.find(x=>norm(x.textContent).includes(alvo)||alvo.includes(norm(x.textContent)))||lis[0];
+          else li=lis.find(x=>norm(x.textContent).includes(alvo)||alvo.includes(norm(x.textContent)))||lis[0];
         }
       }
 
@@ -958,9 +967,11 @@
         }
         if (tok) {
           const txt = tok.textContent.trim();
-          const tokDigitos = soDig(txt);
-          const codeOk = !codigo || !tokDigitos || tokDigitos.includes(codigo);
-          const nomeOk = overlapCbo(alvo, txt) >= 0.6 || norm(txt).includes(alvo);
+          const codeOk = !codigo || liCasouPorCodigo || codigoCboExato(txt, codigo);
+          const nomeOk = codigo
+            ? codeOk
+            : (opts.strict ? (liCasouPorNomeExato || nomeCboExato(txt, termo))
+                           : (overlapCbo(alvo, txt) >= 0.6 || norm(txt).includes(alvo)));
           if (codeOk && nomeOk) {
             rel.ok.push(label + ' → ' + txt.slice(0,55));
             return norm(txt);
@@ -1031,6 +1042,22 @@
       .map(w=>w.replace(/s$/,'').replace(/(ao|a|o)$/,''))
       .join(' ');
   }
+  function nomeCboLimpo(s){
+    return norm(s)
+      .replace(/\b\d{4}\s*-?\s*\d{2}\b/g,' ')
+      .replace(/\b\d{6}\b/g,' ')
+      .replace(/^[\s\-–—:]+|[\s\-–—:]+$/g,'')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
+  function nomeCboExato(a,b){ return nomeCboLimpo(a) === nomeCboLimpo(b); }
+  function codigoCboExato(texto,codigo){
+    codigo = soDig(codigo);
+    if (!codigo) return true;
+    const achados = String(texto||'').match(/\b\d{4}\s*-?\s*\d{2}\b|\b\d{6}\b/g) || [];
+    return achados.some(x => soDig(x) === codigo);
+  }
+
   function overlapCbo(a,b){
     const sa=new Set(foldCbo(a).split(' ').filter(Boolean));
     const sb=new Set(foldCbo(b).split(' ').filter(Boolean));
@@ -1288,8 +1315,19 @@
   }
 
   async function aplicarUfConselhoFicha(d){
-    if (d.ufConselho) await setSelConfirmado('profissional_orgao_classe_estado_id', estado(d.ufConselho), 'UF conselho');
-    else await limparSelectConfirmado('profissional_orgao_classe_estado_id', 'UF conselho');
+    const uf = String(d.ufConselho || '').trim().toUpperCase();
+    // AC/Acre já apareceu como primeiro item/fallback mesmo quando a ficha não informou UF.
+    // Por segurança, não aplicamos AC automaticamente: deixamos vazio para conferência.
+    if (uf === 'AC') {
+      await limparSelectConfirmado('profissional_orgao_classe_estado_id', 'UF conselho');
+      if (!rel.vazio.some(x => /UF conselho.*AC\/Acre/i.test(x)))
+        rel.vazio.push('UF conselho veio como AC/Acre — não preenchido automaticamente; confira a ficha');
+      return;
+    }
+    if (uf && Object.prototype.hasOwnProperty.call(UFS_BRASIL, uf))
+      await setSelConfirmado('profissional_orgao_classe_estado_id', estado(uf), 'UF conselho');
+    else
+      await limparSelectConfirmado('profissional_orgao_classe_estado_id', 'UF conselho');
   }
 
   async function setSelPrefixoConfirmado(id, sigla, label){

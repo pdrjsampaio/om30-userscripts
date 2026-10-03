@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         OM30 - Profissional do Retorno
 // @namespace    https://om30.com.br/
-// @version      1.0.1
+// @version      1.0.2
 // @description  Exibe o profissional do primeiro atendimento nas linhas marcadas como RETORNO na fila médica.
 // @author       Pedro Sampaio - Samp
-// @match        https://guaruja.saudesimples.net/prontuarios/urgencia_emergencia*
-// @match        https://guarujahomolog.saudesimples.net/prontuarios/urgencia_emergencia*
+// @match        https://guaruja.saudesimples.net/prontuarios*
+// @match        https://guarujahomolog.saudesimples.net/prontuarios*
 // @match        https://guaruja.saudesimples.net/atendimentos/prontuario*
 // @match        https://guarujahomolog.saudesimples.net/atendimentos/prontuario*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Profissional-Retorno.user.js
@@ -17,8 +17,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PROFISSIONAL_RETORNO_V101__) return;
-  window.__OM30_PROFISSIONAL_RETORNO_V101__ = true;
+  if (window.__OM30_PROFISSIONAL_RETORNO_V102__) return;
+  window.__OM30_PROFISSIONAL_RETORNO_V102__ = true;
 
   const clean = v =>
     String(v ?? '').replace(/\s+/g, ' ').trim();
@@ -326,6 +326,6 @@
   setTimeout(processar, 3000);
 
   console.info(
-    '[OM30] Profissional do Retorno v1.0.1'
+    '[OM30] Profissional do Retorno v1.0.2'
   );
 })();

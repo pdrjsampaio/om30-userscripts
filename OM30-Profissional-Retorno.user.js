@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Profissional do Retorno
 // @namespace    https://om30.com.br/
-// @version      1.0.2
+// @version      1.0.3
 // @description  Exibe o profissional do primeiro atendimento nas linhas marcadas como RETORNO na fila médica.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios*
@@ -17,8 +17,8 @@
 (() => {
   'use strict';
 
-  if (window.__OM30_PROFISSIONAL_RETORNO_V102__) return;
-  window.__OM30_PROFISSIONAL_RETORNO_V102__ = true;
+  if (window.__OM30_PROFISSIONAL_RETORNO_V103__) return;
+  window.__OM30_PROFISSIONAL_RETORNO_V103__ = true;
 
   const clean = v =>
     String(v ?? '').replace(/\s+/g, ' ').trim();
@@ -80,67 +80,124 @@
   }
 
   function extrairNomeProfissional(doc) {
-    // Fonte nativa mais direta encontrada no prontuário:
-    // data-profissional-nome="<b>PROFISSIONAL:</b> NOME"
-    const nomesAtributos = [
-      ...doc.querySelectorAll('[data-profissional-nome]')
-    ]
-      .map(el =>
-        textoHtml(
-          el.getAttribute('data-profissional-nome')
-        )
-      )
-      .map(v =>
-        clean(
-          v.replace(/^PROFISSIONAL\s*:\s*/i, '')
-        )
-      )
-      .filter(Boolean);
+    // Fonte principal: Faturamento BPA -> Profissional/Especialidade.
+    // Aqui conseguimos distinguir o médico do atendimento de profissionais
+    // de enfermagem que podem aparecer em medicamentos/aplicações.
+    const candidatosMedicos = [];
 
-    const unicosAtributos = [
-      ...new Set(nomesAtributos)
-    ];
-
-    if (unicosAtributos.length === 1) {
-      return unicosAtributos[0];
-    }
-
-    // Fallback para tabela "Profissional/Especialidade".
     for (const table of doc.querySelectorAll('table')) {
       const headers = [
         ...table.querySelectorAll('th')
-      ];
+      ].map(th => norm(th.textContent));
 
-      const indice = headers.findIndex(th =>
-        norm(th.textContent)
-          .includes('PROFISSIONAL/ESPECIALIDADE')
-      );
-
-      if (indice === -1) continue;
-
-      const linhas = [
-        ...table.querySelectorAll('tbody tr')
-      ];
-
-      for (const tr of linhas) {
-        const cells = [...tr.cells];
-
-        const valor = clean(
-          cells[indice]?.textContent
+      const indiceProfissional =
+        headers.findIndex(h =>
+          h.includes('PROFISSIONAL/ESPECIALIDADE')
         );
 
-        if (!valor) continue;
+      if (indiceProfissional === -1) {
+        continue;
+      }
+
+      const indiceProcedimento =
+        headers.findIndex(h =>
+          h.includes('PROCEDIMENTO')
+        );
+
+      for (const tr of table.querySelectorAll('tbody tr')) {
+        const cells = [...tr.cells];
+
+        const profissional = clean(
+          cells[indiceProfissional]?.textContent
+        );
+
+        if (!profissional) continue;
+
+        const procedimento =
+          indiceProcedimento >= 0
+            ? clean(
+                cells[indiceProcedimento]?.textContent
+              )
+            : '';
+
+        if (
+          !/\bM[EÉ]DIC[OA]\b/i.test(profissional)
+        ) {
+          continue;
+        }
 
         const nome = clean(
-          valor.replace(
-            /\s+-\s+(M[eé]dico|Enfermeiro|Cirurgi[aã]o|Fisioterapeuta|Psic[oó]logo|Nutricionista|T[eé]cnico|Auxiliar|Fonoaudi[oó]logo|Profissional).*$/i,
+          profissional.replace(
+            /\s+-\s+M[eé]dic[oa].*$/i,
             ''
           )
         );
 
-        if (nome) {
-          return nome;
-        }
+        if (!nome) continue;
+
+        candidatosMedicos.push({
+          nome,
+          profissional,
+          procedimento,
+          atendimentoMedicoPA:
+            /\b0301060096\b/.test(procedimento)
+        });
+      }
+    }
+
+    if (candidatosMedicos.length) {
+      const principal =
+        candidatosMedicos.find(
+          item => item.atendimentoMedicoPA
+        ) ||
+        candidatosMedicos[0];
+
+      console.log(
+        '[OM30 Retorno] Médico localizado pelo faturamento:',
+        principal
+      );
+
+      return principal.nome;
+    }
+
+    // Fallback: atributos data-profissional-* somente quando
+    // o próprio CBO identificar que o profissional é médico.
+    for (
+      const el of doc.querySelectorAll(
+        '[data-profissional-nome]'
+      )
+    ) {
+      const nomeRaw = textoHtml(
+        el.getAttribute('data-profissional-nome')
+      );
+
+      const cboRaw = textoHtml(
+        el.getAttribute('data-profissional-cbo')
+      );
+
+      if (
+        !/\bM[EÉ]DIC[OA]\b/i.test(cboRaw)
+      ) {
+        continue;
+      }
+
+      const nome = clean(
+        nomeRaw.replace(
+          /^PROFISSIONAL\s*:\s*/i,
+          ''
+        )
+      );
+
+      if (nome) {
+        console.log(
+          '[OM30 Retorno] Médico localizado pelo atributo:',
+          {
+            nome,
+            cbo: cboRaw
+          }
+        );
+
+        return nome;
       }
     }
 
@@ -326,6 +383,6 @@
   setTimeout(processar, 3000);
 
   console.info(
-    '[OM30] Profissional do Retorno v1.0.2'
+    '[OM30] Profissional do Retorno v1.0.3'
   );
 })();

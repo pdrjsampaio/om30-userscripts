@@ -4,6 +4,8 @@
 // @version      2.4.6
 // @description  Fila médica por risco/RT com paginação global de 10, filtro persistente após atualização automática e resumo clínico do atendimento médico anterior da mesma unidade, limitado a 36h, em modo somente leitura.
 // @author       Pedro Sampaio - Samp
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
 // @match        *://*.saudesimples.net/*
 // @grant        none
 // @run-at       document-idle

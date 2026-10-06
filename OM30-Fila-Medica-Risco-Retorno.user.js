@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.9.4
+// @version      2.10.5
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
 // @match        https://guaruja.saudesimples.net/prontuarios*
 // @match        https://guarujahomolog.saudesimples.net/prontuarios*
 // @match        https://guaruja.saudesimples.net/atendimentos/prontuario*
@@ -18,7 +20,7 @@
 (() => {
   'use strict';
 
-  // v2.9.4:
+  // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
   // - Senha RT = retorno PA/36h (regra independente).
   // - prontuario_com_retorno = tag Retorno nativa (regra independente).
@@ -26,8 +28,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V294__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V292__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2105__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2105__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -90,11 +92,11 @@
   }
 
   function log(...args) {
-    console.log('[OM30 Fila Médica v2.9.4 RASCUNHO]', ...args);
+    console.log('[OM30 Fila Médica v2.10.5 RASCUNHO]', ...args);
   }
 
   function warn(...args) {
-    console.warn('[OM30 Fila Médica v2.9.4 RASCUNHO]', ...args);
+    console.warn('[OM30 Fila Médica v2.10.5 RASCUNHO]', ...args);
   }
 
   function ehPaginaFila() {
@@ -941,12 +943,8 @@
         white-space:nowrap;
       }
 
-      /* Ações da fila: Chamar + Confirmar atendimento + engrenagem azul nativa. */
-      #classificacao thead th:nth-child(9),
-      #classificacao tbody tr.collection-row td:nth-child(9) {
-        min-width:250px !important;
-        width:250px !important;
-      }
+      /* Ações da fila: largura é definida apenas no bloco moderno abaixo.
+         Regra antiga de 250px removida para não empurrar as demais colunas. */
       #classificacao td.om30-acoes-celula {
         white-space:nowrap;
         display:flex !important;
@@ -1182,7 +1180,7 @@
         assinatura: assinaturaItens(filtrados)
       });
     } catch (e) {
-      console.error('[OM30 Fila Médica v2.9.4 RASCUNHO] Erro ao montar fila:', e);
+      console.error('[OM30 Fila Médica v2.10.5 RASCUNHO] Erro ao montar fila:', e);
       const status = box.querySelector('.om30-status-fila');
       if (status) status.textContent = `Erro ao carregar fila: ${e.message || e}`;
       document.body.classList.remove(BODY_ATUALIZANDO);
@@ -1733,7 +1731,7 @@
 
         return registro;
       } catch (e) {
-        console.error('[OM30 Fila Médica v2.9.4 RASCUNHO] Histórico anterior:', atendimentoStr, e);
+        console.error('[OM30 Fila Médica v2.10.5 RASCUNHO] Histórico anterior:', atendimentoStr, e);
         return null;
       }
     })();
@@ -1940,8 +1938,7 @@
       }
     }
 
-    // 3C) Último fallback: varre o texto renderizado por linhas, sem depender da classe.
-    // Útil quando o HTML antigo muda a estrutura mas preserva "Médico NOME".
+    // 3C) Último fallback por linhas, sem depender da classe.
     const textoPagina = String(doc.body?.innerText || doc.body?.textContent || '');
     for (const linhaRaw of textoPagina.split(/[\r\n]+/)) {
       const linha = clean(linhaRaw);
@@ -1954,9 +1951,9 @@
       }
     }
 
-    // 3D) Fallback exato do layout observado no diagnóstico:
-    // "Médico PEDRO JUSTINO SAMPAIO ANDRADE Especialidade Médico clínico".
-    // DOMParser pode colapsar as quebras de linha, então procura no texto completo.
+    // 3D) Fallback exato do layout que apareceu no diagnóstico do TESTE OMTRINTA:
+    // "Médico PEDRO JUSTINO SAMPAIO ANDRADE Especialidade Médico clínico"
+    // DOMParser pode perder as quebras de linha; por isso procuramos no texto colapsado.
     const textoColapsado = clean(doc.body?.textContent || '');
     const padroesLegados = [
       /(?:^|\s)M[EÉ]DICO\s*:?\s+(.+?)\s+ESPECIALIDADE\s+M[EÉ]DICO\b/i,
@@ -2015,6 +2012,7 @@
     if (!info) return;
     info.style.color = '#6c757d';
     info.textContent = '1º atendimento: consultando...';
+
     const nome = await buscarProfissionalRetornoNativo(item.atendimento_str);
     // Confere novamente a linha depois do await: ela pode ter sido reaproveitada/reordenada.
     const atual = itemDaLinha(row, vm);
@@ -2141,8 +2139,8 @@
         if (ehConfirmar) {
           el.classList.add('om30-acao-confirmar');
           el.dataset.om30Acao = 'confirmar';
-          el.setAttribute('title', 'Confirmar atendimento');
-          garantirLabelAcao(el, 'Confirmar atendimento');
+          el.setAttribute('title', 'Atender');
+          garantirLabelAcao(el, 'Atender');
           continue;
         }
 
@@ -3999,7 +3997,6 @@
     const tabelaNativa = acharTabelaFila();
     if (!tabelaNativa) return null;
     const wrapperNativo = tabelaNativa.closest('.table-responsive') || tabelaNativa;
-
     host = document.createElement('section');
     host.id = VISUAL_ID;
     host.innerHTML = `
@@ -4253,7 +4250,7 @@
       const confirmar = document.createElement('button');
       confirmar.type = 'button';
       confirmar.className = 'om30v-btn om30v-confirmar';
-      confirmar.textContent = 'Confirmar atendimento';
+      confirmar.textContent = 'Atender';
       confirmar.disabled = !confirmarEstado.existe || confirmarEstado.disabled;
       confirmar.addEventListener('click', () => acionarNativo(chave, 'confirmar'));
 
@@ -4425,7 +4422,7 @@
   // ---------------------------------------------------------------------------
   // Diferente dos rascunhos 2.6.x, NÃO existe tabela clonada. A própria coleção
   // nativa recebe a lista completa/filtrada e continua dona dos componentes de
-  // Chamar, Confirmar atendimento e engrenagem.
+  // Chamar, Atender e engrenagem.
 
   const MED_BAR_ID = `${PREFIX}-controle-barra`;
   const MED_BODY_PREP = `${PREFIX}-controle-preparando`;
@@ -4466,7 +4463,9 @@
       #${MED_BAR_ID} .om30m-qtd { justify-self:end;font-size:16px;font-weight:800;color:#252d34; }
       #${MED_BAR_ID} .om30m-media { grid-column:2/4;font-size:9px;color:#7b858e;white-space:nowrap; }
       #${MED_BAR_ID} .om30m-media strong { color:#46515a; }
-      #${MED_BAR_ID} .om30m-atualizado { margin-left:auto;align-self:center;padding:0 10px;font-size:14px;font-weight:700;color:#59636d;white-space:nowrap;letter-spacing:.2px; }
+      #${MED_BAR_ID} .om30m-atualizado { margin-left:auto;align-self:center;display:inline-flex;align-items:center;gap:8px;min-width:108px;padding:7px 12px;border:1px solid #d8dfe5;border-radius:8px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.04);white-space:nowrap; }
+      #${MED_BAR_ID} .om30m-atualizado-label { font-size:11px;font-weight:700;color:#7a8590;letter-spacing:.3px;text-transform:uppercase; }
+      #${MED_BAR_ID} .om30m-atualizado-hora { font-size:18px;font-weight:800;color:#3f4a54;line-height:1;letter-spacing:.4px;font-variant-numeric:tabular-nums; }
       #classificacao .collection-with-search-atendimento ul.pagination { display:none !important; }
       #classificacao .collection-with-search-atendimento tbody tr > td:first-child { position:relative !important; padding-left:14px !important; }
       #classificacao .collection-with-search-atendimento tbody tr.om30-risco-VERMELHO > td:first-child::before,
@@ -4485,14 +4484,22 @@
       }
       #classificacao .collection-with-search-atendimento .om30-med-espera strong { color:#303941;font-size:9.5px; }
       #classificacao .collection-with-search-atendimento .om30-med-espera .om30-med-clock { font-size:11px;line-height:1; }
-      #classificacao .collection-with-search-atendimento td:nth-child(9) { min-width:205px; vertical-align:middle; }
+      #classificacao .collection-with-search-atendimento td:nth-child(9) { min-width:148px; vertical-align:middle; }
       /* v2.7.8: estilos aplicados DIRETAMENTE às classes nativas do Saúde Simples. */
       #classificacao .om30-med-acoes-proprias,
       #classificacao .om30-med-native-label { display:none !important; }
       #classificacao .om30-med-native-hide { display:initial !important; }
       #classificacao .collection-with-search-atendimento td:nth-child(9) .row {
-        display:flex !important;flex-wrap:nowrap !important;gap:5px !important;align-items:center !important;
-        justify-content:flex-end !important;margin:0 !important;width:100% !important;
+        display:grid !important;
+        grid-template-columns:minmax(0,1fr) 34px !important;
+        grid-template-rows:30px 30px !important;
+        column-gap:4px !important;
+        row-gap:4px !important;
+        align-items:stretch !important;
+        justify-items:stretch !important;
+        margin:0 !important;
+        width:100% !important;
+        min-width:0 !important;
       }
       #classificacao .collection-with-search-atendimento td:nth-child(9) .row::before,
       #classificacao .collection-with-search-atendimento td:nth-child(9) .row::after { display:none !important; }
@@ -4501,16 +4508,22 @@
       #classificacao .collection-with-search-atendimento .om30-med-native-call,
       #classificacao .collection-with-search-atendimento .om30-med-native-confirm {
         display:inline-flex !important;align-items:center !important;justify-content:center !important;
-        flex:none !important;height:30px !important;min-height:30px !important;max-width:none !important;
-        padding:0 7px 0 27px !important;border:1px solid #b9c2cc !important;border-radius:5px !important;
-        background-color:#fff !important;background-position:6px center !important;background-size:18px !important;
-        background-repeat:no-repeat !important;color:#24313f !important;font-size:11px !important;font-weight:600 !important;
-        text-decoration:none !important;white-space:nowrap !important;filter:none !important;box-shadow:none !important;
+        width:100% !important;min-width:0 !important;max-width:none !important;
+        height:30px !important;min-height:30px !important;
+        padding:0 5px 0 25px !important;border:1px solid #b9c2cc !important;border-radius:5px !important;
+        background-color:#fff !important;background-position:5px center !important;background-size:17px !important;
+        background-repeat:no-repeat !important;color:#24313f !important;font-size:10px !important;font-weight:700 !important;
+        text-decoration:none !important;white-space:nowrap !important;overflow:hidden !important;
+        text-overflow:ellipsis !important;filter:none !important;box-shadow:none !important;
       }
-      #classificacao .collection-with-search-atendimento .om30-med-native-call { min-width:82px !important; }
+      #classificacao .collection-with-search-atendimento .om30-med-native-call {
+        grid-column:1 !important;grid-row:1 !important;
+      }
       #classificacao .collection-with-search-atendimento .om30-med-native-call::after { content:'Chamar'; }
-      #classificacao .collection-with-search-atendimento .om30-med-native-confirm { min-width:142px !important; }
-      #classificacao .collection-with-search-atendimento .om30-med-native-confirm::after { content:'Confirmar atendimento'; }
+      #classificacao .collection-with-search-atendimento .om30-med-native-confirm {
+        grid-column:1 !important;grid-row:2 !important;
+      }
+      #classificacao .collection-with-search-atendimento .om30-med-native-confirm::after { content:'Atender'; }
       /* Antes da chamada continua visível, porém cinza. */
       #classificacao .collection-with-search-atendimento .om30-med-native-confirm.om30-med-desabilitado,
       #classificacao .collection-with-search-atendimento .om30-med-native-confirm.disabled,
@@ -4525,10 +4538,27 @@
       }
       #classificacao .collection-with-search-atendimento .om30-med-native-call:not(.disabled):hover { background-color:#eaf4f8 !important; }
       #classificacao .collection-with-search-atendimento .om30-med-native-confirm:not(.om30-med-desabilitado):not(.disabled):not([disabled]):hover { background-color:#e0f2e6 !important; }
-      /* Engrenagem permanece exatamente o botão azul nativo. */
+      /* Engrenagem permanece azul, porém centralizada visualmente dentro do botão. */
       #classificacao .collection-with-search-atendimento .om30-med-native-gear {
-        display:inline-flex !important;align-items:center !important;justify-content:center !important;
-        flex:none !important;width:38px !important;min-width:38px !important;height:34px !important;padding:0 !important;
+        position:relative !important;
+        display:flex !important;align-items:center !important;justify-content:center !important;
+        grid-column:2 !important;grid-row:1 / 3 !important;
+        width:34px !important;min-width:34px !important;max-width:34px !important;
+        height:64px !important;min-height:64px !important;
+        align-self:stretch !important;
+        margin:0 !important;padding:0 !important;
+        border-radius:5px !important;
+      }
+      #classificacao .collection-with-search-atendimento .om30-med-native-gear .zmdi {
+        position:absolute !important;left:50% !important;top:50% !important;
+        transform:translate(-50%,-50%) !important;
+        font-size:20px !important;line-height:1 !important;
+        margin:0 !important;padding:0 !important;
+      }
+      /* Remove a setinha do dropdown para a engrenagem ficar REALMENTE no centro
+         do botão azul. O botão inteiro continua abrindo o mesmo menu nativo. */
+      #classificacao .collection-with-search-atendimento .om30-med-native-gear.dropdown-toggle::after {
+        display:none !important;
       }
       #classificacao .collection-with-search-atendimento .om30-med-oculto { display:none !important; }
       #classificacao .collection-with-search-atendimento .om30-med-chamar,
@@ -4544,7 +4574,7 @@
       #classificacao .collection-with-search-atendimento .om30-med-confirmar {
         border:1px solid #76b990 !important;background-color:#eef8f1 !important;color:#276e43 !important;
       }
-      #classificacao .collection-with-search-atendimento .om30-med-confirmar::after { content:'Confirmar atendimento'; }
+      #classificacao .collection-with-search-atendimento .om30-med-confirmar::after { content:'Atender'; }
       #classificacao .collection-with-search-atendimento .om30-med-chamar:hover,
       #classificacao .collection-with-search-atendimento .om30-med-confirmar:hover { filter:none !important;brightness:1 !important; }
       #classificacao .collection-with-search-atendimento .om30-med-chamar.disabled,
@@ -4553,8 +4583,6 @@
       #classificacao .collection-with-search-atendimento .om30-med-confirmar[disabled] { opacity:.45 !important; }
       @media (max-width:1100px) {
         #${MED_BAR_ID} .om30m-filtro { min-width:112px; }
-        
-        #classificacao .collection-with-search-atendimento .om30-med-confirmar { padding-left:24px !important;font-size:10px; }
       }
     `;
     document.head.appendChild(st);
@@ -4650,7 +4678,7 @@
         display:none !important;
       }
       #classificacao .collection-with-search-atendimento td:last-child .botao-atender::after {
-        content:'Confirmar atendimento' !important;
+        content:'Atender' !important;
         display:inline !important;
         margin:0 !important;
       }
@@ -4684,15 +4712,12 @@
     document.head.appendChild(native);
 
     // v2.8.1 — coluna Ação mapeada pelo DOM real da fila médica.
-    // Layout: Chamar em cima, Confirmar atendimento embaixo e engrenagem ao lado dos dois.
+    // Layout: Chamar em cima, Atender embaixo e engrenagem ao lado dos dois.
     // A cor acompanha SOMENTE a classificação de risco, nunca o botão Chamar.
     const mapped = document.createElement('style');
     mapped.id = 'om30-med-acoes-mapeadas-v285';
     mapped.textContent = `
-      /* Risco / Vulnerabilidade: SOMENTE o nome da classificação recebe a cor. */
-      #classificacao th:nth-child(8), #classificacao td:nth-child(8) {
-        min-width:120px !important; width:120px !important; white-space:nowrap !important;
-      }
+      /* Risco / Vulnerabilidade: mantém a largura NATIVA; só colore o texto. */
       #classificacao tr.om30-risco-VERMELHO > td:nth-child(8),
       #classificacao tr.om30-risco-VERMELHO > td:nth-child(8) * { color:#dc3545 !important; font-weight:800 !important; background:transparent !important; }
       #classificacao tr.om30-risco-AMARELO > td:nth-child(8),
@@ -4705,17 +4730,17 @@
       /* Coluna Ação sem invadir Risco. */
       #classificacao th:nth-child(9), #classificacao td:nth-child(9),
       #classificacao td[aria-colindex="9"] {
-        min-width:181px !important; width:181px !important; max-width:181px !important;
+        min-width:148px !important; width:148px !important; max-width:148px !important;
         box-sizing:border-box !important; vertical-align:middle !important; white-space:nowrap !important;
         overflow:visible !important; padding-left:1px !important; padding-right:1px !important;
       }
       #classificacao td[aria-colindex="9"] > .row {
         display:grid !important;
-        grid-template-columns:145px 30px !important;
+        grid-template-columns:112px 30px !important;
         grid-template-rows:30px 30px !important;
         column-gap:4px !important; row-gap:3px !important;
-        align-items:stretch !important; justify-content:end !important;
-        margin:0 0 0 auto !important; padding:0 !important; width:179px !important; max-width:179px !important;
+        align-items:stretch !important; justify-content:start !important;
+        margin:0 !important; padding:0 !important; width:179px !important; min-width:179px !important; max-width:179px !important;
       }
       #classificacao td[aria-colindex="9"] > .row > .botao-tempo-chegada { display:none !important; }
 
@@ -4737,7 +4762,7 @@
         content:'Chamar' !important; display:inline !important; margin:0 !important; color:inherit !important;
       }
       #classificacao td[aria-colindex="9"] > .row > a.botao-atender::after {
-        content:'Confirmar atendimento' !important; display:inline !important; margin:0 !important; color:inherit !important;
+        content:'Atender' !important; display:inline !important; margin:0 !important; color:inherit !important;
       }
       #classificacao td[aria-colindex="9"] > .row > a.botao-atender::before { content:none !important; display:none !important; }
 
@@ -4779,15 +4804,155 @@
         width:30px !important; min-width:30px !important; height:63px !important; min-height:63px !important; padding:0 !important;
         display:flex !important; align-items:center !important; justify-content:center !important; border-radius:5px !important;
       }
+      /* v2.10.5: geometria final da Ação, baseada no DOM real medido no console. */
+      #classificacao td[aria-colindex="9"] {
+        display:table-cell !important;
+        width:148px !important;
+        min-width:148px !important;
+        max-width:148px !important;
+        padding-left:1px !important;
+        padding-right:1px !important;
+        overflow:visible !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto {
+        display:grid !important;
+        grid-template-columns:112px 30px !important;
+        grid-template-rows:30px 30px !important;
+        column-gap:4px !important;
+        row-gap:3px !important;
+        width:146px !important;
+        min-width:146px !important;
+        max-width:146px !important;
+        margin:0 !important;
+        padding:0 !important;
+        justify-content:start !important;
+        align-items:stretch !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > a.botao-chamar {
+        grid-column:1 !important;
+        grid-row:1 !important;
+        width:112px !important;
+        min-width:112px !important;
+        max-width:112px !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > a.botao-atender {
+        grid-column:1 !important;
+        grid-row:2 !important;
+        width:112px !important;
+        min-width:112px !important;
+        max-width:112px !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento {
+        grid-column:2 !important;
+        grid-row:1 / span 2 !important;
+        width:30px !important;
+        min-width:30px !important;
+        max-width:30px !important;
+        height:63px !important;
+        margin:0 !important;
+        padding:0 !important;
+        display:flex !important;
+        align-items:stretch !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento > button.dropdown-toggle {
+        position:relative !important;
+        width:30px !important;
+        min-width:30px !important;
+        max-width:30px !important;
+        height:63px !important;
+        min-height:63px !important;
+        max-height:63px !important;
+        margin:0 !important;
+        padding:0 !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento > button.dropdown-toggle > .zmdi {
+        position:absolute !important;
+        left:50% !important;
+        top:50% !important;
+        transform:translate(-50%,-50%) !important;
+        margin:0 !important;
+        padding:0 !important;
+        font-size:20px !important;
+        line-height:1 !important;
+      }
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento > button.dropdown-toggle::after {
+        display:none !important;
+        content:none !important;
+      }
+
+      /* v2.10.5 — Ação fixa à direita.
+         A tabela continua com rolagem horizontal nativa, mas Chamar/Confirmar/Engrenagem
+         ficam sempre visíveis mesmo quando a profissional aumenta o zoom do navegador. */
+      #classificacao table.b-table thead th:nth-child(9),
+      #classificacao table.b-table tbody td:nth-child(9),
+      #classificacao table.b-table td[aria-colindex="9"] {
+        position:sticky !important;
+        right:0 !important;
+        z-index:6 !important;
+        background:#fff !important;
+        box-shadow:none !important;
+      }
+
+      #classificacao table.b-table thead th:nth-child(9) {
+        z-index:9 !important;
+        background:#fff !important;
+      }
+
+      #classificacao table.b-table tbody tr:nth-of-type(odd) td:nth-child(9) {
+        background:#f9f9f9 !important;
+      }
+
+      #classificacao table.b-table tbody tr:hover td:nth-child(9) {
+        background:#f5f5f5 !important;
+      }
+
+      /* Menu da engrenagem: abre limpo, acima da coluna sticky e sem "sombra branca". */
+      #classificacao .table-responsive,
+      #classificacao table,
+      #classificacao tbody,
+      #classificacao tr,
+      #classificacao td[aria-colindex="9"] {
+        overflow:visible !important;
+      }
+
+      #classificacao td[aria-colindex="9"] .dropdown-menu {
+        z-index:3000 !important;
+        min-width:176px !important;
+        border:1px solid #d9e0e7 !important;
+        border-radius:6px !important;
+        box-shadow:0 8px 22px rgba(15,23,42,.14) !important;
+        background:#fff !important;
+      }
+
+      /* Padrão: menu abre para a esquerda da engrenagem, alinhado no topo do bloco. */
+      #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento .dropdown-menu.show {
+        left:auto !important;
+        right:calc(100% + 6px) !important;
+        top:0 !important;
+        bottom:auto !important;
+        margin:0 !important;
+        transform:none !important;
+      }
+
       /* Encosta o conjunto no limite direito real da coluna, sem sobra branca. */
-      #classificacao th:nth-child(9) { padding-left:2px !important; padding-right:2px !important; box-sizing:border-box !important; }
-      /* A coluna inteira cabe no quadro; não cria rolagem horizontal no fim da página. */
-      #classificacao { overflow-x:auto !important; overflow-y:visible !important; }
-      #classificacao .table-responsive { overflow-x:auto !important; overflow-y:visible !important; }
+      #classificacao th:nth-child(9) { width:181px !important; min-width:181px !important; max-width:181px !important; padding-left:2px !important; padding-right:2px !important; box-sizing:border-box !important; }
+      /* A responsividade/rolagem horizontal é controlada pelo .table-responsive nativo. */
+      #classificacao { overflow-x:visible !important; overflow-y:visible !important; }
       #classificacao.om30-dropdown-ultima-aberto { padding-bottom:180px !important; }
+
+      /* Só na última linha: em vez de abrir para o lado e ficar estranho/cortado,
+         o menu abre para baixo, alinhado pela direita da engrenagem. */
       #classificacao .collection-with-search-atendimento tr.om30-ultima-linha .dropdown-menu.show {
-        top:100% !important; bottom:auto !important; right:0 !important; left:auto !important;
-        transform:none !important; margin-top:4px !important; z-index:99999 !important;
+        top:100% !important;
+        bottom:auto !important;
+        left:auto !important;
+        right:0 !important;
+        margin-top:4px !important;
+        transform:none !important;
+        z-index:99999 !important;
       }
     `;
     document.head.appendChild(mapped);
@@ -4797,168 +4962,105 @@
   let timerZoomResponsivoMedico = null;
 
   function garantirCSSResponsivoFilaMedica() {
-    if (document.getElementById('om30-fila-medica-responsivo-v294')) return;
+    let st = document.getElementById('om30-fila-medica-responsivo-v294');
+    if (!st) {
+      st = document.createElement('style');
+      st.id = 'om30-fila-medica-responsivo-v294';
+      document.head.appendChild(st);
+    }
 
-    const st = document.createElement('style');
-    st.id = 'om30-fila-medica-responsivo-v294';
     st.textContent = `
-      #classificacao .collection-with-search-atendimento,
-      #classificacao .collection-with-search-atendimento .table-responsive {
+      /* v2.10.5 — NÃO mexe nas larguras nativas de Data, CNS, Nome, Mãe,
+         Nascimento, Idade, Senha ou Risco.
+         O BTable/Saúde Simples continua distribuindo essas 8 colunas como sempre. */
+      #classificacao .table-responsive {
+        display:block !important;
         width:100% !important;
         max-width:100% !important;
         overflow-x:auto !important;
         overflow-y:visible !important;
-        box-sizing:border-box !important;
+        -webkit-overflow-scrolling:touch;
       }
 
-      #classificacao .collection-with-search-atendimento table {
+      #classificacao .table-responsive > table,
+      #classificacao table.b-table {
         width:100% !important;
-        max-width:100% !important;
-        table-layout:fixed !important;
-        box-sizing:border-box !important;
-      }
-
-      #classificacao .collection-with-search-atendimento th,
-      #classificacao .collection-with-search-atendimento td {
-        box-sizing:border-box !important;
-        min-width:0 !important;
         max-width:none !important;
+        table-layout:auto !important;
+      }
+
+      /* Não redefine width/min-width/max-width das colunas 1 a 8.
+         Isso é proposital: no diagnóstico nativo, CNS recebe ~186px e Nome ~240px.
+         Foram justamente essas medidas que a v2.9.5 estava destruindo. */
+      #classificacao table.b-table th:nth-child(-n+8),
+      #classificacao table.b-table td:nth-child(-n+8) {
+        box-sizing:border-box !important;
+      }
+      /* Nome e Mãe continuam podendo quebrar normalmente. */
+      #classificacao table.b-table th:nth-child(3),
+      #classificacao table.b-table td:nth-child(3),
+      #classificacao table.b-table th:nth-child(4),
+      #classificacao table.b-table td:nth-child(4) {
+        white-space:normal !important;
         overflow-wrap:anywhere !important;
-        word-break:normal !important;
-        padding-left:6px !important;
-        padding-right:6px !important;
       }
 
-      #classificacao .collection-with-search-atendimento tbody tr > td:first-child {
-        padding-left:14px !important;
-      }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(1),
-      #classificacao .collection-with-search-atendimento td:nth-child(1) { width:96px !important; }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(2),
-      #classificacao .collection-with-search-atendimento td:nth-child(2) { width:118px !important; }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(5),
-      #classificacao .collection-with-search-atendimento td:nth-child(5) { width:92px !important; }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(6),
-      #classificacao .collection-with-search-atendimento td:nth-child(6) { width:52px !important; }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(7),
-      #classificacao .collection-with-search-atendimento td:nth-child(7) { width:70px !important; }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(8),
-      #classificacao .collection-with-search-atendimento td:nth-child(8) {
-        width:112px !important;
+      /* Só a Ação é maior que no sistema nativo, porque adicionamos os rótulos
+         Chamar / Confirmar. Se faltar espaço, a barra horizontal NATIVA aparece. */
+      #classificacao table.b-table th:nth-child(9),
+      #classificacao table.b-table td:nth-child(9),
+      #classificacao table.b-table td[aria-colindex="9"] {
+        width:148px !important;
+        min-width:148px !important;
+        max-width:148px !important;
         white-space:nowrap !important;
-      }
-
-      #classificacao .collection-with-search-atendimento th:nth-child(9),
-      #classificacao .collection-with-search-atendimento td:nth-child(9),
-      #classificacao .collection-with-search-atendimento td[aria-colindex="9"] {
-        width:181px !important;
-        min-width:181px !important;
-        max-width:181px !important;
+        overflow:visible !important;
         padding-left:1px !important;
         padding-right:1px !important;
       }
 
-      #classificacao .collection-with-search-atendimento th:nth-child(3),
-      #classificacao .collection-with-search-atendimento td:nth-child(3),
-      #classificacao .collection-with-search-atendimento th:nth-child(4),
-      #classificacao .collection-with-search-atendimento td:nth-child(4) {
-        width:auto !important;
-        min-width:0 !important;
-        white-space:normal !important;
-      }
-
+      /* Em tela menor não rouba largura das primeiras colunas.
+         A tabela simplesmente passa a ter scroll horizontal, igual ao nativo. */
       @media (max-width:1366px) {
-        #classificacao .collection-with-search-atendimento th,
-        #classificacao .collection-with-search-atendimento td {
-          padding-left:4px !important;
-          padding-right:4px !important;
-        }
-
-        #classificacao .collection-with-search-atendimento tbody tr > td:first-child {
-          padding-left:12px !important;
-        }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(1),
-        #classificacao .collection-with-search-atendimento td:nth-child(1) { width:90px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(2),
-        #classificacao .collection-with-search-atendimento td:nth-child(2) { width:108px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(5),
-        #classificacao .collection-with-search-atendimento td:nth-child(5) { width:86px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(6),
-        #classificacao .collection-with-search-atendimento td:nth-child(6) { width:44px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(7),
-        #classificacao .collection-with-search-atendimento td:nth-child(7) { width:64px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(8),
-        #classificacao .collection-with-search-atendimento td:nth-child(8) { width:100px !important; }
-      }
-
-      @media (max-width:1180px) {
-        #classificacao .collection-with-search-atendimento { font-size:11px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(1),
-        #classificacao .collection-with-search-atendimento td:nth-child(1) { width:84px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(2),
-        #classificacao .collection-with-search-atendimento td:nth-child(2) { width:102px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(5),
-        #classificacao .collection-with-search-atendimento td:nth-child(5) { width:80px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(6),
-        #classificacao .collection-with-search-atendimento td:nth-child(6) { width:40px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(7),
-        #classificacao .collection-with-search-atendimento td:nth-child(7) { width:60px !important; }
-
-        #classificacao .collection-with-search-atendimento th:nth-child(8),
-        #classificacao .collection-with-search-atendimento td:nth-child(8) { width:92px !important; }
-      }
-
-      @media (max-width:900px) {
-        #classificacao .collection-with-search-atendimento {
-          zoom:.88;
-          width:113.636% !important;
-          max-width:none !important;
+        #classificacao table.b-table th:nth-child(9),
+        #classificacao table.b-table td:nth-child(9),
+        #classificacao table.b-table td[aria-colindex="9"] {
+          width:181px !important;
+          min-width:181px !important;
+          max-width:181px !important;
         }
       }
     `;
-
-    document.head.appendChild(st);
   }
 
   function ajustarZoomResponsivoFilaMedica() {
     garantirCSSResponsivoFilaMedica();
 
     const raiz = document.querySelector('#classificacao');
-    const colecao = raiz?.querySelector('.collection-with-search-atendimento');
-    if (!raiz || !colecao) return;
+    const tabela = raiz?.querySelector('table.b-table, table');
+    const responsivo = tabela?.closest('.table-responsive');
 
-    if (window.innerWidth > 900) {
-      colecao.style.removeProperty('zoom');
-      colecao.style.removeProperty('width');
-      colecao.style.removeProperty('max-width');
-      colecao.style.removeProperty('transform-origin');
-      colecao.dataset.om30Zoom = '1';
+    if (!raiz || !tabela || !responsivo) return;
+
+    // Limpa resíduos das versões com zoom/largura compensada.
+    for (const el of [raiz, responsivo, tabela, tabela.closest('.collection-with-search-atendimento')].filter(Boolean)) {
+      el.style.removeProperty('zoom');
+      el.style.removeProperty('transform');
+      el.style.removeProperty('transform-origin');
     }
 
-    raiz.style.overflowX = 'visible';
+    tabela.style.removeProperty('width');
+    tabela.style.removeProperty('min-width');
+    tabela.style.removeProperty('max-width');
+    tabela.style.tableLayout = 'auto';
 
-    const responsivo = raiz.querySelector('.table-responsive');
-    if (responsivo) {
-      responsivo.style.overflowX = 'auto';
-      responsivo.style.maxWidth = '100%';
-    }
+    responsivo.style.overflowX = 'auto';
+    responsivo.style.overflowY = 'visible';
+    responsivo.style.width = '100%';
+    responsivo.style.maxWidth = '100%';
+
+    const excesso = Math.max(0, responsivo.scrollWidth - responsivo.clientWidth);
+    responsivo.dataset.om30OverflowPx = String(Math.round(excesso));
   }
 
   function solicitarAjusteZoomResponsivoFilaMedica(delay = 30) {
@@ -5050,7 +5152,7 @@
       }
     }
     const at = bar.querySelector('.om30m-atualizado');
-    if (at) at.textContent = `🕒 ${horarioCurtoAgora()}`;
+    if (at) at.innerHTML = `<span class="om30m-atualizado-label">Horário</span><span class="om30m-atualizado-hora">${horarioCurtoAgora()}</span>`;
   }
 
   function itemDaLinhaMed(row, vm) {
@@ -5177,7 +5279,7 @@
     if (confirmarNativo) {
       confirmarNativo.classList.add('om30-med-native-confirm');
       confirmarNativo.classList.remove('om30-med-native-call', 'om30-med-native-gear');
-      confirmarNativo.setAttribute('title', 'Confirmar atendimento');
+      confirmarNativo.setAttribute('title', 'Atender');
       confirmarNativo.querySelectorAll(':scope > .om30-med-texto-acao').forEach(el => el.remove());
 
       // Sempre visível: cinza antes da chamada; verde assim que o próprio componente nativo habilitar.
@@ -5561,5 +5663,5 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.9.4 RASCUNHO carregado. RT/36h isolado por senha + Profissional do Retorno nativo integrado + correção da engrenagem na última linha. Filtro inicial:', filtroSelecionado);
+  log('v2.10.5 RASCUNHO carregado. RT/36h isolado por senha + Profissional do Retorno nativo integrado + 3º fallback legado + Ação fixa à direita + relógio limpo + engrenagem alinhada + correção da engrenagem na última linha. Filtro inicial:', filtroSelecionado);
 })();

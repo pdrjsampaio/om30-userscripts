@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.9.2
+// @version      2.9.4
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @match        https://guaruja.saudesimples.net/prontuarios*
@@ -18,7 +18,7 @@
 (() => {
   'use strict';
 
-  // v2.9.2:
+  // v2.9.4:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
   // - Senha RT = retorno PA/36h (regra independente).
   // - prontuario_com_retorno = tag Retorno nativa (regra independente).
@@ -26,7 +26,7 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V292__) return;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V294__) return;
   window.__OM30_FILA_MEDICA_RISCO_RETORNO_V292__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
@@ -90,11 +90,11 @@
   }
 
   function log(...args) {
-    console.log('[OM30 Fila Médica v2.9.2 RASCUNHO]', ...args);
+    console.log('[OM30 Fila Médica v2.9.4 RASCUNHO]', ...args);
   }
 
   function warn(...args) {
-    console.warn('[OM30 Fila Médica v2.9.2 RASCUNHO]', ...args);
+    console.warn('[OM30 Fila Médica v2.9.4 RASCUNHO]', ...args);
   }
 
   function ehPaginaFila() {
@@ -1182,7 +1182,7 @@
         assinatura: assinaturaItens(filtrados)
       });
     } catch (e) {
-      console.error('[OM30 Fila Médica v2.9.2 RASCUNHO] Erro ao montar fila:', e);
+      console.error('[OM30 Fila Médica v2.9.4 RASCUNHO] Erro ao montar fila:', e);
       const status = box.querySelector('.om30-status-fila');
       if (status) status.textContent = `Erro ao carregar fila: ${e.message || e}`;
       document.body.classList.remove(BODY_ATUALIZANDO);
@@ -1733,7 +1733,7 @@
 
         return registro;
       } catch (e) {
-        console.error('[OM30 Fila Médica v2.9.2 RASCUNHO] Histórico anterior:', atendimentoStr, e);
+        console.error('[OM30 Fila Médica v2.9.4 RASCUNHO] Histórico anterior:', atendimentoStr, e);
         return null;
       }
     })();
@@ -1950,6 +1950,24 @@
       const nome = limparNomeMedicoLegado(linha);
       if (nome) {
         console.log('[OM30 Retorno] Médico localizado pelo layout legado/texto:', nome);
+        return nome;
+      }
+    }
+
+    // 3D) Fallback exato do layout observado no diagnóstico:
+    // "Médico PEDRO JUSTINO SAMPAIO ANDRADE Especialidade Médico clínico".
+    // DOMParser pode colapsar as quebras de linha, então procura no texto completo.
+    const textoColapsado = clean(doc.body?.textContent || '');
+    const padroesLegados = [
+      /(?:^|\s)M[EÉ]DICO\s*:?\s+(.+?)\s+ESPECIALIDADE\s+M[EÉ]DICO\b/i,
+      /(?:^|\s)M[EÉ]DICO\s*:?\s+([A-ZÀ-ÖØ-Ý][A-ZÀ-ÖØ-Ý'´`.-]*(?:\s+[A-ZÀ-ÖØ-Ý][A-ZÀ-ÖØ-Ý'´`.-]*){1,10})(?=\s+(?:CID|MEDICA[CÇ][AÃ]O|PROCEDIMENTO|CONDUTA|$))/i
+    ];
+
+    for (const rx of padroesLegados) {
+      const m = textoColapsado.match(rx);
+      const nome = limparNomeMedicoLegado(m?.[1] || '');
+      if (nome) {
+        console.log('[OM30 Retorno] Médico localizado pelo layout legado/diagnóstico:', nome);
         return nome;
       }
     }
@@ -4535,7 +4553,7 @@
       #classificacao .collection-with-search-atendimento .om30-med-confirmar[disabled] { opacity:.45 !important; }
       @media (max-width:1100px) {
         #${MED_BAR_ID} .om30m-filtro { min-width:112px; }
-        #classificacao .collection-with-search-atendimento td:nth-child(9) { min-width:245px; }
+        
         #classificacao .collection-with-search-atendimento .om30-med-confirmar { padding-left:24px !important;font-size:10px; }
       }
     `;
@@ -4764,8 +4782,8 @@
       /* Encosta o conjunto no limite direito real da coluna, sem sobra branca. */
       #classificacao th:nth-child(9) { padding-left:2px !important; padding-right:2px !important; box-sizing:border-box !important; }
       /* A coluna inteira cabe no quadro; não cria rolagem horizontal no fim da página. */
-      #classificacao { overflow-x:clip !important; overflow-y:visible !important; }
-      #classificacao .table-responsive { overflow-x:clip !important; overflow-y:visible !important; }
+      #classificacao { overflow-x:auto !important; overflow-y:visible !important; }
+      #classificacao .table-responsive { overflow-x:auto !important; overflow-y:visible !important; }
       #classificacao.om30-dropdown-ultima-aberto { padding-bottom:180px !important; }
       #classificacao .collection-with-search-atendimento tr.om30-ultima-linha .dropdown-menu.show {
         top:100% !important; bottom:auto !important; right:0 !important; left:auto !important;
@@ -4778,39 +4796,169 @@
 
   let timerZoomResponsivoMedico = null;
 
+  function garantirCSSResponsivoFilaMedica() {
+    if (document.getElementById('om30-fila-medica-responsivo-v294')) return;
+
+    const st = document.createElement('style');
+    st.id = 'om30-fila-medica-responsivo-v294';
+    st.textContent = `
+      #classificacao .collection-with-search-atendimento,
+      #classificacao .collection-with-search-atendimento .table-responsive {
+        width:100% !important;
+        max-width:100% !important;
+        overflow-x:auto !important;
+        overflow-y:visible !important;
+        box-sizing:border-box !important;
+      }
+
+      #classificacao .collection-with-search-atendimento table {
+        width:100% !important;
+        max-width:100% !important;
+        table-layout:fixed !important;
+        box-sizing:border-box !important;
+      }
+
+      #classificacao .collection-with-search-atendimento th,
+      #classificacao .collection-with-search-atendimento td {
+        box-sizing:border-box !important;
+        min-width:0 !important;
+        max-width:none !important;
+        overflow-wrap:anywhere !important;
+        word-break:normal !important;
+        padding-left:6px !important;
+        padding-right:6px !important;
+      }
+
+      #classificacao .collection-with-search-atendimento tbody tr > td:first-child {
+        padding-left:14px !important;
+      }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(1),
+      #classificacao .collection-with-search-atendimento td:nth-child(1) { width:96px !important; }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(2),
+      #classificacao .collection-with-search-atendimento td:nth-child(2) { width:118px !important; }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(5),
+      #classificacao .collection-with-search-atendimento td:nth-child(5) { width:92px !important; }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(6),
+      #classificacao .collection-with-search-atendimento td:nth-child(6) { width:52px !important; }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(7),
+      #classificacao .collection-with-search-atendimento td:nth-child(7) { width:70px !important; }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(8),
+      #classificacao .collection-with-search-atendimento td:nth-child(8) {
+        width:112px !important;
+        white-space:nowrap !important;
+      }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(9),
+      #classificacao .collection-with-search-atendimento td:nth-child(9),
+      #classificacao .collection-with-search-atendimento td[aria-colindex="9"] {
+        width:181px !important;
+        min-width:181px !important;
+        max-width:181px !important;
+        padding-left:1px !important;
+        padding-right:1px !important;
+      }
+
+      #classificacao .collection-with-search-atendimento th:nth-child(3),
+      #classificacao .collection-with-search-atendimento td:nth-child(3),
+      #classificacao .collection-with-search-atendimento th:nth-child(4),
+      #classificacao .collection-with-search-atendimento td:nth-child(4) {
+        width:auto !important;
+        min-width:0 !important;
+        white-space:normal !important;
+      }
+
+      @media (max-width:1366px) {
+        #classificacao .collection-with-search-atendimento th,
+        #classificacao .collection-with-search-atendimento td {
+          padding-left:4px !important;
+          padding-right:4px !important;
+        }
+
+        #classificacao .collection-with-search-atendimento tbody tr > td:first-child {
+          padding-left:12px !important;
+        }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(1),
+        #classificacao .collection-with-search-atendimento td:nth-child(1) { width:90px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(2),
+        #classificacao .collection-with-search-atendimento td:nth-child(2) { width:108px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(5),
+        #classificacao .collection-with-search-atendimento td:nth-child(5) { width:86px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(6),
+        #classificacao .collection-with-search-atendimento td:nth-child(6) { width:44px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(7),
+        #classificacao .collection-with-search-atendimento td:nth-child(7) { width:64px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(8),
+        #classificacao .collection-with-search-atendimento td:nth-child(8) { width:100px !important; }
+      }
+
+      @media (max-width:1180px) {
+        #classificacao .collection-with-search-atendimento { font-size:11px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(1),
+        #classificacao .collection-with-search-atendimento td:nth-child(1) { width:84px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(2),
+        #classificacao .collection-with-search-atendimento td:nth-child(2) { width:102px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(5),
+        #classificacao .collection-with-search-atendimento td:nth-child(5) { width:80px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(6),
+        #classificacao .collection-with-search-atendimento td:nth-child(6) { width:40px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(7),
+        #classificacao .collection-with-search-atendimento td:nth-child(7) { width:60px !important; }
+
+        #classificacao .collection-with-search-atendimento th:nth-child(8),
+        #classificacao .collection-with-search-atendimento td:nth-child(8) { width:92px !important; }
+      }
+
+      @media (max-width:900px) {
+        #classificacao .collection-with-search-atendimento {
+          zoom:.88;
+          width:113.636% !important;
+          max-width:none !important;
+        }
+      }
+    `;
+
+    document.head.appendChild(st);
+  }
+
   function ajustarZoomResponsivoFilaMedica() {
+    garantirCSSResponsivoFilaMedica();
+
     const raiz = document.querySelector('#classificacao');
     const colecao = raiz?.querySelector('.collection-with-search-atendimento');
-    const tabela = raiz?.querySelector('.collection-with-search-atendimento table');
-    const responsivo = raiz?.querySelector('.table-responsive');
+    if (!raiz || !colecao) return;
 
-    if (!raiz || !colecao || !tabela) return;
+    if (window.innerWidth > 900) {
+      colecao.style.removeProperty('zoom');
+      colecao.style.removeProperty('width');
+      colecao.style.removeProperty('max-width');
+      colecao.style.removeProperty('transform-origin');
+      colecao.dataset.om30Zoom = '1';
+    }
 
-    // Mede sempre em 100% para não acumular redução a cada chamada.
-    colecao.style.zoom = '1';
+    raiz.style.overflowX = 'visible';
 
-    const larguraDisponivel = Math.max(
-      320,
-      Number(responsivo?.clientWidth || raiz.clientWidth || raiz.parentElement?.clientWidth || window.innerWidth)
-    );
-
-    const larguraNecessaria = Math.max(
-      Number(tabela.scrollWidth || 0),
-      Number(tabela.getBoundingClientRect?.().width || 0)
-    );
-
-    if (!larguraNecessaria || !larguraDisponivel) return;
-
-    // Pequena folga evita que 1-2px de borda disparem scrollbar/corte.
-    let zoom = (larguraDisponivel - 8) / larguraNecessaria;
-    zoom = Math.min(1, Math.max(0.72, zoom));
-
-    // Em telas realmente pequenas, permite reduzir um pouco mais para manter Ação inteira.
-    if (window.innerWidth <= 1180) zoom = Math.min(zoom, 0.88);
-    if (window.innerWidth <= 1024) zoom = Math.min(zoom, 0.80);
-
-    colecao.style.zoom = zoom.toFixed(3);
-    colecao.dataset.om30Zoom = zoom.toFixed(3);
+    const responsivo = raiz.querySelector('.table-responsive');
+    if (responsivo) {
+      responsivo.style.overflowX = 'auto';
+      responsivo.style.maxWidth = '100%';
+    }
   }
 
   function solicitarAjusteZoomResponsivoFilaMedica(delay = 30) {
@@ -5413,5 +5561,5 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.9.2 RASCUNHO carregado. RT/36h isolado por senha + Profissional do Retorno nativo integrado + correção da engrenagem na última linha. Filtro inicial:', filtroSelecionado);
+  log('v2.9.4 RASCUNHO carregado. RT/36h isolado por senha + Profissional do Retorno nativo integrado + correção da engrenagem na última linha. Filtro inicial:', filtroSelecionado);
 })();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.26
+// @version      3.0.27
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.26
+    /* OM30 - CONTROLE DE SALAS v3.0.27
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3717,7 +3717,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.26',
+            versao: '3.0.27',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
@@ -3896,25 +3896,6 @@
             .cs-barra .cs-aviso { color:#a15c00; }
             .cs-barra .cs-erro { color:#b42318; }
             .cs-fila ul.pagination { display:none !important; }
-
-            /* Responsividade igual à estratégia da Fila Médica:
-               não espreme a tabela até quebrar Status/Ação.
-               Quando faltar largura, usa o scroll horizontal nativo. */
-            .cs-fila .table-responsive {
-              display:block !important;
-              width:100% !important;
-              max-width:100% !important;
-              overflow-x:auto !important;
-              overflow-y:visible !important;
-              -webkit-overflow-scrolling:touch;
-            }
-            .cs-fila .table-responsive > table,
-            .cs-fila table.b-table,
-            .cs-fila table {
-              width:100% !important;
-              max-width:none !important;
-              table-layout:auto !important;
-            }
             .cs-fila tr.cs-risco-vermelho > td:first-child { box-shadow: inset 6px 0 0 #d32f2f; }
             .cs-fila tr.cs-risco-laranja > td:first-child { box-shadow: inset 6px 0 0 #ef6c00; }
             .cs-fila tr.cs-risco-amarelo > td:first-child { box-shadow: inset 6px 0 0 #f9a825; }
@@ -3938,24 +3919,25 @@
               vertical-align:middle !important;
               text-align:center !important;
             }
+            /* A coluna Status volta a respeitar o layout nativo.
+               O card é compacto e não força as demais colunas. */
             .cs-fila th.cs-col-status,
             .cs-fila td.cs-col-status {
-              width:136px !important;
-              min-width:136px !important;
-              max-width:136px !important;
+              min-width:0 !important;
+              width:auto !important;
+              max-width:none !important;
               box-sizing:border-box !important;
-              overflow:visible !important;
             }
             .om30-ficha-aberta {
               display:inline-grid;
               grid-template-columns:8px minmax(0,1fr);
               align-items:center;
-              column-gap:8px;
-              width:130px;
+              column-gap:6px;
+              width:128px;
               max-width:100%;
               box-sizing:border-box;
               margin:0 auto;
-              padding:7px 9px;
+              padding:6px 7px;
               border:1px solid #1d4ed8;
               border-radius:8px;
               background:#2563eb;
@@ -3981,7 +3963,7 @@
             .om30-ficha-aberta .om30-atendimento-texto strong {
               display:block;
               color:#fff !important;
-              font-size:8.5px !important;
+              font-size:8px !important;
               line-height:1.08;
               font-weight:900;
               text-transform:uppercase;
@@ -3995,8 +3977,8 @@
               overflow:hidden;
               margin-top:3px;
               color:#eaf2ff !important;
-              font-size:9px !important;
-              line-height:1.15;
+              font-size:8.5px !important;
+              line-height:1.12;
               font-weight:700;
               letter-spacing:0;
               text-transform:none !important;
@@ -4114,10 +4096,7 @@
             }
 
             .cs-fila td.cs-col-med { text-align:left; }
-            /* Não zera min-width de todas as colunas: isso fazia o Bootstrap
-               comprimir Status/Ação e quebrar o desenho. */
-            .cs-fila.cs-com-med th,
-            .cs-fila.cs-com-med td { box-sizing:border-box; }
+            .cs-fila.cs-com-med th, .cs-fila.cs-com-med td { min-width:0; }
             .cs-fila.cs-com-med td.cs-col-med { overflow-wrap:anywhere; }
             .cs-med-box { display:grid; gap:4px; }
             .cs-med {
@@ -4172,13 +4151,7 @@
             }
             .cs-fila.cs-com-med th.cs-col-acoes,
             .cs-fila.cs-com-med td.cs-col-acoes {
-                width:112px !important;
-                min-width:112px !important;
-                max-width:112px !important;
-                box-sizing:border-box !important;
-                overflow:visible !important;
-                padding-left:3px !important;
-                padding-right:3px !important;
+                min-width:0 !important;
             }
             .cs-fila td.cs-col-acoes .botao-atender{outline:none!important;box-shadow:none!important}
             .cs-fila td.cs-col-acoes .botao-atender:focus,.cs-fila td.cs-col-acoes .botao-atender:active{outline:none!important;box-shadow:none!important;border-color:#b9c2cc!important}

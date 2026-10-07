@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.17
+// @version      3.0.18
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.17
+    /* OM30 - CONTROLE DE SALAS v3.0.18
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -2549,8 +2549,9 @@
       const retornoFinalSim = retornoConhecido === true;
       const retornoFinalNao = retornoConhecido === false;
       const retornoConfirmadoAgora = retornoDiretoAgora || (retornoFinalSim && !pendencias.length);
+      // Sem outra sala pendente e sem SIM/NÃO confirmado pelo fluxo:
+      // sempre deixa explícito que o retorno médico ainda precisa ser confirmado.
       const retornoAConfirmar =
-        ultimaSala &&
         retornoConhecido === null &&
         proximo.key !== 'atendimento' &&
         !pendencias.length;
@@ -2561,8 +2562,8 @@
       const semRetornoFinal = retornoFinalNao && !pendencias.length;
       const labelSecao = retornoConfirmadoAgora
         ? 'Próximo destino'
-        : (semRetornoFinal ? 'Retorno médico' : (retornoAConfirmar ? 'Depois desta sala' : 'Ainda precisa passar por'));
-      const countSecao = retornoConfirmadoAgora || retornoAConfirmar ? '↩' : (semRetornoFinal ? '—' : pendencias.length);
+        : (semRetornoFinal ? 'Retorno médico' : (retornoAConfirmar ? 'Retorno médico' : 'Ainda precisa passar por'));
+      const countSecao = retornoConfirmadoAgora ? '↩' : (retornoAConfirmar ? '?' : (semRetornoFinal ? '—' : pendencias.length));
 
       let html = `
         <div class="om30cs-meta">
@@ -2583,8 +2584,8 @@
           <div class="om30cs-row om30cs-retorno-pendente">
             <span class="om30cs-dot"></span>
             <div class="om30cs-room-wrap">
-              <div class="om30cs-room">Retorno ao consultório médico</div>
-              <div class="om30cs-status proxima">A CONFIRMAR AO SALVAR</div>
+              <div class="om30cs-room">Retorno médico</div>
+              <div class="om30cs-status proxima">A CONFIRMAR</div>
             </div>
           </div>
         `;

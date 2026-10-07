@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI - Jales
 // @namespace    om30
-// @version      0.9.14.3
+// @version      0.9.14.4
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @description  Jales · WhatsApp → GLPI: motor silencioso + fila + evidências + entidade 588
@@ -4051,7 +4051,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.14.3';
+        '0.9.14.4';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -5213,8 +5213,39 @@
                     view.textContent = 'ABRIR CHAMADO';
                     view.onclick = () => openCreatedTicket(result.ticket_url);
                 } else {
-                    view.textContent = 'ABRIR GLPI';
-                    view.onclick = () => openGlpiLoginWindow(`${GLPI_TEST.base}/front/ticket.form.php`);
+                    const loginLike =
+                        /\b(LOGIN|SESSAO|SESSÃO|AUTENTIC)\b/i
+                            .test(
+                                String(
+                                    result.message ||
+                                    ''
+                                )
+                            );
+
+                    if (loginLike) {
+                        view.textContent =
+                            'ENTRAR NO GLPI';
+
+                        view.onclick =
+                            () =>
+                                openGlpiLoginWindow(
+                                    glpiLoginUrl()
+                                );
+                    } else {
+                        view.textContent =
+                            'TENTAR NOVAMENTE';
+
+                        view.onclick = () => {
+                            GM_deleteValue(
+                                GLPI_TEST.resultKey
+                            );
+
+                            resetTicketResultVisualState();
+                            releaseCreateButton(
+                                'CRIAR CHAMADO'
+                            );
+                        };
+                    }
                 }
             }
 
@@ -9626,35 +9657,65 @@
         const candidates =
             silentCollectUserCandidates(ctx);
 
-        const strong =
-            candidates.filter(
-                candidate =>
-                    candidate.score >= 300 ||
-                    candidate.hits.length >= 2
-            );
+        for (const candidate of candidates) {
+            try {
+                if (
+                    await silentVerifyUser(
+                        candidate.id
+                    )
+                ) {
+                    const resolved = {
+                        id: String(candidate.id),
+                        name:
+                            candidate.name ||
+                            `User_${candidate.id}`,
+                        source:
+                            [...new Set(candidate.hits)]
+                                .join(' + '),
+                        deferred: false
+                    };
 
-        if (!strong.length) {
-            throw new Error(
-                'Não consegui identificar o usuário logado no GLPI.'
-            );
+                    om30Log(
+                        'glpi.user.resolved',
+                        resolved
+                    );
+
+                    return resolved;
+                }
+            } catch (error) {
+                if (
+                    error?.message ===
+                    'LOGIN_REQUIRED'
+                ) {
+                    throw error;
+                }
+            }
         }
 
-        const best = strong[0];
-
-        if (!await silentVerifyUser(best.id)) {
-            throw new Error(
-                'O usuário detectado no GLPI não pôde ser validado.'
-            );
-        }
-
-        return {
-            id: String(best.id),
+        // O GLPI 10 nem sempre serializa o ator padrão no HTML do
+        // formulário novo. Isso NÃO significa sessão deslogada.
+        // Nesse caso deixamos o próprio GLPI aplicar os atores padrão
+        // na criação e recuperamos o usuário do chamado já persistido.
+        const deferred = {
+            id: '',
             name:
-                best.name ||
-                `User_${best.id}`,
+                'Usuário da sessão GLPI',
             source:
-                [...new Set(best.hits)].join(' + ')
+                'glpi-default-actors',
+            deferred: true
         };
+
+        om30Log(
+            'glpi.user.deferred',
+            {
+                reason:
+                    'Nenhum User_ID foi exposto no HTML inicial autenticado.',
+                candidates
+            },
+            'warn'
+        );
+
+        return deferred;
     }
 
     function silentDecodeScriptText(raw) {
@@ -11516,19 +11577,32 @@
             String(fd.get('priority') || '3')
         );
 
-        fd.set(
-            '_actors',
-            JSON.stringify(
-                silentExpectedActors(
-                    currentUser.id
+        if (currentUser?.id) {
+            fd.set(
+                '_actors',
+                JSON.stringify(
+                    silentExpectedActors(
+                        currentUser.id
+                    )
                 )
-            )
-        );
+            );
 
-        fd.set(
-            '_skip_default_actor',
-            '1'
-        );
+            fd.set(
+                '_skip_default_actor',
+                '1'
+            );
+        } else {
+            // Não inventa usuário. O GLPI usa o solicitante/atores padrão
+            // da própria sessão autenticada; depois recuperamos o ID real
+            // do chamado criado antes de corrigir o grupo atribuído.
+            fd.delete(
+                '_actors'
+            );
+
+            fd.delete(
+                '_skip_default_actor'
+            );
+        }
 
         const uploads =
             Array.isArray(upload)
@@ -11859,7 +11933,7 @@
 
     function silentActorsFromEditContext(
         ctx,
-        currentUserId
+        currentUserId = ''
     ) {
         const hidden =
             silentReadHiddenActors(
@@ -11891,11 +11965,15 @@
 
         for (
             const option of
-            ctx.doc.querySelectorAll('option')
+            ctx.doc.querySelectorAll(
+                'option'
+            )
         ) {
             if (
                 !option.selected &&
-                !option.hasAttribute('selected')
+                !option.hasAttribute(
+                    'selected'
+                )
             ) {
                 continue;
             }
@@ -11905,47 +11983,67 @@
                     option
                 );
 
-            if (!parsed) continue;
-
-            if (
-                glpiNormalize(parsed.itemtype) ===
-                'GROUP'
-            ) {
-                actors.assign.push(
-                    parsed
-                );
+            if (!parsed) {
                 continue;
             }
 
             if (
+                glpiNormalize(
+                    parsed.itemtype
+                ) === 'GROUP'
+            ) {
+                actors.assign.push(
+                    parsed
+                );
+
+                continue;
+            }
+
+            // Em edição de chamado, um User selecionado é evidência real
+            // muito mais forte que o HTML inicial. Se ainda não conhecemos
+            // o usuário da sessão, preservamos o User encontrado.
+            if (
+                !currentUserId ||
                 String(parsed.items_id) ===
-                String(currentUserId)
+                    String(currentUserId)
             ) {
                 actors.requester.push(
                     parsed
                 );
+
                 actors.assign.push(
                     parsed
                 );
             }
         }
 
-        // Fallback: usuário detectado dinamicamente nunca pode sumir.
-        actors.requester =
-            silentDedupeActors([
-                ...actors.requester,
-                silentActorUser(
-                    currentUserId
-                )
-            ]);
+        if (currentUserId) {
+            actors.requester =
+                silentDedupeActors([
+                    ...actors.requester,
+                    silentActorUser(
+                        currentUserId
+                    )
+                ]);
 
-        actors.assign =
-            silentDedupeActors([
-                ...actors.assign,
-                silentActorUser(
-                    currentUserId
-                )
-            ]);
+            actors.assign =
+                silentDedupeActors([
+                    ...actors.assign,
+                    silentActorUser(
+                        currentUserId
+                    )
+                ]);
+        } else {
+            actors.requester =
+                silentDedupeActors(
+                    actors.requester
+                );
+
+            actors.assign =
+                silentDedupeActors(
+                    actors.assign
+                );
+        }
 
         actors.observer =
             silentDedupeActors(
@@ -12059,38 +12157,67 @@
         const before =
             silentActorsFromEditContext(
                 ctx,
-                currentUser.id
+                currentUser?.id || ''
             );
+
+        const requesterUsers =
+            (before.requester || [])
+                .filter(
+                    actor =>
+                        glpiNormalize(
+                            actor?.itemtype
+                        ) === 'USER' &&
+                        /^\d+$/.test(
+                            String(
+                                actor?.items_id ||
+                                ''
+                            )
+                        )
+                );
+
+        const assignedUsers =
+            (before.assign || [])
+                .filter(
+                    actor =>
+                        glpiNormalize(
+                            actor?.itemtype
+                        ) === 'USER' &&
+                        /^\d+$/.test(
+                            String(
+                                actor?.items_id ||
+                                ''
+                            )
+                        )
+                );
+
+        const resolvedUserId =
+            String(
+                currentUser?.id ||
+                requesterUsers[0]?.items_id ||
+                assignedUsers[0]?.items_id ||
+                ''
+            );
+
+        if (!resolvedUserId) {
+            throw new Error(
+                'O chamado foi criado, mas não consegui recuperar o usuário da sessão para preservar o Atribuído.'
+            );
+        }
 
         const users =
             silentDedupeActors([
-                ...(before.assign || [])
-                    .filter(
-                        actor =>
-                            glpiNormalize(
-                                actor?.itemtype
-                            ) === 'USER'
-                    ),
+                ...assignedUsers,
                 silentActorUser(
-                    currentUser.id
+                    resolvedUserId
                 )
             ]);
 
-        // Chamado recém-criado: Service Desk é o grupo padrão indesejado.
-        // No segundo POST preservamos usuários e substituímos os grupos
-        // pelo grupo Sistemas da operação, exatamente como no teste validado.
         const after = {
             requester:
                 silentDedupeActors([
-                    ...(before.requester || [])
-                        .filter(
-                            actor =>
-                                glpiNormalize(
-                                    actor?.itemtype
-                                ) === 'USER'
-                        ),
+                    ...requesterUsers,
                     silentActorUser(
-                        currentUser.id
+                        resolvedUserId
                     )
                 ]),
             observer:
@@ -12184,6 +12311,15 @@
             after,
             targetGroupId:
                 String(targetGroupId),
+            currentUserId:
+                resolvedUserId,
+            currentUserSource:
+                currentUser?.id
+                    ? (
+                        currentUser.source ||
+                        'pre-create'
+                    )
+                    : 'ticket-default-requester',
             http:
                 update.status
         };
@@ -12205,10 +12341,17 @@
             );
         }
 
+        const expectedUserId =
+            String(
+                currentUser?.id ||
+                postfix?.currentUserId ||
+                ''
+            );
+
         const actors =
             silentActorsFromEditContext(
                 ctx,
-                currentUser.id
+                expectedUserId
             );
 
         const summary =
@@ -12227,10 +12370,9 @@
             );
 
         const userOk =
+            !!expectedUserId &&
             summary.users.includes(
-                String(
-                    currentUser.id
-                )
+                expectedUserId
             );
 
         const targetOk =
@@ -12511,7 +12653,7 @@
 
         saveGlpiJob(job);
 
-        const currentUser =
+        let currentUser =
             await silentResolveCurrentUser(
                 ctx
             );
@@ -12725,13 +12867,50 @@
                 currentUser
             );
 
+        if (
+            !currentUser?.id &&
+            postfix?.currentUserId
+        ) {
+            currentUser = {
+                id:
+                    String(
+                        postfix.currentUserId
+                    ),
+                name:
+                    `User_${postfix.currentUserId}`,
+                source:
+                    postfix.currentUserSource ||
+                    'ticket-default-requester',
+                deferred:
+                    false
+            };
+
+            job.current_user = {
+                id:
+                    currentUser.id,
+                name:
+                    currentUser.name,
+                source:
+                    currentUser.source
+            };
+
+            saveGlpiJob(job);
+
+            om30Log(
+                'glpi.user.recovered-after-create',
+                job.current_user
+            );
+        }
+
         job.assignment_direct = {
             target_group_id:
                 postfix.targetGroupId,
             target_group:
                 `Sistemas ${job.data.operation}`,
             user_preserved:
-                true,
+                !!postfix.currentUserId,
+            user_id:
+                postfix.currentUserId || '',
             http:
                 postfix.http
         };
@@ -13390,7 +13569,7 @@
                 );
 
             // Mantido para compatibilidade com partes antigas do motor.
-            // A fonte oficial das imagens na v0.9.14.3 é evidenceImages.
+            // A fonte oficial das imagens na v0.9.14.4 é evidenceImages.
             const printDataUrl =
                 evidenceImages[0]?.dataUrl ||
                 '';
@@ -13461,7 +13640,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI Jales v0.9.14.3',
+                'OM30 WhatsApp → GLPI Jales v0.9.14.4',
                 {
                     job:
                         job.id,
@@ -13619,6 +13798,18 @@
             errors.push('Mapa fixo de categorias não carregado.');
         }
 
+        if (
+            !String(
+                silentResolveCurrentUser
+            ).includes(
+                'glpi-default-actors'
+            )
+        ) {
+            errors.push(
+                'Fallback de usuário da sessão não está carregado.'
+            );
+        }
+
         const categoryChecks = [
             ['Saúde Simples', 2, 'Cadastro', 80],
             ['Saúde Simples', 2, 'Produção BPA', 85],
@@ -13648,11 +13839,11 @@
         }
 
         if (errors.length) {
-            console.error('❌ OM30 Jales v0.9.14.3 self-check:', errors);
+            console.error('❌ OM30 Jales v0.9.14.4 self-check:', errors);
             return false;
         }
 
-        console.log('✅ OM30 Jales v0.9.14.3 self-check OK', {
+        console.log('✅ OM30 Jales v0.9.14.4 self-check OK', {
             operation_id: 588,
             operation: 'Jales',
             group_id: 18,
@@ -13666,5 +13857,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp Jales v0.9.14.3 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp Jales v0.9.14.4 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

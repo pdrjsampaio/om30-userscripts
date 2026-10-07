@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.29
+// @version      3.0.30
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.29
+    /* OM30 - CONTROLE DE SALAS v3.0.30
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -986,11 +986,40 @@
         return {nome,actor};
     }
 
-    async function csRegistrarPresencaFilha(info={}){
+    function csAgendarRetryPresenca(info,tentativa,motivo){
+        if(tentativa>=6)return;
+        const atraso=Math.min(3500,650+(tentativa*450));
+        clearTimeout(window.__csRetryPresenca);
+        window.__csRetryPresenca=setTimeout(()=>{
+            csRegistrarPresencaFilha(info,tentativa+1).catch(e=>
+                console.warn('[OM30 PRESENÇA] retry falhou:',e?.message||e)
+            );
+        },atraso);
+        console.warn('[OM30 PRESENÇA] aguardando dados para registrar presença',{
+            tentativa:tentativa+1,motivo
+        });
+    }
+
+    function csInstalarRecuperacaoPresenca(){
+        if(window.__csPresencaRecuperacaoInstalada)return;
+        window.__csPresencaRecuperacaoInstalada=true;
+        const renovar=()=>{
+            if(document.visibilityState==='hidden')return;
+            Promise.resolve(window.__csRenovarPresenca?.()).catch(()=>{});
+        };
+        window.addEventListener('focus',renovar,{passive:true});
+        window.addEventListener('pageshow',renovar,{passive:true});
+        window.addEventListener('online',renovar,{passive:true});
+        document.addEventListener('visibilitychange',()=>{
+            if(document.visibilityState==='visible')renovar();
+        },{passive:true});
+    }
+
+    async function csRegistrarPresencaFilha(info={},tentativa=0){
         const a=csAtendimentoAtualPresenca(info);
         const sala=csSalaAtualPresenca()||String(info?.sala||'');
         if(!a||!sala){
-            console.warn('[OM30 PRESENÇA] não foi possível identificar atendimento/sala',{atendimento:a?.bruto||'',sala});
+            csAgendarRetryPresenca(info,tentativa,!a?'AtendimentoPa ainda não identificado':'sala ainda não identificada');
             return;
         }
 
@@ -998,7 +1027,7 @@
 
         const {nome,actor}=await csIdentidadeUsuario();
         if(!nome){
-            console.warn('[OM30 PRESENÇA] nome do profissional não identificado.');
+            csAgendarRetryPresenca(info,tentativa,'nome do profissional ainda não identificado');
             return;
         }
 
@@ -1013,21 +1042,35 @@
             }
         }
 
-        const gravar=()=>Promise.allSettled(chaves.map(atendimento_id=>csPresReq('/api/attendance/upsert',{
-            atendimento_id,sala,display_name:nome,actor_id:actor
-        })));
-        const resultados=await gravar();
-        if(!resultados.some(x=>x.status==='fulfilled')){
-            throw resultados.find(x=>x.status==='rejected')?.reason||new Error('Cloudflare não confirmou a presença.');
-        }
+        const gravar=async()=>{
+            const resultados=await Promise.allSettled(chaves.map(atendimento_id=>csPresReq('/api/attendance/upsert',{
+                atendimento_id,sala,display_name:nome,actor_id:actor
+            })));
+            if(!resultados.some(x=>x.status==='fulfilled')){
+                throw resultados.find(x=>x.status==='rejected')?.reason||new Error('Cloudflare não confirmou a presença.');
+            }
+            try{sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({
+                atendimento:a.bruto,id:a.id,chave:a.chave,sala,nome,em:Date.now()
+            }));}catch(_){}
+            return true;
+        };
 
-        try{sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({
-            atendimento:a.bruto,id:a.id,chave:a.chave,sala,nome,em:Date.now()
-        }));}catch(_){}
+        await gravar();
+        clearTimeout(window.__csRetryPresenca);
+        window.__csRenovarPresenca=()=>gravar().catch(e=>{
+            console.warn('[OM30 PRESENÇA] renovação temporariamente indisponível:',e?.message||e);
+            return false;
+        });
+        csInstalarRecuperacaoPresenca();
 
         if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
-        window.__csHeartbeatPresenca=setInterval(()=>gravar().catch?.(()=>{}),45000);
-        console.log('[OM30 PRESENÇA] registrada',{atendimento:a.bruto,sala,nome});
+        window.__csHeartbeatPresenca=setInterval(()=>{
+            if(document.visibilityState!=='hidden')window.__csRenovarPresenca?.();
+        },30000);
+
+        console.log('[OM30 PRESENÇA] registrada e protegida',{
+            atendimento:a.bruto,sala,nome,tentativa
+        });
     }
 
     async function csExcluirPresencaConcluida(){
@@ -1038,6 +1081,8 @@
         }
         try{sessionStorage.removeItem(CS_PRESENCA_FILHA)}catch(_){}
         if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
+        clearTimeout(window.__csRetryPresenca);
+        window.__csRenovarPresenca=null;
     }
 
     // Aba filha voltou à lista por conclusão/saída real do fluxo: agora sim limpa a presença.
@@ -3621,7 +3666,13 @@
         // Sem timer de polling próprio e sem MutationObserver: consulta apenas quando a
         // fila já seria atualizada. Fechar a aba NÃO exclui o registro.
         const PRES = {
-            base:'https://om30-fluxo-controle-salas.om30-pedro.workers.dev', key:'om302026', cache:new Map(),
+            base:'https://om30-fluxo-controle-salas.om30-pedro.workers.dev',
+            key:'om302026',
+            cache:new Map(),
+            misses:new Map(),
+            atualizando:false,
+            ultimaLeitura:0,
+            ultimoErro:'',
         };
         function atendimentoPres(str) {
             const m=String(str||'').match(/^([A-Za-z0-9_]+)#(\d+)$/); if(!m||!/^Atendimento/i.test(m[1]))return null;
@@ -3635,91 +3686,151 @@
             finally { clearTimeout(timer); }
         }
         async function atualizarPresencas(vm,lista) {
-            const setor=setorDaColecao(vm); if(!setor) return;
+            const setor=setorDaColecao(vm); if(!setor||PRES.atualizando) return;
+            PRES.atualizando=true;
 
-            // A presença não pode depender só de item.atendimento_str: em algumas
-            // renderizações do Controle de Salas esse campo não vem serializado.
-            // Espera o DOM da tabela e usa o mesmo resolvedor robusto da alergia,
-            // que encontra o AtendimentoPa nos componentes Vue da própria linha.
-            try{await new Promise(resolve=>vm.$nextTick(resolve));}catch(_){}
-            const linhas=[...(vm.$el?.querySelectorAll?.('tbody > tr')||[])];
-            const at=[];
-            (lista||[]).forEach((it,i)=>{
-                if(it.status!=='Em Espera'&&it.status!=='Em Andamento'&&it.status!=='Em Outra Sala')return;
-                let a=atendimentoPres(it.atendimento_str||it.atendimentoStr||it.atendimento||'');
-                if(!a){
-                    const pa=typeof atendimentoPa==='function' ? atendimentoPa(it,linhas[i]||null) : '';
-                    if(pa)a=atendimentoPres(`AtendimentoPa#${pa}`);
-                }
-                if(a)at.push(a);
-            });
-            const unicos=[...new Map(at.map(x=>[x.bruto,x])).values()];
-            if(!unicos.length){PRES.cache.clear();vm.$nextTick(pintarMedicacoes);return;}
-
-            const mapaChave=new Map();
-            for(const a of unicos){
-                mapaChave.set(String(a.chave),a.bruto);
-                mapaChave.set(String(a.id),a.bruto); // compatibilidade com registros antigos
-            }
-
-            const interpretar = res => {
-                const novo=new Map();
-                const arr=[];
-                for(const k of ['results','items','presencas','data','atendimentos']) {
-                    if(Array.isArray(res?.[k])) arr.push(...res[k]);
-                }
-                if(Array.isArray(res)) arr.push(...res);
-                if(!arr.length && res && typeof res==='object'){
-                    for(const [k,v] of Object.entries(res)){
-                        if(k==='ok' || !v || typeof v!=='object' || Array.isArray(v)) continue;
-                        arr.push({...v, atendimento_id:v.atendimento_id||k});
+            try{
+                // A presença não pode depender só de item.atendimento_str: em algumas
+                // renderizações esse campo não vem serializado. Usa o mesmo resolvedor
+                // robusto da alergia para chegar ao AtendimentoPa da própria linha.
+                try{await new Promise(resolve=>vm.$nextTick(resolve));}catch(_){}
+                const linhas=[...(vm.$el?.querySelectorAll?.('tbody > tr')||[])];
+                const at=[];
+                (lista||[]).forEach((it,i)=>{
+                    if(it.status!=='Em Espera'&&it.status!=='Em Andamento'&&it.status!=='Em Outra Sala')return;
+                    let a=atendimentoPres(it.atendimento_str||it.atendimentoStr||it.atendimento||'');
+                    if(!a){
+                        const pa=typeof atendimentoPa==='function' ? atendimentoPa(it,linhas[i]||null) : '';
+                        if(pa)a=atendimentoPres(`AtendimentoPa#${pa}`);
                     }
-                }
-                for(const a of arr){
-                    if(a?.found===false) continue;
-                    const chave=String(a?.atendimento_id||a?.id||a?.atendimento||'');
-                    const original=mapaChave.get(chave);
-                    const nome=String(a?.profissional||a?.display_name||a?.nome||'').trim();
-                    if(original && nome) novo.set(original,{found:true,profissional:nome});
-                }
-                return novo;
-            };
+                    if(a)at.push(a);
+                });
 
-            try {
-                // Consulta as duas formas de chave no mesmo lote. Assim registros criados
-                // pela ponte atual ou por versões antigas aparecem sem esperar fallback.
+                const unicos=[...new Map(at.map(x=>[x.bruto,x])).values()];
+                if(!unicos.length){
+                    // Não apaga o último cache por uma renderização intermediária vazia.
+                    vm.$nextTick(pintarMedicacoes);
+                    return;
+                }
+
+                const ativos=new Set(unicos.map(x=>x.bruto));
+                const mapaChave=new Map();
+                for(const a of unicos){
+                    mapaChave.set(String(a.chave),a.bruto);
+                    mapaChave.set(String(a.id),a.bruto);
+                }
+
+                const interpretar = res => {
+                    const novo=new Map();
+                    const arr=[];
+                    for(const k of ['results','items','presencas','data','atendimentos']) {
+                        if(Array.isArray(res?.[k])) arr.push(...res[k]);
+                    }
+                    if(Array.isArray(res)) arr.push(...res);
+                    if(!arr.length && res && typeof res==='object'){
+                        for(const [k,v] of Object.entries(res)){
+                            if(k==='ok'||!v||typeof v!=='object'||Array.isArray(v))continue;
+                            arr.push({...v,atendimento_id:v.atendimento_id||k});
+                        }
+                    }
+                    for(const item of arr){
+                        if(item?.found===false)continue;
+                        const chave=String(item?.atendimento_id||item?.id||item?.atendimento||'');
+                        const original=mapaChave.get(chave);
+                        const nome=String(item?.profissional||item?.display_name||item?.nome||'').trim();
+                        if(original&&nome)novo.set(original,{found:true,profissional:nome,vistoEm:Date.now()});
+                    }
+                    return novo;
+                };
+
                 const chavesBatch=[...new Set(unicos.flatMap(x=>[x.chave,x.id]).filter(Boolean))];
                 const res=await presReq('/api/attendance/batch',{sala:setor.api,atendimentos:chavesBatch});
-                let novo=interpretar(res);
+                const encontrados=interpretar(res);
+                const ausenciasConfirmadas=new Set();
 
-                // Fallback: se o Worker responder em outro formato ou houver registros
-                // antigos gravados apenas com o ID cru, consulta individualmente.
-                if(!novo.size){
-                    const pares=await Promise.all(unicos.slice(0,25).map(async a=>{
-                        for(const chave of [...new Set([a.chave,a.id].filter(Boolean))]){
-                            try{
-                                const r=await presReq('/api/attendance/get',{atendimento_id:chave,sala:setor.api});
-                                if(r?.found){
-                                    const nome=String(r.profissional||r.display_name||r.nome||'').trim();
-                                    if(nome) return [a.bruto,{found:true,profissional:nome}];
-                                }
-                            }catch(_){}
-                        }
-                        return null;
-                    }));
-                    novo=new Map(pares.filter(Boolean));
+                // Confere individualmente CADA pessoa omitida pelo lote. Resultado parcial
+                // não pode apagar o nome de quem continua sendo atendido.
+                const faltantes=unicos.filter(a=>!encontrados.has(a.bruto)).slice(0,40);
+                const verificacoes=await Promise.all(faltantes.map(async a=>{
+                    const chaves=[...new Set([a.chave,a.id].filter(Boolean))];
+                    let respostasOk=0;
+                    for(const chave of chaves){
+                        try{
+                            const r=await presReq('/api/attendance/get',{atendimento_id:chave,sala:setor.api});
+                            respostasOk++;
+                            if(r?.found){
+                                const nome=String(r.profissional||r.display_name||r.nome||'').trim();
+                                if(nome)return {tipo:'found',bruto:a.bruto,nome};
+                            }
+                        }catch(_){}
+                    }
+                    return respostasOk===chaves.length
+                        ? {tipo:'absent',bruto:a.bruto}
+                        : {tipo:'transient',bruto:a.bruto};
+                }));
+
+                for(const v of verificacoes){
+                    if(v.tipo==='found'){
+                        encontrados.set(v.bruto,{found:true,profissional:v.nome,vistoEm:Date.now()});
+                    }else if(v.tipo==='absent'){
+                        ausenciasConfirmadas.add(v.bruto);
+                    }
                 }
 
-                PRES.cache=novo;
+                const mesclado=new Map();
+                // Mantém apenas pacientes que ainda pertencem à fila atual.
+                for(const [k,v] of PRES.cache){
+                    if(ativos.has(k))mesclado.set(k,v);
+                }
+
+                for(const a of unicos){
+                    const achado=encontrados.get(a.bruto);
+                    if(achado){
+                        mesclado.set(a.bruto,achado);
+                        PRES.misses.delete(a.bruto);
+                        continue;
+                    }
+
+                    if(ausenciasConfirmadas.has(a.bruto)){
+                        const n=(PRES.misses.get(a.bruto)||0)+1;
+                        PRES.misses.set(a.bruto,n);
+                        // Só remove após duas leituras completas confirmando ausência.
+                        // Uma oscilação única do Worker não derruba o nome da tela.
+                        if(n>=2)mesclado.delete(a.bruto);
+                    }
+                    // transient: mantém exatamente o último valor conhecido.
+                }
+
+                PRES.cache=mesclado;
+                PRES.ultimaLeitura=Date.now();
+                PRES.ultimoErro='';
                 vm.$nextTick(pintarMedicacoes);
-            } catch(e) {
-                console.warn('[Controle de Salas] presença Cloudflare indisponível',e&&e.message||e);
+            }catch(e){
+                PRES.ultimoErro=String(e?.message||e);
+                // Falha de rede/Worker NÃO apaga o último nome válido.
+                console.warn('[Controle de Salas] presença Cloudflare temporariamente indisponível',PRES.ultimoErro);
+                try{vm.$nextTick(pintarMedicacoes);}catch(_){}
+            }finally{
+                PRES.atualizando=false;
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.29',
-            atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
+            versao: '3.0.30',
+            atualizar: () => {
+                if(!CS?.colecao)return Promise.resolve();
+                const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length
+                    ? CS.colecao.items
+                    : Array.from(CS.itens?.values?.()||[]);
+                return atualizarPresencas(CS.colecao,lista);
+            },
             cache: () => Array.from(PRES.cache.entries()),
+            status: () => ({
+                cache:Array.from(PRES.cache.entries()),
+                misses:Array.from(PRES.misses.entries()),
+                ultimaLeitura:PRES.ultimaLeitura,
+                ultimoErro:PRES.ultimoErro,
+                atualizando:PRES.atualizando
+            }),
             testar: async (atendimento, sala='medicacao') => {
                 const a=atendimentoPres(String(atendimento||'').includes('#') ? atendimento : `AtendimentoPa#${String(atendimento||'').match(/\d+/)?.[0]||''}`);
                 if(!a) throw new Error('AtendimentoPa inválido');
@@ -3731,6 +3842,20 @@
                 return saida;
             }
         };
+
+        if(!window.__OM30_PRESENCA_AUTOREFRESH__){
+            window.__OM30_PRESENCA_AUTOREFRESH__=true;
+            const atualizarPresencaVisivel=()=>{
+                if(document.visibilityState==='hidden')return;
+                window.OM30CloudflarePresenca?.atualizar?.().catch?.(()=>{});
+            };
+            window.__OM30_PRESENCA_TIMER__=setInterval(atualizarPresencaVisivel,20000);
+            window.addEventListener('focus',atualizarPresencaVisivel,{passive:true});
+            window.addEventListener('online',atualizarPresencaVisivel,{passive:true});
+            document.addEventListener('visibilitychange',()=>{
+                if(document.visibilityState==='visible')atualizarPresencaVisivel();
+            },{passive:true});
+        }
 
         function nomePresencaVisual(nome){
             const original=String(nome||'').replace(/\s+/g,' ').trim();

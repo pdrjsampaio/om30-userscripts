@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.23
+// @version      3.0.24
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.23
+    /* OM30 - CONTROLE DE SALAS v3.0.24
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3717,7 +3717,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.23',
+            versao: '3.0.24',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
@@ -3769,8 +3769,13 @@
             // Evita mostrar "ATENDIMENTO EM CURSO" e depois repetir "Por:" embaixo.
             if(it.status==='Em Andamento'&&subtitulo){
                 const nomeVisual=nomePresencaVisual(d.profissional);
-                subtitulo.textContent=nomeVisual || 'ATENDIMENTO EM CURSO';
-                subtitulo.title=nomeVisual ? `Atendido por: ${String(d.profissional||'').trim()}` : '';
+                if(nomeVisual){
+                    subtitulo.innerHTML=`<span class="om30-por-label">Por</span> ${esc(nomeVisual)}`;
+                    subtitulo.title=`Atendido por: ${String(d.profissional||'').trim()}`;
+                }else{
+                    subtitulo.textContent='ATENDIMENTO EM CURSO';
+                    subtitulo.title='';
+                }
                 if(box)box.remove();
                 return;
             }
@@ -3975,6 +3980,11 @@
               text-transform:none !important;
               word-break:normal;
               overflow-wrap:anywhere;
+            }
+            .om30-ficha-aberta .om30-por-label {
+              color:#bfdbfe !important;
+              font-weight:500;
+              margin-right:2px;
             }
             .om30-status-cell-atendimento > .cs-presenca {
               margin-top:4px;

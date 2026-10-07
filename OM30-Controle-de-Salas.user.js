@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.13
+// @version      3.0.14
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.13
+    /* OM30 - CONTROLE DE SALAS v3.0.14
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3313,18 +3313,80 @@
         }
         async function atualizarPresencas(vm,lista) {
             const setor=setorDaColecao(vm); if(!setor) return;
-            const at=(lista||[]).filter(it=>it.status==='Em Espera'||it.status==='Em Andamento').map(it=>atendimentoPres(it.atendimento_str)).filter(Boolean);
+            const at=(lista||[])
+                .filter(it=>it.status==='Em Espera'||it.status==='Em Andamento'||it.status==='Em Outra Sala')
+                .map(it=>atendimentoPres(it.atendimento_str)).filter(Boolean);
             const unicos=[...new Map(at.map(x=>[x.bruto,x])).values()];
             if(!unicos.length){PRES.cache.clear();return;}
+
+            const mapaChave=new Map();
+            for(const a of unicos){
+                mapaChave.set(String(a.chave),a.bruto);
+                mapaChave.set(String(a.id),a.bruto); // compatibilidade com registros antigos
+            }
+
+            const interpretar = res => {
+                const novo=new Map();
+                const arr=[];
+                for(const k of ['results','items','presencas','data','atendimentos']) {
+                    if(Array.isArray(res?.[k])) arr.push(...res[k]);
+                }
+                if(Array.isArray(res)) arr.push(...res);
+                if(!arr.length && res && typeof res==='object'){
+                    for(const [k,v] of Object.entries(res)){
+                        if(k==='ok' || !v || typeof v!=='object' || Array.isArray(v)) continue;
+                        arr.push({...v, atendimento_id:v.atendimento_id||k});
+                    }
+                }
+                for(const a of arr){
+                    if(a?.found===false) continue;
+                    const chave=String(a?.atendimento_id||a?.id||a?.atendimento||'');
+                    const original=mapaChave.get(chave);
+                    const nome=String(a?.profissional||a?.display_name||a?.nome||'').trim();
+                    if(original && nome) novo.set(original,{found:true,profissional:nome});
+                }
+                return novo;
+            };
+
             try {
                 const res=await presReq('/api/attendance/batch',{sala:setor.api,atendimentos:unicos.map(x=>x.chave)});
-                const arr=Array.isArray(res.items)?res.items:Array.isArray(res.atendimentos)?res.atendimentos:Array.isArray(res.results)?res.results:[];
-                const novo=new Map();
-                for(const a of arr){const chave=String(a.atendimento_id||a.id||'');const original=unicos.find(x=>x.chave===chave);if(original&&(a.found!==false))novo.set(original.bruto,{found:true,profissional:a.profissional||a.display_name||a.nome||'Profissional'});}
+                let novo=interpretar(res);
+
+                // Fallback: se o Worker responder em outro formato ou houver registros
+                // antigos gravados apenas com o ID cru, consulta individualmente.
+                if(!novo.size){
+                    const pares=await Promise.all(unicos.slice(0,25).map(async a=>{
+                        for(const chave of [...new Set([a.chave,a.id].filter(Boolean))]){
+                            try{
+                                const r=await presReq('/api/attendance/get',{atendimento_id:chave,sala:setor.api});
+                                if(r?.found){
+                                    const nome=String(r.profissional||r.display_name||r.nome||'').trim();
+                                    if(nome) return [a.bruto,{found:true,profissional:nome}];
+                                }
+                            }catch(_){}
+                        }
+                        return null;
+                    }));
+                    novo=new Map(pares.filter(Boolean));
+                }
+
                 PRES.cache=novo;
                 vm.$nextTick(pintarMedicacoes);
-            } catch(e) { console.warn('[Controle de Salas] presença Cloudflare indisponível',e&&e.message||e); }
+            } catch(e) {
+                console.warn('[Controle de Salas] presença Cloudflare indisponível',e&&e.message||e);
+            }
         }
+        window.OM30CloudflarePresenca = {
+            versao: '3.0.14',
+            atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
+            cache: () => Array.from(PRES.cache.entries()),
+            testar: async (atendimento, sala='medicacao') => {
+                const a=atendimentoPres(String(atendimento||'').includes('#') ? atendimento : `AtendimentoPa#${String(atendimento||'').match(/\d+/)?.[0]||''}`);
+                if(!a) throw new Error('AtendimentoPa inválido');
+                return presReq('/api/attendance/get',{atendimento_id:a.chave,sala});
+            }
+        };
+
         function aplicarPresencaNaLinha(tr,it,setor,campos){
             const a=atendimentoPres(it.atendimento_str), d=a&&PRES.cache.get(a.bruto); if(!a)return;
             const idx=campos.findIndex(f=>f.key==='status'); const td=idx>=0?tr.children[idx]:null; if(!td)return;
@@ -5971,6 +6033,27 @@
     // Tela de aplicação (/aplicacoes_medicamentos/new): motivos rápidos de cancelamento
     // ─────────────────────────────────────────────────────────────────────────────
     function iniciarAplicacao() {
+        // Cloudflare: registrar presença também na Medicação.
+        // A v3.0.13 semeava o AtendimentoPa ao abrir a aba filha, mas não executava
+        // o upsert nesta rota. Exames/Raio-X/Enfermagem já chamavam o registro.
+        try {
+            const qs = new URLSearchParams(location.search);
+            const pa = String(qs.get('om30_atendimento_pa') || sessionStorage.getItem(CS_ATENDIMENTO_PA_FILHO) || '').match(/\d+/)?.[0] || '';
+            let seed = null;
+            try { seed = JSON.parse(localStorage.getItem('cs-presenca-seed') || 'null'); } catch (_) {}
+            const recente = seed && Date.now() - Number(seed.em || 0) < 5 * 60 * 1000;
+            const seedPa = String(seed?.atendimento || '').match(/^AtendimentoPa#(\d+)$/i)?.[1] || '';
+            const info = recente && (!pa || !seedPa || seedPa === pa)
+                ? seed
+                : (pa ? { atendimento: `AtendimentoPa#${pa}`, sala: 'medicacao', nome: '', em: Date.now() } : null);
+            if (info?.atendimento) {
+                info.sala = 'medicacao';
+                csRegistrarPresencaFilha(info).catch(e => console.warn('[OM30 PRESENÇA] registro Medicação não realizado:', e?.message || e));
+            }
+        } catch (e) {
+            console.warn('[OM30 PRESENÇA] falha ao preparar registro da Medicação:', e?.message || e);
+        }
+
         estilo(`
             .cs-alerg-ficha { margin:6px 0; padding:8px 12px; border-radius:6px; background:#fde8e8; color:#9b1c1c; border:1px solid #f5a3a3; font-weight:700; font-size:14px; }
             .cs-pend { margin:6px 0 10px; padding:8px 10px; border:1px solid #c9d6e3; border-left:4px solid #2b6cb0; border-radius:6px; background:#f4f8fc; font-size:13px; }

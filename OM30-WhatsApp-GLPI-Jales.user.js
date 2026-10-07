@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI - Jales
 // @namespace    om30
-// @version      0.9.14.4
+// @version      0.9.14.5
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @description  Jales · WhatsApp → GLPI: motor silencioso + fila + evidências + entidade 588
@@ -29,7 +29,8 @@
         base: 'https://suporte.om30.cloud',
         jobKey: 'OM30_JALES_GLPI_JOB_V1',
         resultKey: 'OM30_JALES_GLPI_LAST_RESULT_V1',
-        queueKey: 'OM30_JALES_GLPI_QUEUE_V1'
+        queueKey: 'OM30_JALES_GLPI_QUEUE_V1',
+        identityKey: 'OM30_JALES_GLPI_CURRENT_USER_V1'
     };
 
     const GLPI_BACKGROUND_WINDOW_NAME = 'OM30_GLPI_BACKGROUND';
@@ -238,6 +239,492 @@
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .toUpperCase().replace(/[^A-Z0-9]+/g, ' ')
         .replace(/\s+/g, ' ').trim();
+
+    function glpiSaveIdentity(identity) {
+        const id =
+            String(
+                identity?.id ||
+                ''
+            ).match(/^\d+$/)?.[0] ||
+            '';
+
+        if (!id) {
+            return false;
+        }
+
+        const payload = {
+            id,
+            name:
+                String(
+                    identity?.name ||
+                    ''
+                ).replace(/\s+/g, ' ').trim(),
+            source:
+                String(
+                    identity?.source ||
+                    'unknown'
+                ),
+            at:
+                new Date().toISOString(),
+            href:
+                location.hostname ===
+                    'suporte.om30.cloud'
+                    ? location.href
+                    : ''
+        };
+
+        GM_setValue(
+            GLPI_TEST.identityKey,
+            JSON.stringify(
+                payload
+            )
+        );
+
+        return payload;
+    }
+
+    function glpiReadIdentity(
+        maxAgeMs = 6 * 60 * 60 * 1000
+    ) {
+        try {
+            const raw =
+                GM_getValue(
+                    GLPI_TEST.identityKey,
+                    ''
+                );
+
+            const value =
+                raw
+                    ? JSON.parse(raw)
+                    : null;
+
+            const id =
+                String(
+                    value?.id ||
+                    ''
+                ).match(/^\d+$/)?.[0] ||
+                '';
+
+            if (!id) {
+                return null;
+            }
+
+            const at =
+                Date.parse(
+                    value?.at ||
+                    ''
+                );
+
+            if (
+                Number.isFinite(at) &&
+                Date.now() - at >
+                    maxAgeMs
+            ) {
+                return null;
+            }
+
+            return {
+                id,
+                name:
+                    String(
+                        value?.name ||
+                        ''
+                    ),
+                source:
+                    String(
+                        value?.source ||
+                        'identity-cache'
+                    ),
+                at:
+                    value?.at ||
+                    ''
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    function glpiIdentityCandidatesFromDocument(
+        doc,
+        sourcePrefix = 'glpi-page'
+    ) {
+        const map =
+            new Map();
+
+        function add(
+            id,
+            name,
+            source,
+            score
+        ) {
+            id =
+                String(
+                    id ||
+                    ''
+                ).match(/^\d+$/)?.[0] ||
+                '';
+
+            if (!id) {
+                return;
+            }
+
+            const previous =
+                map.get(id) ||
+                {
+                    id,
+                    name: '',
+                    source: '',
+                    score: 0
+                };
+
+            if (
+                name &&
+                !previous.name
+            ) {
+                previous.name =
+                    String(name)
+                        .replace(/\s+/g, ' ')
+                        .trim();
+            }
+
+            if (
+                Number(score) >
+                Number(previous.score || 0)
+            ) {
+                previous.score =
+                    Number(score);
+
+                previous.source =
+                    source;
+            }
+
+            map.set(
+                id,
+                previous
+            );
+        }
+
+        if (!doc) {
+            return [];
+        }
+
+        const userMenuSelectors = [
+            '.user-menu-dropdown',
+            '.user-menu-dropdown-toggle',
+            '[class*="user-menu"]',
+            '#navbar-menu',
+            'header'
+        ];
+
+        for (
+            const selector of
+            userMenuSelectors
+        ) {
+            for (
+                const root of
+                doc.querySelectorAll(
+                    selector
+                )
+            ) {
+                for (
+                    const a of
+                    root.querySelectorAll(
+                        'a[href]'
+                    )
+                ) {
+                    const href =
+                        String(
+                            a.getAttribute(
+                                'href'
+                            ) ||
+                            ''
+                        );
+
+                    let match =
+                        href.match(
+                            /user\.form\.php[^#?]*\?[^#]*\bid=(\d+)/i
+                        );
+
+                    if (!match) {
+                        match =
+                            href.match(
+                                /preference\.php[^#?]*\?[^#]*\b(?:users_id|id)=(\d+)/i
+                            );
+                    }
+
+                    if (!match) {
+                        continue;
+                    }
+
+                    add(
+                        match[1],
+                        a.textContent || '',
+                        `${sourcePrefix}:user-menu-link`,
+                        1000
+                    );
+                }
+
+                for (
+                    const el of
+                    root.querySelectorAll(
+                        '[data-user-id],[data-users-id]'
+                    )
+                ) {
+                    add(
+                        el.getAttribute(
+                            'data-user-id'
+                        ) ||
+                        el.getAttribute(
+                            'data-users-id'
+                        ),
+                        el.textContent || '',
+                        `${sourcePrefix}:user-menu-data`,
+                        980
+                    );
+                }
+            }
+        }
+
+        for (
+            const form of
+            doc.querySelectorAll(
+                'form'
+            )
+        ) {
+            const action =
+                String(
+                    form.getAttribute(
+                        'action'
+                    ) ||
+                    ''
+                );
+
+            const preferenceForm =
+                /preference\.php|user\.form\.php/i
+                    .test(action);
+
+            if (!preferenceForm) {
+                continue;
+            }
+
+            for (
+                const field of
+                form.querySelectorAll(
+                    'input[name="users_id"], input[name="_users_id"], input[name="id"]'
+                )
+            ) {
+                add(
+                    field.value,
+                    '',
+                    `${sourcePrefix}:preference-form`,
+                    field.name === 'id'
+                        ? 930
+                        : 970
+                );
+            }
+        }
+
+        for (
+            const field of
+            doc.querySelectorAll(
+                'input[name="users_id"], input[name="_users_id"]'
+            )
+        ) {
+            add(
+                field.value,
+                '',
+                `${sourcePrefix}:users-id-field`,
+                900
+            );
+        }
+
+        for (
+            const a of
+            doc.querySelectorAll(
+                'a[href*="user.form.php"]'
+            )
+        ) {
+            const href =
+                String(
+                    a.getAttribute(
+                        'href'
+                    ) ||
+                    ''
+                );
+
+            const match =
+                href.match(
+                    /[?&]id=(\d+)/i
+                );
+
+            if (match) {
+                add(
+                    match[1],
+                    a.textContent || '',
+                    `${sourcePrefix}:user-form-link`,
+                    820
+                );
+            }
+        }
+
+        return [
+            ...map.values()
+        ].sort(
+            (a, b) =>
+                b.score -
+                a.score
+        );
+    }
+
+    async function glpiFetchCurrentIdentity() {
+        const response =
+            await silentRequest({
+                method:
+                    'GET',
+                url:
+                    `${GLPI_TEST.base}/front/preference.php?om30_identity=${Date.now()}`,
+                headers: {
+                    'Accept':
+                        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            });
+
+        const html =
+            response.responseText ||
+            '';
+
+        if (
+            silentLooksLikeLogin(
+                html,
+                response.finalUrl ||
+                ''
+            )
+        ) {
+            throw new Error(
+                'LOGIN_REQUIRED'
+            );
+        }
+
+        if (
+            response.status < 200 ||
+            response.status >= 400
+        ) {
+            return null;
+        }
+
+        const doc =
+            silentParseHTML(
+                html
+            );
+
+        const candidates =
+            glpiIdentityCandidatesFromDocument(
+                doc,
+                'preference'
+            );
+
+        for (
+            const candidate of
+            candidates
+        ) {
+            try {
+                if (
+                    await silentVerifyUser(
+                        candidate.id
+                    )
+                ) {
+                    const identity = {
+                        id:
+                            String(
+                                candidate.id
+                            ),
+                        name:
+                            candidate.name ||
+                            '',
+                        source:
+                            candidate.source ||
+                            'preference'
+                    };
+
+                    glpiSaveIdentity(
+                        identity
+                    );
+
+                    return identity;
+                }
+            } catch (error) {
+                if (
+                    error?.message ===
+                    'LOGIN_REQUIRED'
+                ) {
+                    throw error;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    async function captureGlpiVisibleIdentity() {
+        if (
+            location.hostname !==
+            'suporte.om30.cloud'
+        ) {
+            return null;
+        }
+
+        if (
+            document.querySelector(
+                'input[name="login_name"], input[name="login_password"], form[action*="login"]'
+            )
+        ) {
+            GM_deleteValue(
+                GLPI_TEST.identityKey
+            );
+
+            return null;
+        }
+
+        const visible =
+            glpiIdentityCandidatesFromDocument(
+                document,
+                'visible'
+            )[0] ||
+            null;
+
+        if (
+            visible?.id &&
+            visible.score >= 900
+        ) {
+            glpiSaveIdentity(
+                visible
+            );
+
+            return visible;
+        }
+
+        try {
+            return await glpiFetchCurrentIdentity();
+        } catch (error) {
+            if (
+                error?.message ===
+                'LOGIN_REQUIRED'
+            ) {
+                GM_deleteValue(
+                    GLPI_TEST.identityKey
+                );
+
+                return null;
+            }
+
+            console.warn(
+                'OM30 Jales: não consegui capturar identidade do GLPI aberto.',
+                error
+            );
+
+            return null;
+        }
+    }
 
     function readGlpiJob() {
         try {
@@ -4004,6 +4491,15 @@
     // Em páginas normais do GLPI não existe mais automação de chamado.
     // A única exceção é a janela/aba VISÍVEL aberta pelo próprio usuário para login.
     if (location.hostname === 'suporte.om30.cloud') {
+        captureGlpiVisibleIdentity()
+            .catch(
+                error =>
+                    console.warn(
+                        'OM30 Jales: captura de usuário visível falhou.',
+                        error
+                    )
+            );
+
         if (isGlpiLoginHelperContext()) {
             runGlpiDryRun().catch(error => {
                 console.error('OM30 login helper:', error);
@@ -4051,7 +4547,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.14.4';
+        '0.9.14.5';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -9654,10 +10150,15 @@
     }
 
     async function silentResolveCurrentUser(ctx) {
-        const candidates =
-            silentCollectUserCandidates(ctx);
+        const formCandidates =
+            silentCollectUserCandidates(
+                ctx
+            );
 
-        for (const candidate of candidates) {
+        for (
+            const candidate of
+            formCandidates
+        ) {
             try {
                 if (
                     await silentVerifyUser(
@@ -9665,15 +10166,24 @@
                     )
                 ) {
                     const resolved = {
-                        id: String(candidate.id),
+                        id:
+                            String(
+                                candidate.id
+                            ),
                         name:
                             candidate.name ||
                             `User_${candidate.id}`,
                         source:
-                            [...new Set(candidate.hits)]
-                                .join(' + '),
-                        deferred: false
+                            [...new Set(
+                                candidate.hits
+                            )].join(' + '),
+                        deferred:
+                            false
                     };
+
+                    glpiSaveIdentity(
+                        resolved
+                    );
 
                     om30Log(
                         'glpi.user.resolved',
@@ -9692,25 +10202,116 @@
             }
         }
 
-        // O GLPI 10 nem sempre serializa o ator padrão no HTML do
-        // formulário novo. Isso NÃO significa sessão deslogada.
-        // Nesse caso deixamos o próprio GLPI aplicar os atores padrão
-        // na criação e recuperamos o usuário do chamado já persistido.
+        // 2ª fonte: a página de preferências pertence ao usuário da
+        // sessão atual e costuma trazer o users_id/id mesmo quando o
+        // formulário de chamado não serializa os atores padrão.
+        try {
+            const preferenceIdentity =
+                await glpiFetchCurrentIdentity();
+
+            if (
+                preferenceIdentity?.id
+            ) {
+                const resolved = {
+                    ...preferenceIdentity,
+                    deferred:
+                        false
+                };
+
+                om30Log(
+                    'glpi.user.resolved-preference',
+                    resolved
+                );
+
+                return resolved;
+            }
+        } catch (error) {
+            if (
+                error?.message ===
+                'LOGIN_REQUIRED'
+            ) {
+                throw error;
+            }
+
+            om30Log(
+                'glpi.user.preference-failed',
+                {
+                    error:
+                        String(
+                            error?.message ||
+                            error
+                        )
+                },
+                'warn'
+            );
+        }
+
+        // 3ª fonte: identidade que a aba real do GLPI capturou e
+        // gravou no GM storage compartilhado. Sempre validamos o ID
+        // contra a sessão antes de usar.
+        const cached =
+            glpiReadIdentity();
+
+        if (
+            cached?.id
+        ) {
+            try {
+                if (
+                    await silentVerifyUser(
+                        cached.id
+                    )
+                ) {
+                    const resolved = {
+                        id:
+                            String(
+                                cached.id
+                            ),
+                        name:
+                            cached.name ||
+                            `User_${cached.id}`,
+                        source:
+                            `visible-cache:${cached.source}`,
+                        deferred:
+                            false
+                    };
+
+                    om30Log(
+                        'glpi.user.resolved-cache',
+                        resolved
+                    );
+
+                    return resolved;
+                }
+            } catch (error) {
+                if (
+                    error?.message ===
+                    'LOGIN_REQUIRED'
+                ) {
+                    throw error;
+                }
+            }
+        }
+
+        // Último fallback preservado apenas para não confundir ausência
+        // de User_ID com logout. O pós-fix ainda tentará recuperar o
+        // usuário do chamado, mas este caminho não é mais o principal.
         const deferred = {
             id: '',
             name:
                 'Usuário da sessão GLPI',
             source:
                 'glpi-default-actors',
-            deferred: true
+            deferred:
+                true
         };
 
         om30Log(
             'glpi.user.deferred',
             {
                 reason:
-                    'Nenhum User_ID foi exposto no HTML inicial autenticado.',
-                candidates
+                    'Formulário, preference.php e cache visível não retornaram User_ID.',
+                candidates:
+                    formCandidates
             },
             'warn'
         );
@@ -12662,10 +13263,18 @@
             id:
                 currentUser.id,
             name:
-                currentUser.name
+                currentUser.name,
+            source:
+                currentUser.source ||
+                ''
         };
 
         saveGlpiJob(job);
+
+        om30Log(
+            'glpi.user.selected-for-create',
+            job.current_user
+        );
 
         job.stage =
             'silent-resolve';
@@ -13569,7 +14178,7 @@
                 );
 
             // Mantido para compatibilidade com partes antigas do motor.
-            // A fonte oficial das imagens na v0.9.14.4 é evidenceImages.
+            // A fonte oficial das imagens na v0.9.14.5 é evidenceImages.
             const printDataUrl =
                 evidenceImages[0]?.dataUrl ||
                 '';
@@ -13640,7 +14249,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI Jales v0.9.14.4',
+                'OM30 WhatsApp → GLPI Jales v0.9.14.5',
                 {
                     job:
                         job.id,
@@ -13802,11 +14411,16 @@
             !String(
                 silentResolveCurrentUser
             ).includes(
-                'glpi-default-actors'
+                'glpiFetchCurrentIdentity'
+            ) ||
+            !String(
+                silentResolveCurrentUser
+            ).includes(
+                'glpiReadIdentity'
             )
         ) {
             errors.push(
-                'Fallback de usuário da sessão não está carregado.'
+                'Resolução do usuário por preference/cache não está carregada.'
             );
         }
 
@@ -13839,11 +14453,11 @@
         }
 
         if (errors.length) {
-            console.error('❌ OM30 Jales v0.9.14.4 self-check:', errors);
+            console.error('❌ OM30 Jales v0.9.14.5 self-check:', errors);
             return false;
         }
 
-        console.log('✅ OM30 Jales v0.9.14.4 self-check OK', {
+        console.log('✅ OM30 Jales v0.9.14.5 self-check OK', {
             operation_id: 588,
             operation: 'Jales',
             group_id: 18,
@@ -13857,5 +14471,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp Jales v0.9.14.4 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp Jales v0.9.14.5 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

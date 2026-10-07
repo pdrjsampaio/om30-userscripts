@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.31
+// @version      3.0.32
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.31
+    /* OM30 - CONTROLE DE SALAS v3.0.32
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3818,7 +3818,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.31',
+            versao: '3.0.32',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length
@@ -5251,9 +5251,19 @@
             }
             return '';
         }
+        function a280FraseNegaAlergia(valor) {
+            const n = a280Normalizar(valor);
+            if (!n) return false;
+            // Exemplos reais do prontuário:
+            // "NEGA ALERGIAS A MEDICAÇÕES", "NEGA ALERGIA A MEDICAMENTOS",
+            // "SEM ALERGIAS MEDICAMENTOSAS", "NÃO POSSUI ALERGIAS".
+            return /^(?:NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?(?:\s+MEDICAMENTOSAS?)?(?:\s+(?:A|AO|AOS|AS)\s+(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|DROGA|DROGAS))?$/.test(n)
+                || /^(?:NENHUMA|NENHUMA ALERGIA|NENHUMA ALERGIA MEDICAMENTOSA|NEGADO|NEGATIVO)$/.test(n);
+        }
         function a280EhNegativo(valor) {
             const n = a280Normalizar(valor);
-            return /^(NAO|NAO POSSUI|NAO POSSUI ALERGIA|NAO POSSUI ALERGIAS|NENHUMA|NENHUMA ALERGIA|SEM ALERGIA|SEM ALERGIAS|NEGA|NEGA ALERGIA|NEGA ALERGIAS|NEGA ALERGIA MEDICAMENTOSA|NEGA ALERGIAS MEDICAMENTOSAS|NEGADO)$/.test(n);
+            return /^(NAO|NAO POSSUI|NAO POSSUI ALERGIA|NAO POSSUI ALERGIAS|NENHUMA|NENHUMA ALERGIA|SEM ALERGIA|SEM ALERGIAS|NEGA|NEGA ALERGIA|NEGA ALERGIAS|NEGA ALERGIA MEDICAMENTOSA|NEGA ALERGIAS MEDICAMENTOSAS|NEGADO|NEGATIVO)$/.test(n)
+                || a280FraseNegaAlergia(valor);
         }
         function a280EhNaoInformado(valor) {
             const n = a280Normalizar(valor);
@@ -5297,15 +5307,24 @@
                 /\bPOSSUI\s+ALERGIA(?:S)?\s+A\s+([^.;,\n<]{2,180})/i,
             ];
             for (const candidato of candidatos) {
+                const n = a280Normalizar(candidato.texto);
+                // Negativa explícita precisa vencer ANTES da regex "ALERGIAS A X".
+                // Sem isso, "NEGA ALERGIAS A MEDICAÇÕES" vira falso positivo "MEDICAÇÕES".
+                if (
+                    a280FraseNegaAlergia(candidato.texto) ||
+                    /\b(?:NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)
+                ) {
+                    return { positiva: '', negativa: true, trecho: candidato.texto, fonte: candidato.fonte };
+                }
                 for (const re of positivos) {
                     const m = candidato.texto.match(re);
                     const valor = a280LimparTermoEvolucao(m?.[1] || '');
-                    if (valor && !a280EhNegativo(valor) && !a280EhNaoInformado(valor)) return { positiva: valor, negativa: false, trecho: candidato.texto, fonte: candidato.fonte };
+                    const nv = a280Normalizar(valor);
+                    const generico = /^(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|DROGA|DROGAS)$/.test(nv);
+                    if (valor && !generico && !a280EhNegativo(valor) && !a280EhNaoInformado(valor)) {
+                        return { positiva: valor, negativa: false, trecho: candidato.texto, fonte: candidato.fonte };
+                    }
                 }
-            }
-            for (const candidato of candidatos) {
-                const n = a280Normalizar(candidato.texto);
-                if (/\bNEGA\s+ALERGIAS?\b/.test(n) || /\bSEM\s+ALERGIAS?\b/.test(n) || /\bNAO\s+POSSUI\s+ALERGIAS?\b/.test(n)) return { positiva: '', negativa: true, trecho: candidato.texto, fonte: candidato.fonte };
             }
             return { positiva: '', negativa: false, trecho: '', fonte: '' };
         }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI - Jales
 // @namespace    om30
-// @version      0.9.14.1
+// @version      0.9.14.2
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @description  Jales · WhatsApp → GLPI: motor silencioso + fila + evidências + entidade 588
@@ -4051,7 +4051,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.14.1';
+        '0.9.14.2';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -5489,11 +5489,52 @@
     // UNIDADES
     // ============================================================
 
-    // Jales: as unidades são digitadas/salvas pelo nome e resolvidas dinamicamente
-    // no GLPI com entity_restrict = 588. O mapa fixo será acrescentado quando
-    // os IDs das localizações de Jales forem coletados.
-    const UNITS = [];
-    const UNIT_ALIASES = {};
+    // Jales: unidades e aliases recuperados do mapa homologado v0.8.4.
+    const UNITS = [
+        "Almoxarifado de Saúde",
+        "Ambulatório de Saúde Mental de Jales",
+        "APS/ESF Dr Antonio Queda (antigo Núcleo)",
+        "ARE (Ambulatório Regional de Especialidades), CMR (Centro Municipal de Reabilitação) e Setor de Combate a Endemias, endereço: Rua 17, nº 2.957, Centro",
+        "Centro de Distribuição Farmacêutica (Alto custo e Ação Judicial) e Setor de Imunização",
+        "CIACA (Centro Integrado de Atendimento em Saúde Mental à Criança e ao Adolescente)",
+        "ESF Dr José Cícero Fontes Xavier (Rural)",
+        "ESF Francisco Xavier Rego (Jd. Paraíso)",
+        "ESF Getúlio de Carvalho (Jd. Arapuã)",
+        "ESF Honorio Amadeu ( Uni - America)",
+        "ESF Leonisio Gambero (Jd. Oiti)",
+        "ESF Luis Ernesto Sandi Mori (Jd. JACB)",
+        "ESF Ozil Joaquim Resende (Jd. Municipal)",
+        "ESF Setuo Setugo (Jd. São Jorge)",
+        "ESF Shiguero Kitayama (Jd. Roque Viola)",
+        "ESF Virgílio Ribeiro Franco São Gabriel (Jd. São Gabriel)",
+        "ESF Zilda Arns Meumann (Jd. Novo Mundo)",
+        "Laboratório de Saúde Pública do SUS",
+        "SAE/CTA (Serviço de Assistência e Especializada / Centro de Testagem e Aconselhamento)",
+        "SECRETARIA MUNICIPAL DE SAÚDE"
+    ];
+
+    const UNIT_ALIASES = {
+        "Almoxarifado de Saúde": ["ALMOXARIFADO SAUDE", "ALMOXARIFADO DE SAUDE"],
+        "Ambulatório de Saúde Mental de Jales": ["AMBULATORIO SAUDE MENTAL", "AMBULATORIO DE SAUDE MENTAL", "SAUDE MENTAL JALES"],
+        "APS/ESF Dr Antonio Queda (antigo Núcleo)": ["ANTONIO QUEDA", "DR ANTONIO QUEDA", "APS ANTONIO QUEDA", "ESF ANTONIO QUEDA", "ANTIGO NUCLEO", "NÚCLEO", "NUCLEO"],
+        "ARE (Ambulatório Regional de Especialidades), CMR (Centro Municipal de Reabilitação) e Setor de Combate a Endemias, endereço: Rua 17, nº 2.957, Centro": ["ARE JALES", "ARE", "CMR", "CENTRO MUNICIPAL DE REABILITACAO", "ENDEMIAS"],
+        "Centro de Distribuição Farmacêutica (Alto custo e Ação Judicial) e Setor de Imunização": ["CENTRO DE DISTRIBUICAO FARMACEUTICA", "ALTO CUSTO", "ACAO JUDICIAL", "AÇÃO JUDICIAL", "SETOR DE IMUNIZACAO", "SETOR DE IMUNIZAÇÃO", "IMUNIZACAO", "IMUNIZAÇÃO"],
+        "CIACA (Centro Integrado de Atendimento em Saúde Mental à Criança e ao Adolescente)": ["CIACA", "CENTRO INTEGRADO DE ATENDIMENTO EM SAUDE MENTAL"],
+        "ESF Dr José Cícero Fontes Xavier (Rural)": ["JOSE CICERO", "JOSÉ CÍCERO", "DR JOSE CICERO", "DR JOSÉ CÍCERO", "ESF RURAL", "RURAL"],
+        "ESF Francisco Xavier Rego (Jd. Paraíso)": ["FRANCISCO XAVIER REGO", "JARDIM PARAISO", "JD PARAISO", "PARAISO"],
+        "ESF Getúlio de Carvalho (Jd. Arapuã)": ["GETULIO DE CARVALHO", "GETÚLIO DE CARVALHO", "JARDIM ARAPUA", "JD ARAPUA", "ARAPUA"],
+        "ESF Honorio Amadeu ( Uni - America)": ["HONORIO AMADEU", "HONÓRIO AMADEU", "UNI AMERICA", "UNIAMERICA", "UNIAMÉRICA"],
+        "ESF Leonisio Gambero (Jd. Oiti)": ["LEONISIO", "LEONÍSIO", "LEONISIO GAMBERO", "JARDIM OITI", "JD OITI", "OITI"],
+        "ESF Luis Ernesto Sandi Mori (Jd. JACB)": ["LUIS ERNESTO", "LUIS ERNESTO SANDI MORI", "JACB", "JD JACB"],
+        "ESF Ozil Joaquim Resende (Jd. Municipal)": ["OZIL", "OZIL JOAQUIM RESENDE", "JARDIM MUNICIPAL", "JD MUNICIPAL"],
+        "ESF Setuo Setugo (Jd. São Jorge)": ["SETUO", "SETUO SETUGO", "SAO JORGE", "SÃO JORGE", "JARDIM SAO JORGE", "JD SAO JORGE"],
+        "ESF Shiguero Kitayama (Jd. Roque Viola)": ["SHIGUERO", "SHIGUERO KITAYAMA", "ROQUE VIOLA", "JARDIM ROQUE VIOLA", "JD ROQUE VIOLA"],
+        "ESF Virgílio Ribeiro Franco São Gabriel (Jd. São Gabriel)": ["VIRGILIO", "VIRGÍLIO", "VIRGILIO RIBEIRO", "SAO GABRIEL", "SÃO GABRIEL", "JARDIM SAO GABRIEL", "JD SAO GABRIEL"],
+        "ESF Zilda Arns Meumann (Jd. Novo Mundo)": ["ZILDA ARNS", "ZILDA ARNS MEUMANN", "NOVO MUNDO", "JARDIM NOVO MUNDO", "JD NOVO MUNDO"],
+        "Laboratório de Saúde Pública do SUS": ["LABORATORIO DE SAUDE PUBLICA", "LABORATORIO SAUDE PUBLICA", "LABORATORIO SUS"],
+        "SAE/CTA (Serviço de Assistência e Especializada / Centro de Testagem e Aconselhamento)": ["SAE", "CTA", "SAE CTA", "SAE/CTA", "CENTRO DE TESTAGEM E ACONSELHAMENTO"],
+        "SECRETARIA MUNICIPAL DE SAÚDE": ["SECRETARIA MUNICIPAL DE SAUDE", "SMS JALES", "SECRETARIA DE SAUDE JALES"]
+    };
 
     function chatKey(name) {
         if (looksLikePhone(name)) return 'TEL:' + String(name).replace(/\D/g, '');
@@ -5507,7 +5548,22 @@
     // ------------------------------------------------------------
 
     function canonicalUnitExact(value) {
-        return clean(value);
+        const n = normalize(value);
+        if (!n) return '';
+
+        const exact = UNITS.find(unit => normalize(unit) === n);
+        if (exact) return exact;
+
+        const aliasMatches = [];
+        for (const unit of UNITS) {
+            for (const alias of (UNIT_ALIASES[unit] || [])) {
+                if (normalize(alias) === n) aliasMatches.push(unit);
+            }
+        }
+
+        return [...new Set(aliasMatches)].length === 1
+            ? [...new Set(aliasMatches)][0]
+            : '';
     }
 
     function unitCandidatesFromInput(value) {
@@ -5540,7 +5596,48 @@
 
     function chooseCanonicalUnit(value, contextText = '') {
         const raw = clean(value);
-        return raw;
+        if (!raw) return '';
+
+        // Unidade/alias exato já resolve sem perguntar.
+        const exact = canonicalUnitExact(raw);
+        if (exact) return exact;
+
+        // Se o próprio texto trouxer contexto explícito (UPA/PS/USAFA), usa esse contexto.
+        const contextual = detectUnitInText(`${contextText} ${raw}`.trim(), 'unidade informada', 99);
+        if (contextual?.unit) {
+            const explicit = /\b(USAFA|UBS|UPA|PS|PRONTO SOCORRO|PRONTO ATENDIMENTO|PA|EMERGENCIA|EMERGÊNCIA)\b/i
+                .test(`${contextText} ${raw}`);
+            if (explicit) return contextual.unit;
+        }
+
+        const candidates = unitCandidatesFromInput(raw);
+        if (!candidates.length) {
+            alert(
+                `A unidade “${raw}” não corresponde a nenhuma unidade cadastrada.\n\n` +
+                `Escolha uma unidade existente na lista da OM30.`
+            );
+            return '';
+        }
+
+        if (candidates.length === 1) return candidates[0].unit;
+
+        // Não adivinha bairro ambíguo. Ex.: PEREQUÊ pode ser PS ou USAFA.
+        const top = candidates.slice(0, Math.min(8, candidates.length));
+        const answer = prompt(
+            `“${raw}” pode representar mais de uma unidade cadastrada.\n\n` +
+            top.map((item, index) => `${index + 1} - ${item.unit}`).join('\n') +
+            `\n\nDigite o número da unidade correta:`,
+            ''
+        );
+
+        if (answer === null) return '';
+        const index = Number(String(answer).trim()) - 1;
+        if (!Number.isInteger(index) || index < 0 || index >= top.length) {
+            alert('Opção de unidade inválida. Nada foi salvo.');
+            return '';
+        }
+
+        return top[index].unit;
     }
 
     function canonicalStoredUnit(value) {
@@ -8327,7 +8424,10 @@
                 </select>
 
                 <label>Unidade</label>
-                <input id="om30-unit" placeholder="Digite a unidade de Jales como aparece no GLPI">
+                <input id="om30-unit" list="om30-unit-list" placeholder="Digite ou escolha a unidade de Jales">
+                <datalist id="om30-unit-list">
+                    ${UNITS.map(x => `<option value="${escapeHTML(x)}"></option>`).join('')}
+                </datalist>
                 <div id="om30-unit-info" class="om30-analysis om30-analysis-neutral"></div>
                 <div class="om30-actions-2">
                     <button class="om30-btn" type="button" id="om30-detect-unit">🔎 DETECTAR NOVAMENTE</button>
@@ -8809,323 +8909,28 @@
     // Isso elimina a dependência de descobrir _idor_token da Localização
     // para as unidades que já foram confirmadas no GLPI.
     const SILENT_CONFIRMED_LOCATIONS = {
-        '567': [
-        {
-                "id": 2098,
-                "text": "ALMOXARIFADO CENTRAL DA SAUDE",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > ALMOXARIFADO CENTRAL DA SAUDE"
-        },
-        {
-                "id": 2099,
-                "text": "AMB. REF. EM ESPECIALIDADES - ARE",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > AMB. REF. EM ESPECIALIDADES - ARE"
-        },
-        {
-                "id": 2100,
-                "text": "CAPS AD II",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CAPS AD II"
-        },
-        {
-                "id": 2101,
-                "text": "CAPS II - DR JOSE FORSTHER JUNIOR",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CAPS II - DR JOSE FORSTHER JUNIOR"
-        },
-        {
-                "id": 2102,
-                "text": "CAPS III",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CAPS III"
-        },
-        {
-                "id": 2103,
-                "text": "CAPS INFANTIL",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CAPS INFANTIL"
-        },
-        {
-                "id": 2880,
-                "text": "CASA SER",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CASA SER"
-        },
-        {
-                "id": 2104,
-                "text": "CENTRO DE ESPECIALIDADE ODONTOLOGICA - CEO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CENTRO DE ESPECIALIDADE ODONTOLOGICA - CEO"
-        },
-        {
-                "id": 2727,
-                "text": "CENTRO DE ESPECIALIDADES DE VICENTE DE CARVALHO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CENTRO DE ESPECIALIDADES DE VICENTE DE CARVALHO"
-        },
-        {
-                "id": 2105,
-                "text": "CENTRO DE RECUPERACAO E FISIOTERAPIA DE GUARUJÁ",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CENTRO DE RECUPERACAO E FISIOTERAPIA DE GUARUJÁ"
-        },
-        {
-                "id": 2106,
-                "text": "CENTRO DE RECUPERACAO E FISIOTERAPIA DE VICENTE DE CARVALHO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CENTRO DE RECUPERACAO E FISIOTERAPIA DE VICENTE DE CARVALHO"
-        },
-        {
-                "id": 2107,
-                "text": "CENTRO DE REFERÊNCIA EM OTORRINO, OFTALMO E FONOAUDIOLOGIA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CENTRO DE REFERÊNCIA EM OTORRINO, OFTALMO E FONOAUDIOLOGIA"
-        },
-        {
-                "id": 2108,
-                "text": "CONSULTORIO NA RUA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > CONSULTORIO NA RUA"
-        },
-        {
-                "id": 2109,
-                "text": "FARMACIA DO CIDADAO - JAYRO GRACIOLA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > FARMACIA DO CIDADAO - JAYRO GRACIOLA"
-        },
-        {
-                "id": 2110,
-                "text": "FARMACIA DO CIDADAO - VICENTE DE CARVALHO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > FARMACIA DO CIDADAO - VICENTE DE CARVALHO"
-        },
-        {
-                "id": 2111,
-                "text": "FARMACIA DO CIDADAO - VILA JULIA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > FARMACIA DO CIDADAO - VILA JULIA"
-        },
-        {
-                "id": 2112,
-                "text": "INSTITUTO DA MULHER - CASA ROSA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > INSTITUTO DA MULHER - CASA ROSA"
-        },
-        {
-                "id": 2849,
-                "text": "PREFEITURA DE GUARUJÁ",
-                "fullText": "CLIENTES > PREFEITURA DE GUARUJÁ"
-        },
-        {
-                "id": 640,
-                "text": "PREFEITURA DE GUARUJÁ",
-                "fullText": "PREFEITURA DE GUARUJÁ"
-        },
-        {
-                "id": 2113,
-                "text": "PRONTO SOCORRO DE VICENTE DE CARVALHO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > PRONTO SOCORRO DE VICENTE DE CARVALHO"
-        },
-        {
-                "id": 2114,
-                "text": "PRONTO SOCORRO PEREQUE - ANIBAL ARDEN DOS REIS",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > PRONTO SOCORRO PEREQUE - ANIBAL ARDEN DOS REIS"
-        },
-        {
-                "id": 2115,
-                "text": "PRONTO SOCORRO PROF. DR. MATHEUS SANTAMARIA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > PRONTO SOCORRO PROF. DR. MATHEUS SANTAMARIA"
-        },
-        {
-                "id": 642,
-                "text": "PRONTO SOCORRO PROFº DR. MATHEUS SANTAMARIA – PAM RODOVIÁRIA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > PRONTO SOCORRO PROFº DR. MATHEUS SANTAMARIA – PAM RODOVIÁRIA"
-        },
-        {
-                "id": 2116,
-                "text": "PRONTO SOCORRO SANTA CRUZ DOS NAVEGANTES",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > PRONTO SOCORRO SANTA CRUZ DOS NAVEGANTES"
-        },
-        {
-                "id": 2117,
-                "text": "RESIDÊNCIA TERAPÊUTICA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > RESIDÊNCIA TERAPÊUTICA"
-        },
-        {
-                "id": 2118,
-                "text": "SAMU",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > SAMU"
-        },
-        {
-                "id": 641,
-                "text": "SECRETARIA DE SAÚDE",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE"
-        },
-        {
-                "id": 2119,
-                "text": "SECRETARIA DE SAUDE / CENTRAL DE REGULAÇÃO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > SECRETARIA DE SAUDE / CENTRAL DE REGULAÇÃO"
-        },
-        {
-                "id": 2120,
-                "text": "SERVICO DE TRANSPORTE SANITARIO DO GUARUJA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > SERVICO DE TRANSPORTE SANITARIO DO GUARUJA"
-        },
-        {
-                "id": 2121,
-                "text": "SERVIÇO DE VIGILÂNCIA SANITARIA E EPIDEMIOLÓGICA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > SERVIÇO DE VIGILÂNCIA SANITARIA E EPIDEMIOLÓGICA"
-        },
-        {
-                "id": 2122,
-                "text": "SIAD - SERVICO DE INTERNAÇÃO E ASSISTÊNCIA DOMICILIAR",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > SIAD - SERVICO DE INTERNAÇÃO E ASSISTÊNCIA DOMICILIAR"
-        },
-        {
-                "id": 2123,
-                "text": "UBS MORRINHOS",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UBS MORRINHOS"
-        },
-        {
-                "id": 2124,
-                "text": "UBS PAE CARA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UBS PAE CARA"
-        },
-        {
-                "id": 2125,
-                "text": "UBS PERNAMBUCO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UBS PERNAMBUCO"
-        },
-        {
-                "id": 2126,
-                "text": "UBS PRAINHA VICENTE DE CARVALHO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UBS PRAINHA VICENTE DE CARVALHO"
-        },
-        {
-                "id": 2127,
-                "text": "UBS VILA ALICE",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UBS VILA ALICE"
-        },
-        {
-                "id": 2128,
-                "text": "UBS VILA BAIANA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UBS VILA BAIANA"
-        },
-        {
-                "id": 2728,
-                "text": "UNAERP",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UNAERP"
-        },
-        {
-                "id": 2129,
-                "text": "UNIDADE BÁSICA DE SAUDE SANTA ROSA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UNIDADE BÁSICA DE SAUDE SANTA ROSA"
-        },
-        {
-                "id": 2130,
-                "text": "UNIDADE DE ESPECIALIDADE EM DIABETES, OBESIDADE E INFARTO JUVENIL - DOCINHOS",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UNIDADE DE ESPECIALIDADE EM DIABETES, OBESIDADE E INFARTO JUVENIL - DOCINHOS"
-        },
-        {
-                "id": 2131,
-                "text": "UNIDADE DE INFECTOLOGIA - WILLIAN ROCHA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UNIDADE DE INFECTOLOGIA - WILLIAN ROCHA"
-        },
-        {
-                "id": 2132,
-                "text": "UNIDADE DE VIGILANCIA EM ZOONOSES DE GUARUJA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UNIDADE DE VIGILANCIA EM ZOONOSES DE GUARUJA"
-        },
-        {
-                "id": 2133,
-                "text": "UPA ENSEADA - PAULO FLAVIO AFONSO PIASENTI",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > UPA ENSEADA - PAULO FLAVIO AFONSO PIASENTI"
-        },
-        {
-                "id": 644,
-                "text": "USAFA CIDADE ATLÂNTICA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA CIDADE ATLANTICA"
-        },
-        {
-                "id": 646,
-                "text": "USAFA JARDIM BOA ESPERANÇA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM BOA ESPERANCA"
-        },
-        {
-                "id": 648,
-                "text": "USAFA JARDIM BRASIL",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM BRASIL"
-        },
-        {
-                "id": 2134,
-                "text": "USAFA JARDIM BRASIL - GUSTAVO COELHO DE ALMEIDA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM BRASIL - GUSTAVO COELHO DE ALMEIDA"
-        },
-        {
-                "id": 650,
-                "text": "USAFA JARDIM CONCEIÇÃOZINHA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM CONCEIÇÃOZINHA"
-        },
-        {
-                "id": 2135,
-                "text": "USAFA JARDIM CONCEICAOZINHA - GENTIL NUNES NETO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM CONCEICAOZINHA - GENTIL NUNES NETO"
-        },
-        {
-                "id": 652,
-                "text": "USAFA JARDIM DOS PÁSSAROS",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM DOS PASSAROS"
-        },
-        {
-                "id": 654,
-                "text": "USAFA JARDIM LAS PALMAS",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM LAS PALMAS"
-        },
-        {
-                "id": 2136,
-                "text": "USAFA JARDIM LAS PALMAS - JANDUI DE SOUZA MOREIRA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM LAS PALMAS - JANDUI DE SOUZA MOREIRA"
-        },
-        {
-                "id": 656,
-                "text": "USAFA JARDIM PROGRESSO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA JARDIM PROGRESSO"
-        },
-        {
-                "id": 658,
-                "text": "USAFA PEREQUÊ",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA PEREQUE"
-        },
-        {
-                "id": 660,
-                "text": "USAFA SANTA CRUZ DOS NAVEGANTES",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA SANTA CRUZ DOS NAVEGANTES"
-        },
-        {
-                "id": 662,
-                "text": "USAFA SANTA ROSA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA SANTA ROSA"
-        },
-        {
-                "id": 664,
-                "text": "USAFA SÍTIO CONCEIÇÃOZINHA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA SITIO CONCEICAOZINHA"
-        },
-        {
-                "id": 666,
-                "text": "USAFA VILA ÁUREA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA VILA AUREA"
-        },
-        {
-                "id": 668,
-                "text": "USAFA VILA EDNA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA VILA EDNA"
-        },
-        {
-                "id": 2137,
-                "text": "USAFA VILA EDNA - MARCO ANTONIO GONZALEZ",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA VILA EDNA - MARCO ANTONIO GONZALEZ"
-        },
-        {
-                "id": 670,
-                "text": "USAFA VILA RÃ",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA VILA RA"
-        },
-        {
-                "id": 672,
-                "text": "USAFA VILA ZILDA",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA VILA ZILDA"
-        },
-        {
-                "id": 2138,
-                "text": "USAFA VILA ZILDA DR DAVID CAPISTRANO",
-                "fullText": "PREFEITURA DE GUARUJÁ > SECRETARIA DE SAÚDE > USAFA VILA ZILDA DR DAVID CAPISTRANO"
-        }
-]
+        '588': [
+            { id: 2765, text: "Almoxarifado de Saúde", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > Almoxarifado de Saúde" },
+            { id: 2763, text: "Ambulatório de Saúde Mental de Jales", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > Ambulatório de Saúde Mental de Jales" },
+            { id: 2755, text: "APS/ESF Dr Antonio Queda (antigo Núcleo)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > APS/ESF Dr Antonio Queda (antigo Núcleo)" },
+            { id: 2760, text: "ARE (Ambulatório Regional de Especialidades), CMR (Centro Municipal de Reabilitação) e Setor de Combate a Endemias, endereço: Rua 17, nº 2.957, Centro", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ARE (Ambulatório Regional de Especialidades), CMR (Centro Municipal de Reabilitação) e Setor de Combate a Endemias, endereço: Rua 17, nº 2.957, Centro" },
+            { id: 2762, text: "Centro de Distribuição Farmacêutica (Alto custo e Ação Judicial) e Setor de Imunização", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > Centro de Distribuição Farmacêutica (Alto custo e Ação Judicial) e Setor de Imunização" },
+            { id: 2764, text: "CIACA (Centro Integrado de Atendimento em Saúde Mental à Criança e ao Adolescente)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > CIACA (Centro Integrado de Atendimento em Saúde Mental à Criança e ao Adolescente)" },
+            { id: 2756, text: "ESF Dr José Cícero Fontes Xavier (Rural)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Dr José Cícero Fontes Xavier (Rural)" },
+            { id: 2751, text: "ESF Francisco Xavier Rego (Jd. Paraíso)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Francisco Xavier Rego (Jd. Paraíso)" },
+            { id: 2746, text: "ESF Getúlio de Carvalho (Jd. Arapuã)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Getúlio de Carvalho (Jd. Arapuã)" },
+            { id: 2754, text: "ESF Honorio Amadeu ( Uni - America)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Honorio Amadeu ( Uni - America)" },
+            { id: 2750, text: "ESF Leonisio Gambero (Jd. Oiti)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Leonisio Gambero (Jd. Oiti)" },
+            { id: 2747, text: "ESF Luis Ernesto Sandi Mori (Jd. JACB)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Luis Ernesto Sandi Mori (Jd. JACB)" },
+            { id: 2748, text: "ESF Ozil Joaquim Resende (Jd. Municipal)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Ozil Joaquim Resende (Jd. Municipal)" },
+            { id: 2753, text: "ESF Setuo Setugo (Jd. São Jorge)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Setuo Setugo (Jd. São Jorge)" },
+            { id: 2752, text: "ESF Shiguero Kitayama (Jd. Roque Viola)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Shiguero Kitayama (Jd. Roque Viola)" },
+            { id: 2757, text: "ESF Virgílio Ribeiro Franco São Gabriel (Jd. São Gabriel)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Virgílio Ribeiro Franco São Gabriel (Jd. São Gabriel)" },
+            { id: 2749, text: "ESF Zilda Arns Meumann (Jd. Novo Mundo)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > ESF Zilda Arns Meumann (Jd. Novo Mundo)" },
+            { id: 2761, text: "Laboratório de Saúde Pública do SUS", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > Laboratório de Saúde Pública do SUS" },
+            { id: 2759, text: "SAE/CTA (Serviço de Assistência e Especializada / Centro de Testagem e Aconselhamento)", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE > SAE/CTA (Serviço de Assistência e Especializada / Centro de Testagem e Aconselhamento)" },
+            { id: 2758, text: "SECRETARIA MUNICIPAL DE SAÚDE", fullText: "PREFEITURA DE JALES > SECRETARIA MUNICIPAL DE SAÚDE" }
+        ]
     };
 
     let silentGlpiRunnerPromise = null;
@@ -10771,9 +10576,9 @@
             );
         }
 
-        // GUARUJÁ: todas as unidades atualmente disponíveis na ficha
-        // foram cruzadas com o retorno real do GLPI. Usa o ID confirmado
-        // antes de qualquer tentativa por Select2 remoto.
+        // JALES: as unidades da ficha foram cruzadas com o retorno real
+        // do GLPI. Usa o ID confirmado antes de qualquer tentativa por
+        // Select2 remoto. A busca dinâmica fica somente como fallback.
         const confirmed =
             silentResolveConfirmedUnit(
                 data
@@ -13425,7 +13230,7 @@
                 );
 
             // Mantido para compatibilidade com partes antigas do motor.
-            // A fonte oficial das imagens na v0.9.14.1 é evidenceImages.
+            // A fonte oficial das imagens na v0.9.14.2 é evidenceImages.
             const printDataUrl =
                 evidenceImages[0]?.dataUrl ||
                 '';
@@ -13496,7 +13301,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI Jales v0.9.14.1',
+                'OM30 WhatsApp → GLPI Jales v0.9.14.2',
                 {
                     job:
                         job.id,
@@ -13610,6 +13415,10 @@
 
     function runOm30IntegrationSelfCheck() {
         const errors = [];
+        const confirmed = SILENT_CONFIRMED_LOCATIONS['588'] || [];
+        const byName = new Map(
+            confirmed.map(item => [glpiNormalize(item.text), String(item.id)])
+        );
 
         if (
             OPERATIONS.length !== 1 ||
@@ -13623,20 +13432,45 @@
             errors.push('Grupo Sistemas Jales/18 não está configurado.');
         }
 
+        if (UNITS.length !== 20 || confirmed.length !== 20) {
+            errors.push(`Mapa de Jales incompleto: UI=${UNITS.length}, IDs=${confirmed.length}.`);
+        }
+
+        for (const unit of UNITS) {
+            if (!byName.has(glpiNormalize(unit))) {
+                errors.push(`Unidade sem ID confirmado: ${unit}`);
+            }
+        }
+
+        const critical = {
+            'ESF Leonisio Gambero (Jd. Oiti)': '2750',
+            'ESF Ozil Joaquim Resende (Jd. Municipal)': '2748',
+            'ESF Setuo Setugo (Jd. São Jorge)': '2753',
+            'SECRETARIA MUNICIPAL DE SAÚDE': '2758'
+        };
+
+        for (const [name, id] of Object.entries(critical)) {
+            if (byName.get(glpiNormalize(name)) !== id) {
+                errors.push(`ID crítico divergente: ${name} deveria ser ${id}.`);
+            }
+        }
+
         if (!SILENT_CONFIRMED_CATEGORIES?.['Painel de Senha']?.['Erro']) {
             errors.push('Mapa fixo de categorias não carregado.');
         }
 
         if (errors.length) {
-            console.error('❌ OM30 Jales v0.9.14.1 self-check:', errors);
+            console.error('❌ OM30 Jales v0.9.14.2 self-check:', errors);
             return false;
         }
 
-        console.log('✅ OM30 Jales v0.9.14.1 self-check OK', {
+        console.log('✅ OM30 Jales v0.9.14.2 self-check OK', {
             operation_id: 588,
             operation: 'Jales',
             group_id: 18,
-            unit_resolution: 'dynamic-glpi'
+            units: UNITS.length,
+            confirmed_locations: confirmed.length,
+            unit_resolution: 'confirmed-map'
         });
 
         return true;
@@ -13644,5 +13478,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp Jales v0.9.14.1 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp Jales v0.9.14.2 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

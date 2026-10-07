@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.18
+// @version      3.0.19
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.18
+    /* OM30 - CONTROLE DE SALAS v3.0.19
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -1563,7 +1563,12 @@
 
       // Fonte principal entre computadores: fluxo salvo pelo médico na ponte Cloudflare.
       // Ela contém a ordem REAL escolhida no PA e retorno_medico SIM/NÃO.
-      const central = atendimento ? await buscarFluxoCentral(atendimento) : null;
+      let central = atendimento ? await buscarFluxoCentral(atendimento) : null;
+      // retorno_medico deve ser sempre booleano no fluxo salvo pelo médico.
+      // Se vier ausente/null, força uma segunda leitura antes de considerar falha.
+      if (central?.found && typeof central.retorno_medico !== 'boolean') {
+        central = await buscarFluxoCentral(atendimento, true);
+      }
       if (central?.found) {
         const ordemCentral = (Array.isArray(central.ordem) ? central.ordem : [])
           .map((x, i) => ({ sala: salaKey(x?.sala), posicao: Number(x?.posicao || i + 1) }))
@@ -1594,7 +1599,7 @@
       if (unido.retornoConfirmado === true || handoff?.destino === 'atendimento') unido.retornoConfirmado = true;
       else if (unido.retornoConfirmado === false || unido.semRetornoConfirmado === true) unido.retornoConfirmado = false;
       else if ((unido.fonteCentral === true || unido.fonte === 'ponte_central') && typeof unido.retorno_medico === 'boolean') unido.retornoConfirmado = unido.retorno_medico;
-      else if (unido.fonte === 'encaminhamento_original' && typeof unido.retornoOriginal === 'boolean') unido.retornoConfirmado = unido.retornoOriginal;
+      else if (typeof unido.retornoOriginal === 'boolean') unido.retornoConfirmado = unido.retornoOriginal;
       if (handoff) unido.handoffPosSalvar = { ...handoff };
 
       // Se o encaminhamento original não foi capturado neste navegador, ainda podemos
@@ -2549,9 +2554,9 @@
       const retornoFinalSim = retornoConhecido === true;
       const retornoFinalNao = retornoConhecido === false;
       const retornoConfirmadoAgora = retornoDiretoAgora || (retornoFinalSim && !pendencias.length);
-      // Sem outra sala pendente e sem SIM/NÃO confirmado pelo fluxo:
-      // sempre deixa explícito que o retorno médico ainda precisa ser confirmado.
-      const retornoAConfirmar =
+      // O médico sempre define SIM/NÃO ao criar o fluxo. Se não chegou booleano,
+      // isso é falha de leitura da ponte, não um estado "a confirmar".
+      const retornoLeituraFalhou =
         retornoConhecido === null &&
         proximo.key !== 'atendimento' &&
         !pendencias.length;
@@ -2562,8 +2567,8 @@
       const semRetornoFinal = retornoFinalNao && !pendencias.length;
       const labelSecao = retornoConfirmadoAgora
         ? 'Próximo destino'
-        : (semRetornoFinal ? 'Retorno médico' : (retornoAConfirmar ? 'Retorno médico' : 'Ainda precisa passar por'));
-      const countSecao = retornoConfirmadoAgora ? '↩' : (retornoAConfirmar ? '?' : (semRetornoFinal ? '—' : pendencias.length));
+        : (semRetornoFinal ? 'Retorno médico' : (retornoLeituraFalhou ? 'Retorno médico' : 'Ainda precisa passar por'));
+      const countSecao = retornoConfirmadoAgora ? '↩' : (retornoLeituraFalhou ? '!' : (semRetornoFinal ? '—' : pendencias.length));
 
       let html = `
         <div class="om30cs-meta">
@@ -2579,13 +2584,13 @@
       if (!pendencias.length && retornoConfirmadoAgora) {
         // O cartão de retorno confirmado é renderizado logo abaixo; não mostra
         // "0 / nenhuma pendência", porque isso esconde a informação importante.
-      } else if (!pendencias.length && retornoAConfirmar) {
+      } else if (!pendencias.length && retornoLeituraFalhou) {
         html += `
           <div class="om30cs-row om30cs-retorno-pendente">
             <span class="om30cs-dot"></span>
             <div class="om30cs-room-wrap">
               <div class="om30cs-room">Retorno médico</div>
-              <div class="om30cs-status proxima">A CONFIRMAR</div>
+              <div class="om30cs-status">NÃO FOI POSSÍVEL LER O SIM/NÃO</div>
             </div>
           </div>
         `;

@@ -1,0 +1,30 @@
+name: Package Jales Script
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'OM30-WhatsApp-GLPI-Jales.user.js'
+      - '.github/workflows/package-jales.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare files
+        run: |
+          mkdir -p package
+          cp OM30-WhatsApp-GLPI-Jales.user.js package/OM30-WhatsApp-GLPI-Jales.user.js
+          cp OM30-WhatsApp-GLPI-Jales.user.js package/OM30-WhatsApp-GLPI-Jales.txt
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OM30-WhatsApp-GLPI-Jales-v0.9.14.3
+          path: package/
+          if-no-files-found: error
+          retention-days: 7

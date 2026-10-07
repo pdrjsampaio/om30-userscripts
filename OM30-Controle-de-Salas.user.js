@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.21
+// @version      3.0.22
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.21
+    /* OM30 - CONTROLE DE SALAS v3.0.22
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3636,11 +3636,25 @@
         }
         async function atualizarPresencas(vm,lista) {
             const setor=setorDaColecao(vm); if(!setor) return;
-            const at=(lista||[])
-                .filter(it=>it.status==='Em Espera'||it.status==='Em Andamento'||it.status==='Em Outra Sala')
-                .map(it=>atendimentoPres(it.atendimento_str)).filter(Boolean);
+
+            // A presença não pode depender só de item.atendimento_str: em algumas
+            // renderizações do Controle de Salas esse campo não vem serializado.
+            // Espera o DOM da tabela e usa o mesmo resolvedor robusto da alergia,
+            // que encontra o AtendimentoPa nos componentes Vue da própria linha.
+            try{await new Promise(resolve=>vm.$nextTick(resolve));}catch(_){}
+            const linhas=[...(vm.$el?.querySelectorAll?.('tbody > tr')||[])];
+            const at=[];
+            (lista||[]).forEach((it,i)=>{
+                if(it.status!=='Em Espera'&&it.status!=='Em Andamento'&&it.status!=='Em Outra Sala')return;
+                let a=atendimentoPres(it.atendimento_str||it.atendimentoStr||it.atendimento||'');
+                if(!a){
+                    const pa=typeof atendimentoPa==='function' ? atendimentoPa(it,linhas[i]||null) : '';
+                    if(pa)a=atendimentoPres(`AtendimentoPa#${pa}`);
+                }
+                if(a)at.push(a);
+            });
             const unicos=[...new Map(at.map(x=>[x.bruto,x])).values()];
-            if(!unicos.length){PRES.cache.clear();return;}
+            if(!unicos.length){PRES.cache.clear();vm.$nextTick(pintarMedicacoes);return;}
 
             const mapaChave=new Map();
             for(const a of unicos){
@@ -3703,7 +3717,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.21',
+            versao: '3.0.22',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
@@ -3719,11 +3733,36 @@
         };
 
         function aplicarPresencaNaLinha(tr,it,setor,campos){
-            const a=atendimentoPres(it.atendimento_str), d=a&&PRES.cache.get(a.bruto); if(!a)return;
+            let a=atendimentoPres(it.atendimento_str||it.atendimentoStr||it.atendimento||'');
+            if(!a){
+                const pa=typeof atendimentoPa==='function' ? atendimentoPa(it,tr) : '';
+                if(pa)a=atendimentoPres(`AtendimentoPa#${pa}`);
+            }
+            const d=a&&PRES.cache.get(a.bruto);
             const idx=campos.findIndex(f=>f.key==='status'); const td=idx>=0?tr.children[idx]:null; if(!td)return;
+
             let box=td.querySelector(':scope > .cs-presenca');
-            if(!d){if(box)box.remove();return;}
-            if(!box){box=document.createElement('div');box.className='cs-presenca';td.appendChild(box);} const html=`Por: ${esc(d.profissional)}`;if(box.__h!==html){box.innerHTML=html;box.__h=html;}
+            const subtitulo=td.querySelector(':scope > .om30-ficha-aberta .om30-atendimento-texto small');
+
+            if(!d){
+                if(box)box.remove();
+                if(subtitulo&&it.status==='Em Andamento'&&subtitulo.textContent!=='ATENDIMENTO EM CURSO'){
+                    subtitulo.textContent='ATENDIMENTO EM CURSO';
+                }
+                return;
+            }
+
+            // No status "Em Andamento", o nome vai direto no card azul.
+            // Evita mostrar "ATENDIMENTO EM CURSO" e depois repetir "Por:" embaixo.
+            if(it.status==='Em Andamento'&&subtitulo){
+                subtitulo.textContent=`POR: ${String(d.profissional||'').toUpperCase()}`;
+                if(box)box.remove();
+                return;
+            }
+
+            if(!box){box=document.createElement('div');box.className='cs-presenca';td.appendChild(box);}
+            const html=`Por: ${esc(d.profissional)}`;
+            if(box.__h!==html){box.innerHTML=html;box.__h=html;}
         }
         // ── Lista adiantada ───────────────────────────────────────────────────
         // A página só pede a lista depois de uma cadeia de etapas (sala, guichê,

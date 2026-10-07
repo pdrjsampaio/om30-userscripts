@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.19
+// @version      3.0.20
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.19
+    /* OM30 - CONTROLE DE SALAS v3.0.20
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -1528,6 +1528,101 @@
     }
 
     const fluxoCentralCache = new Map();
+
+    // Contrato aceito da ponte. O Worker atual entrega ordem + retorno_medico;
+    // versões futuras podem acrescentar pendencias/salas_pendentes, proxima_sala
+    // e concluidas sem exigir nova mudança no Controle de Salas.
+    function booleanoFluxoCentral(valor) {
+      if (typeof valor === 'boolean') return valor;
+      if (valor === 1 || valor === '1') return true;
+      if (valor === 0 || valor === '0') return false;
+      const t = String(valor ?? '').trim().toLowerCase();
+      if (['sim','s','true','yes'].includes(t)) return true;
+      if (['nao','não','n','false','no'].includes(t)) return false;
+      return null;
+    }
+
+    function valorSalaCentral(item) {
+      if (typeof item === 'string' || typeof item === 'number') return String(item);
+      if (!item || typeof item !== 'object') return '';
+      return String(
+        item.sala ?? item.key ?? item.codigo_sala ?? item.codigo ??
+        item.destino ?? item.nome ?? item.room ?? ''
+      );
+    }
+
+    function listaSalasCentral(valor, usarPosicao = false) {
+      if (!Array.isArray(valor)) return [];
+      const saida = [];
+      const vistos = new Set();
+      valor.forEach((item, i) => {
+        const sala = salaKey(valorSalaCentral(item));
+        if (!sala || sala === 'atendimento' || vistos.has(sala)) return;
+        vistos.add(sala);
+        const obj = item && typeof item === 'object' ? item : {};
+        const pos = Number(obj.posicao ?? obj.ordem ?? obj.position ?? (usarPosicao ? i + 1 : NaN));
+        const status = String(obj.status ?? obj.situacao ?? obj.estado ?? '').trim();
+        saida.push({
+          sala,
+          ...(Number.isFinite(pos) && pos > 0 ? { posicao: pos } : {}),
+          ...(status ? { status } : {})
+        });
+      });
+      return saida.sort((a,b) => {
+        const pa = Number(a.posicao), pb = Number(b.posicao);
+        if (Number.isFinite(pa) && Number.isFinite(pb)) return pa - pb;
+        if (Number.isFinite(pa)) return -1;
+        if (Number.isFinite(pb)) return 1;
+        return 0;
+      });
+    }
+
+    function normalizarFluxoCentral(body) {
+      if (!body || typeof body !== 'object' || body.found === false) return null;
+      const interno = body.fluxo && typeof body.fluxo === 'object' && !Array.isArray(body.fluxo)
+        ? body.fluxo
+        : (body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : {});
+      const raiz = { ...body, ...interno };
+
+      const ordemBruta = [raiz.ordem, raiz.salas_ordem, raiz.fluxo_salas, raiz.rota]
+        .find(Array.isArray) || [];
+      const pendenciasBrutas = [raiz.pendencias, raiz.salas_pendentes, raiz.pendentes]
+        .find(Array.isArray) || [];
+      const concluidasBrutas = [raiz.concluidas, raiz.salas_concluidas, raiz.finalizadas]
+        .find(Array.isArray) || [];
+
+      const ordem = listaSalasCentral(ordemBruta, true);
+      const pendencias = listaSalasCentral(pendenciasBrutas, false);
+      const concluidas = listaSalasCentral(concluidasBrutas, false).map(x => x.sala);
+
+      const proximaBruta = raiz.proxima_sala ?? raiz.proximo_destino ?? raiz.proximaSala ?? raiz.proxima ?? '';
+      const proximaSala = salaKey(valorSalaCentral(proximaBruta));
+      const retorno = booleanoFluxoCentral(
+        raiz.retorno_medico ??
+        raiz.retornar_paciente_para_avaliacao ??
+        raiz.retornar_ao_medico ??
+        raiz.retorno
+      );
+
+      const found = raiz.found === true ||
+        ordem.length > 0 ||
+        pendencias.length > 0 ||
+        concluidas.length > 0 ||
+        !!proximaSala ||
+        retorno !== null;
+      if (!found) return null;
+
+      return {
+        ...raiz,
+        found: true,
+        ordem,
+        pendencias,
+        concluidas,
+        proxima_sala: proximaSala,
+        retorno_medico: retorno
+      };
+    }
+
     async function buscarFluxoCentral(atendimento, forcar = false) {
       const id = String(atendimento || '').match(/\d+/)?.[0] || '';
       if (!id) return null;
@@ -1535,11 +1630,11 @@
       if (!forcar && anterior && Date.now() - anterior.em < 10000) return anterior.valor;
       try {
         const body = await csPresReq('/api/flow/get', { atendimento_id: id });
-        const valor = body?.found ? body : null;
+        const valor = normalizarFluxoCentral(body);
         fluxoCentralCache.set(id, { em: Date.now(), valor });
         return valor;
       } catch (e) {
-        console.warn('[OM30 FLUXO CENTRAL] Falha ao consultar ordem/retorno:', e?.message || e);
+        console.warn('[OM30 FLUXO CENTRAL] Falha ao consultar fluxo/pendências:', e?.message || e);
         return anterior?.valor || null;
       }
     }
@@ -1561,15 +1656,17 @@
       unido.atendimento = atendimento || unido.atendimento || '';
       unido.prontuario = prontuario || unido.prontuario || '';
 
-      // Fonte principal entre computadores: fluxo salvo pelo médico na ponte Cloudflare.
-      // Ela contém a ordem REAL escolhida no PA e retorno_medico SIM/NÃO.
+      // Fonte entre computadores: fluxo salvo pelo médico na ponte Cloudflare.
+      // O formato atual (ordem + retorno_medico) continua válido. Também deixamos
+      // preparado para receber pendências explícitas, próxima sala e concluídas.
       let central = atendimento ? await buscarFluxoCentral(atendimento) : null;
-      // retorno_medico deve ser sempre booleano no fluxo salvo pelo médico.
-      // Se vier ausente/null, força uma segunda leitura antes de considerar falha.
       if (central?.found && typeof central.retorno_medico !== 'boolean') {
         central = await buscarFluxoCentral(atendimento, true);
       }
       if (central?.found) {
+        unido.fonte = 'ponte_central';
+        unido.fonteCentral = true;
+
         const ordemCentral = (Array.isArray(central.ordem) ? central.ordem : [])
           .map((x, i) => ({ sala: salaKey(x?.sala), posicao: Number(x?.posicao || i + 1) }))
           .filter(x => x.sala && Number.isFinite(x.posicao) && x.posicao > 0)
@@ -1577,19 +1674,37 @@
         if (ordemCentral.length) {
           unido.ordem = ordemCentral;
           unido.ordemFonte = 'ponte_central';
-          unido.fonte = 'ponte_central';
-          unido.fonteCentral = true;
           unido.transicoes = { ...(unido.transicoes || {}) };
           for (let i = 0; i < ordemCentral.length - 1; i++) {
             unido.transicoes[ordemCentral[i].sala] = ordemCentral[i + 1].sala;
           }
         }
+
+        const pendenciasCentral = (Array.isArray(central.pendencias) ? central.pendencias : [])
+          .map(x => ({
+            sala: salaKey(x?.sala),
+            ...(Number.isFinite(Number(x?.posicao)) ? { posicao: Number(x.posicao) } : {}),
+            ...(String(x?.status || '').trim() ? { status: String(x.status).trim() } : {})
+          }))
+          .filter(x => x.sala && x.sala !== 'atendimento');
+        if (pendenciasCentral.length) unido.pendenciasCentral = pendenciasCentral;
+
+        const proximaCentral = salaKey(central.proxima_sala || '');
+        if (proximaCentral) unido.proximaSalaCentral = proximaCentral;
+
+        const concluidasCentral = (Array.isArray(central.concluidas) ? central.concluidas : [])
+          .map(salaKey)
+          .filter(Boolean);
+        if (concluidasCentral.length) {
+          unido.concluidas = [...new Set([...(unido.concluidas || []), ...concluidasCentral])];
+        }
+
         if (typeof central.retorno_medico === 'boolean') {
           unido.retorno_medico = central.retorno_medico;
           unido.retornoConfirmado = central.retorno_medico;
           unido.semRetornoConfirmado = central.retorno_medico === false;
         }
-        unido.fluxoCentralAtualizadoEm = central.updated_at || '';
+        unido.fluxoCentralAtualizadoEm = central.updated_at || central.atualizado_em || '';
       }
 
       // Retorno médico: aceita apenas fontes vinculadas ao AtendimentoPa exato.
@@ -1599,7 +1714,8 @@
       if (unido.retornoConfirmado === true || handoff?.destino === 'atendimento') unido.retornoConfirmado = true;
       else if (unido.retornoConfirmado === false || unido.semRetornoConfirmado === true) unido.retornoConfirmado = false;
       else if ((unido.fonteCentral === true || unido.fonte === 'ponte_central') && typeof unido.retorno_medico === 'boolean') unido.retornoConfirmado = unido.retorno_medico;
-      else if (typeof unido.retornoOriginal === 'boolean') unido.retornoConfirmado = unido.retornoOriginal;
+      // Não usa retornoOriginal/localStorage do PC atual como verdade operacional.
+      // O SIM/NÃO vem da ponte do médico ou do handoff/resposta nativa vinculada ao AtendimentoPa.
       if (handoff) unido.handoffPosSalvar = { ...handoff };
 
       // Se o encaminhamento original não foi capturado neste navegador, ainda podemos
@@ -2427,16 +2543,46 @@
       return false;
     }
 
-    function proximoDestinoSeguro(salaAtual, pendencias, fluxo, posicoes) {
+    function proximoDestinoSeguro(salaAtual, pendencias, fluxo, posicoes, mapaAtivo = null) {
       if (!salaAtual) return { key: '', fonte: '' };
+
+      // Depois do Salvar, a resposta real do Saúde Simples continua soberana.
+      const handoff = fluxo?.handoffPosSalvar;
+      if (handoff?.origem === salaAtual && handoff?.destino) {
+        return { key: String(handoff.destino), fonte: 'handoff_backend' };
+      }
+
+      // Antes do Salvar, primeiro aproveita a verdade nativa da fila: se exatamente
+      // uma sala do AtendimentoPa está marcada "Em Espera", ela é a próxima.
+      const emEsperaNativa = pendencias.filter(p => p?.fonteNativa === true && normalizar(p.status) === 'EM ESPERA');
+      if (emEsperaNativa.length === 1) {
+        return { key: String(emEsperaNativa[0].sala), fonte: 'api_nativa_em_espera' };
+      }
+
+      // buscar_url_encaminhamentos_prontuario informa as salas ainda ativas.
+      // Se, excluindo a sala atual/concluídas, só sobrou uma, não há ambiguidade.
+      if (mapaAtivo?.confiavel && mapaAtivo.ativos instanceof Set) {
+        const concluidas = new Set((Array.isArray(fluxo?.concluidas) ? fluxo.concluidas : []).map(String));
+        const futuras = [...mapaAtivo.ativos]
+          .map(String)
+          .filter(sala => sala && sala !== String(salaAtual) && !concluidas.has(sala));
+        if (futuras.length === 1) return { key: futuras[0], fonte: 'api_nativa_mapa_ativo' };
+      }
+
+      // Quando o script dos médicos passar a enviar a próxima sala explicitamente,
+      // este campo já será entendido sem nova alteração deste lado.
+      const proximaCentral = String(fluxo?.proximaSalaCentral || '');
+      if (proximaCentral && proximaCentral !== String(salaAtual)) {
+        return { key: proximaCentral, fonte: 'ponte_central_proxima' };
+      }
 
       const posAtual = posicoes.get(salaAtual);
       if (Number.isFinite(posAtual)) {
         const candidatos = [...posicoes.entries()]
           .filter(([, pos]) => Number.isFinite(pos) && pos > posAtual)
           .sort((a, b) => a[1] - b[1]);
-        if (candidatos.length) return { key: candidatos[0][0], fonte: 'ordem_original' };
-        if (fluxo?.retornoConfirmado === true) return { key: 'atendimento', fonte: 'retorno_backend' };
+        if (candidatos.length) return { key: candidatos[0][0], fonte: 'ponte_central_ordem' };
+        if (fluxo?.retornoConfirmado === true) return { key: 'atendimento', fonte: 'ponte_central_retorno' };
       }
 
       const transicao = String(fluxo?.transicoes?.[salaAtual] || '');
@@ -2476,42 +2622,96 @@
       const concluidasBackend = new Set((Array.isArray(fluxo?.concluidas) ? fluxo.concluidas : []).map(String));
       const posAtualConfirmada = posicoes.get(salaAtual);
 
-      let pendencias = [];
+      // 1) Estado real do Saúde Simples para ESTE AtendimentoPa.
+      let pendenciasNativas = (episodio?.linhas || [])
+        .filter(l => statusAtivo(l.status))
+        .filter(l => !salaAtual || l.sala !== salaAtual)
+        .filter(l => !concluidasBackend.has(String(l.sala)))
+        .filter(l => !mapaAtivo?.confiavel || mapaAtivo.ativos.has(String(l.sala)))
+        .filter(l => !jaPercorridas.has(String(l.sala)))
+        .filter(l => {
+          const pos = posicoes.get(l.sala);
+          if (Number.isFinite(posAtualConfirmada) && Number.isFinite(pos) && pos <= posAtualConfirmada) return false;
+          return true;
+        })
+        .map(l => ({ ...l, fonteNativa: true }));
 
-      // Quando a ponte central trouxe a ordem do médico, ela é a verdade operacional.
-      // Assim já sabemos quais salas vêm depois da atual sem depender de nome/data/hora.
-      if (ordemConfirmada.length && Number.isFinite(posAtualConfirmada)) {
-        pendencias = ordemConfirmada
-          .filter(x => Number(x.posicao) > Number(posAtualConfirmada))
-          .filter(x => !concluidasBackend.has(String(x.sala)))
-          .map((x, i) => ({
-            sala: String(x.sala),
-            salaNome: nomeSalaPorKey(x.sala),
-            status: i === 0 ? 'Em Espera' : 'Em Outra Sala',
-            sinteticaOrdemConfirmada: true,
-            posicao: Number(x.posicao)
-          }));
-      } else {
-        pendencias = (episodio?.linhas || [])
-          .filter(l => statusAtivo(l.status))
-          .filter(l => !salaAtual || l.sala !== salaAtual)
-          .filter(l => !concluidasBackend.has(String(l.sala)))
-          .filter(l => !mapaAtivo?.confiavel || mapaAtivo.ativos.has(String(l.sala)))
-          .filter(l => !jaPercorridas.has(String(l.sala)))
-          .filter(l => {
-            const pos = posicoes.get(l.sala);
-            if (Number.isFinite(posAtualConfirmada) && Number.isFinite(pos) && pos <= posAtualConfirmada) return false;
-            return true;
-          })
-          .sort((a, b) => {
-            const pa = posicoes.get(a.sala), pb = posicoes.get(b.sala);
-            if (Number.isFinite(pa) && Number.isFinite(pb) && pa !== pb) return pa - pb;
-            const ra = rankStatus(a), rb = rankStatus(b);
-            return ra !== rb ? ra - rb : 0;
+      // Se a datatable ainda não trouxe a linha, mas buscar_url... confirmou a sala
+      // como ativa, mantém a pendência visível. Não inventa ordem/status.
+      if (mapaAtivo?.confiavel && mapaAtivo.ativos instanceof Set) {
+        for (const sala of mapaAtivo.ativos) {
+          const key = String(sala || '');
+          if (!key || key === String(salaAtual) || concluidasBackend.has(key) || jaPercorridas.has(key)) continue;
+          if (pendenciasNativas.some(p => String(p.sala) === key)) continue;
+          pendenciasNativas.push({
+            sala: key,
+            salaNome: nomeSalaPorKey(key),
+            status: 'Pendente',
+            fonteNativa: true,
+            sinteticaMapaAtivo: true
           });
+        }
       }
 
-      const proximo = proximoDestinoSeguro(salaAtual, pendencias, fluxo, posicoes);
+      // 2) A ponte do médico pode mandar pendências explicitamente. Enquanto o Worker
+      // atual mandar apenas "ordem", derivamos as pendências futuras dessa ordem.
+      let pendenciasCentral = [];
+      if (Array.isArray(fluxo?.pendenciasCentral) && fluxo.pendenciasCentral.length) {
+        pendenciasCentral = fluxo.pendenciasCentral
+          .filter(x => x?.sala && String(x.sala) !== String(salaAtual))
+          .filter(x => !concluidasBackend.has(String(x.sala)))
+          .filter(x => !jaPercorridas.has(String(x.sala)))
+          .filter(x => {
+            const pos = Number(x?.posicao);
+            return !Number.isFinite(posAtualConfirmada) || !Number.isFinite(pos) || pos > posAtualConfirmada;
+          })
+          .map(x => ({
+            sala: String(x.sala),
+            salaNome: nomeSalaPorKey(x.sala),
+            status: String(x.status || 'Pendente'),
+            sinteticaPonteCentral: true,
+            ...(Number.isFinite(Number(x.posicao)) ? { posicao:Number(x.posicao) } : {})
+          }));
+      } else if (ordemConfirmada.length && Number.isFinite(posAtualConfirmada)) {
+        pendenciasCentral = ordemConfirmada
+          .filter(x => Number(x.posicao) > Number(posAtualConfirmada))
+          .filter(x => !concluidasBackend.has(String(x.sala)))
+          .map(x => ({
+            sala: String(x.sala),
+            salaNome: nomeSalaPorKey(x.sala),
+            status: 'Pendente',
+            sinteticaOrdemConfirmada: true,
+            sinteticaPonteCentral: true,
+            posicao: Number(x.posicao)
+          }));
+      }
+
+      // Mescla as duas fontes. A ponte dá sequência/retorno; a API nativa dá o
+      // estado atual. Quando ambas conhecem a mesma sala, preserva o status nativo.
+      let pendencias = pendenciasCentral.length
+        ? pendenciasCentral.map(p => {
+            const nativa = pendenciasNativas.find(n => String(n.sala) === String(p.sala));
+            return nativa
+              ? { ...p, ...nativa, posicao: p.posicao ?? nativa.posicao, fonteNativa: true }
+              : p;
+          })
+        : [...pendenciasNativas];
+
+      for (const nativa of pendenciasNativas) {
+        if (!pendencias.some(p => String(p.sala) === String(nativa.sala))) pendencias.push(nativa);
+      }
+
+      pendencias.sort((a, b) => {
+        const pa = Number(a.posicao ?? posicoes.get(a.sala));
+        const pb = Number(b.posicao ?? posicoes.get(b.sala));
+        if (Number.isFinite(pa) && Number.isFinite(pb) && pa !== pb) return pa - pb;
+        if (Number.isFinite(pa)) return -1;
+        if (Number.isFinite(pb)) return 1;
+        const ra = rankStatus(a), rb = rankStatus(b);
+        return ra !== rb ? ra - rb : 0;
+      });
+
+      const proximo = proximoDestinoSeguro(salaAtual, pendencias, fluxo, posicoes, mapaAtivo);
 
       // Se a resposta da última sala já confirmou RETORNO AO CONSULTÓRIO MÉDICO, não deixa
       // datatables atrasadas reapresentarem Exames/Raio-X como pendentes.
@@ -2648,11 +2848,17 @@
           sala: String(p?.sala || ''),
           salaNome: String(p?.salaNome || nomeSalaPorKey(p?.sala) || ''),
           status: String(p?.status || ''),
+          fonteNativa: p?.fonteNativa === true,
+          sinteticaMapaAtivo: p?.sinteticaMapaAtivo === true,
+          sinteticaPonteCentral: p?.sinteticaPonteCentral === true,
           sinteticaDestinoConfirmado: p?.sinteticaDestinoConfirmado === true
         })),
         retornoConhecido,
         retornoConfirmadoAgora,
-        retornoAConfirmar,
+        retornoLeituraFalhou,
+        retornoAConfirmar: false,
+        fonteCentral: fluxo?.fonteCentral === true,
+        fluxoCentralAtualizadoEm: String(fluxo?.fluxoCentralAtualizadoEm || ''),
         semRetornoFinal,
         ambiguo: episodio?.ambiguo === true
       };

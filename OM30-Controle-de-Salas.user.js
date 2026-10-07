@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.22
+// @version      3.0.23
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.22
+    /* OM30 - CONTROLE DE SALAS v3.0.23
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3717,7 +3717,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.22',
+            versao: '3.0.23',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
@@ -3731,6 +3731,19 @@
                 return saida;
             }
         };
+
+        function nomePresencaVisual(nome){
+            const original=String(nome||'').replace(/\s+/g,' ').trim();
+            if(!original)return '';
+            // /current_usuario costuma devolver o nome em caixa alta. Para o card,
+            // converte apenas quando ele vier TODO em maiúsculas.
+            if(original!==original.toUpperCase())return original;
+            const minusculas=new Set(['da','das','de','do','dos','e']);
+            return original.toLocaleLowerCase('pt-BR').split(' ').map((p,i)=>{
+                if(i>0&&minusculas.has(p))return p;
+                return p ? p.charAt(0).toLocaleUpperCase('pt-BR')+p.slice(1) : p;
+            }).join(' ');
+        }
 
         function aplicarPresencaNaLinha(tr,it,setor,campos){
             let a=atendimentoPres(it.atendimento_str||it.atendimentoStr||it.atendimento||'');
@@ -3755,7 +3768,9 @@
             // No status "Em Andamento", o nome vai direto no card azul.
             // Evita mostrar "ATENDIMENTO EM CURSO" e depois repetir "Por:" embaixo.
             if(it.status==='Em Andamento'&&subtitulo){
-                subtitulo.textContent=`POR: ${String(d.profissional||'').toUpperCase()}`;
+                const nomeVisual=nomePresencaVisual(d.profissional);
+                subtitulo.textContent=nomeVisual || 'ATENDIMENTO EM CURSO';
+                subtitulo.title=nomeVisual ? `Atendido por: ${String(d.profissional||'').trim()}` : '';
                 if(box)box.remove();
                 return;
             }
@@ -3899,25 +3914,67 @@
               vertical-align:middle !important;
               text-align:center !important;
             }
+            .cs-fila th.cs-col-status,
+            .cs-fila td.cs-col-status {
+              min-width:148px !important;
+              width:148px !important;
+            }
             .om30-ficha-aberta {
-              display:inline-grid; grid-template-columns:10px minmax(0,1fr); align-items:center; column-gap:7px;
-              width:128px; max-width:100%; box-sizing:border-box; margin:0 auto; padding:7px 8px;
-              border:1px solid #1d4ed8; border-radius:7px; background:#2563eb; color:#fff !important;
-              font:900 9px/1.12 Arial,sans-serif !important; text-transform:uppercase; letter-spacing:.025em;
-              text-align:left; white-space:normal; box-shadow:0 1px 3px rgba(37,99,235,.22);
+              display:inline-grid;
+              grid-template-columns:8px minmax(0,1fr);
+              align-items:center;
+              column-gap:8px;
+              width:142px;
+              max-width:100%;
+              box-sizing:border-box;
+              margin:0 auto;
+              padding:7px 9px;
+              border:1px solid #1d4ed8;
+              border-radius:8px;
+              background:#2563eb;
+              color:#fff !important;
+              font-family:Arial,sans-serif !important;
+              text-align:left;
+              white-space:normal;
+              box-shadow:0 1px 3px rgba(37,99,235,.22);
             }
             .om30-ficha-aberta::before { content:none; }
             .om30-ficha-aberta .om30-atendimento-ponto {
-              width:9px; height:9px; border-radius:50%; background:#fff; display:block;
-              box-shadow:0 0 0 2px rgba(255,255,255,.22);
+              width:8px;
+              height:8px;
+              border-radius:50%;
+              background:#fff;
+              display:block;
+              box-shadow:0 0 0 2px rgba(255,255,255,.20);
             }
-            .om30-ficha-aberta .om30-atendimento-texto { min-width:0; color:#fff !important; font-size:9px !important; }
+            .om30-ficha-aberta .om30-atendimento-texto {
+              min-width:0;
+              color:#fff !important;
+            }
             .om30-ficha-aberta .om30-atendimento-texto strong {
-              display:block; color:#fff !important; font-size:9px !important; line-height:1.12; font-weight:900;
+              display:block;
+              color:#fff !important;
+              font-size:8.5px !important;
+              line-height:1.08;
+              font-weight:900;
+              text-transform:uppercase;
+              letter-spacing:.045em;
+              white-space:nowrap;
             }
             .om30-ficha-aberta .om30-atendimento-texto small {
-              display:block; margin-top:2px; color:#dbeafe !important; font-size:8px !important; line-height:1.05;
-              font-weight:800; letter-spacing:.04em;
+              display:-webkit-box;
+              -webkit-box-orient:vertical;
+              -webkit-line-clamp:2;
+              overflow:hidden;
+              margin-top:3px;
+              color:#eaf2ff !important;
+              font-size:9px !important;
+              line-height:1.15;
+              font-weight:700;
+              letter-spacing:0;
+              text-transform:none !important;
+              word-break:normal;
+              overflow-wrap:anywhere;
             }
             .om30-status-cell-atendimento > .cs-presenca {
               margin-top:4px;

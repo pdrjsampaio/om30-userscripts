@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.27
+// @version      3.0.28
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.27
+    /* OM30 - CONTROLE DE SALAS v3.0.28
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3717,7 +3717,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.27',
+            versao: '3.0.28',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
@@ -4126,7 +4126,7 @@
             /* Coluna Ação com medicações: botões com rótulo em vez de ícones soltos. */
             .cs-fila.cs-com-med td.cs-col-senha { white-space:pre-line; }
             .cs-fila.cs-com-med td.cs-col-acoes { vertical-align:middle; }
-            .cs-fila.cs-com-med td.cs-col-acoes > .row { display:flex !important; flex-direction:column !important; gap:4px; margin:0 !important; width:100% !important; }
+            .cs-fila.cs-com-med td.cs-col-acoes > .row { display:flex !important; flex-direction:column !important; gap:2px; margin:0 !important; width:100% !important; }
             .cs-fila.cs-com-med td.cs-col-acoes > .row > * { width:100% !important; max-width:none !important; float:none !important; margin:0 !important; }
             .cs-fila.cs-com-med td.cs-col-acoes .botao-tempo-chegada { display:none !important; }
             /* ESCONDER_ATENDER: só o Chamar, ocupando a célula toda. */
@@ -4205,10 +4205,35 @@
             .cs-fila tr.cs-hist-finalizado td.cs-col-senha { color:#1f7a3f !important; font-weight:700; }
             .cs-hist-nota { text-align:left; font-size:11px; color:#8a1f1f; background:#fdf0f0; border-left:3px solid #d9534f; padding:2px 6px; border-radius:3px; }
             .cs-barra .cs-dica { color:#6b7785; font-style:italic; }
-            .cs-acao-extra { margin-top:4px; }
-            .cs-cancelar-linha { width:100%; height:28px; border:1px solid #e3a5a5; background:#fff5f5; color:#a32020; border-radius:5px;
-                padding:0 6px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-            .cs-cancelar-linha:hover:not(:disabled) { background:#fde2e2; border-color:#cf6b6b; }
+            .cs-acao-extra {
+                margin-top:2px;
+                width:100%;
+            }
+            .cs-cancelar-linha {
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                gap:4px;
+                width:100%;
+                min-width:0;
+                height:30px;
+                box-sizing:border-box;
+                margin:0;
+                padding:0 6px;
+                border:1px solid #e3a5a5;
+                border-radius:5px;
+                background:#fff;
+                color:#a32020;
+                font-size:12px;
+                line-height:1;
+                font-weight:600;
+                cursor:pointer;
+                white-space:nowrap;
+                overflow:hidden;
+                text-overflow:ellipsis;
+                box-shadow:none;
+            }
+            .cs-cancelar-linha:hover:not(:disabled) { background:#fff5f5; border-color:#cf6b6b; }
             .cs-cancelar-linha:disabled { opacity:.6; cursor:progress; }
             .cs-cancelar-modal { background:rgba(15,23,42,.46); }
             .cs-cancelar-modal > div {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.20
+// @version      3.0.21
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.20
+    /* OM30 - CONTROLE DE SALAS v3.0.21
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -923,11 +923,122 @@
             if(id) sessionStorage.setItem(CS_ATENDIMENTO_PA_FILHO,id);
         } catch(_) {}
     })();
-    function csAtendimentoPres(str){const m=String(str||'').match(/^([A-Za-z0-9_]+)#(\d+)$/);if(!m||!/^Atendimento/i.test(m[1]))return null;const t=m[1].toLowerCase(),id=m[2];let p;if(t==='atendimentopa')p='1';else if(t==='atendimentoambulatorial')p='2';else{let h=0;for(const ch of t)h=(h*31+ch.charCodeAt(0))%900000;p=String(100000+h);}return{tipo:m[1],id,chave:`${p}${id}`};}
-    async function csPresReq(path,payload,keepalive=false){const r=await fetch('https://om30-fluxo-controle-salas.om30-pedro.workers.dev'+path,{method:'POST',mode:'cors',cache:'no-store',credentials:'omit',keepalive,headers:{'Content-Type':'application/json','X-OM30-Key':'om302026'},body:JSON.stringify(payload||{})});const j=await r.json().catch(()=>({}));if(!r.ok||!j.ok)throw new Error(`HTTP ${r.status}`);return j;}
+    function csAtendimentoPres(str){const m=String(str||'').match(/^([A-Za-z0-9_]+)#(\d+)$/);if(!m||!/^Atendimento/i.test(m[1]))return null;const t=m[1].toLowerCase(),id=m[2];let p;if(t==='atendimentopa')p='1';else if(t==='atendimentoambulatorial')p='2';else{let h=0;for(const ch of t)h=(h*31+ch.charCodeAt(0))%900000;p=String(100000+h);}return{tipo:m[1],id,bruto:`${m[1]}#${id}`,chave:`${p}${id}`};}
+    async function csPresReq(path,payload,keepalive=false){const r=await fetch('https://om30-fluxo-controle-salas.om30-pedro.workers.dev'+path,{method:'POST',mode:'cors',cache:'no-store',credentials:'omit',keepalive,headers:{'Content-Type':'application/json','X-OM30-Key':'om302026'},body:JSON.stringify(payload||{})});const txt=await r.text();let j={};try{j=JSON.parse(txt||'{}')}catch(_){}if(!r.ok||!j.ok)throw new Error(`HTTP ${r.status}: ${txt||'erro'}`);return j;}
+
+    function csSalaAtualPresenca(){
+        const p=location.pathname.replace(/\/+$/,'');
+        if(/^\/aplicacoes_medicamentos(?:\/new|\/create)?$/.test(p))return 'medicacao';
+        if(/^\/encaminhamentos_exames\/\d+\/edit$/.test(p))return 'exames';
+        if(/^\/encaminhamentos_radiografias\/\d+\/edit$/.test(p))return 'radiografia';
+        if(/^\/encaminhamentos_procedimentos_enfermagem\/\d+\/edit$/.test(p))return 'enfermagem';
+        if(/^\/encaminhamentos_gessos_imobilizacoes\/\d+\/edit$/.test(p))return 'gesso';
+        if(/^\/encaminhamentos_repousos\/\d+\/edit$/.test(p))return 'repouso';
+        return '';
+    }
+
+    function csAtendimentoAtualPresenca(info){
+        const candidatos=[];
+        if(info?.atendimento)candidatos.push(info.atendimento);
+        try{
+            const q=new URLSearchParams(location.search);
+            const id=q.get('om30_atendimento_pa');
+            if(id)candidatos.push(`AtendimentoPa#${id}`);
+        }catch(_){}
+        try{
+            const id=sessionStorage.getItem(CS_ATENDIMENTO_PA_FILHO);
+            if(id)candidatos.push(`AtendimentoPa#${id}`);
+        }catch(_){}
+        for(const el of document.querySelectorAll('[atendimento-id]')){
+            const tipo=String(el.getAttribute('atendimento-type')||el.getAttribute('atendimento_type')||'AtendimentoPa');
+            const id=String(el.getAttribute('atendimento-id')||'').match(/\d+/)?.[0]||'';
+            if(id)candidatos.push(`${tipo}#${id}`);
+        }
+        try{
+            const seed=JSON.parse(localStorage.getItem('cs-presenca-seed')||'null');
+            if(seed?.atendimento)candidatos.push(seed.atendimento);
+        }catch(_){}
+        for(const v of candidatos){const a=csAtendimentoPres(v);if(a)return a;}
+        return null;
+    }
+
     function csNomeUsuario(){for(const sel of ['.navbar .dropdown-toggle','.navbar-nav .dropdown-toggle','.user-menu','.username'])for(const el of document.querySelectorAll(sel)){const t=String(el.textContent||'').replace(/\s+/g,' ').trim();if(t.length>=5&&t.length<=100&&!/Minha Conta|Sair/i.test(t))return t;}return '';}
-    async function csRegistrarPresencaFilha(info){if(!info||!info.atendimento||!info.sala)return;const a=csAtendimentoPres(info.atendimento);if(!a)return;let nome=csNomeUsuario();try{const r=await fetch('/current_usuario',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});if(r.ok){const u=await r.json();nome=String(u.nome||u.name||u.nome_completo||u.profissional_nome||u.usuario_nome||u.profissional?.nome||u.usuario?.nome||nome||'').trim();}}catch(_){}if(!nome)return;await csPresReq('/api/attendance/upsert',{atendimento_id:a.chave,sala:info.sala,display_name:nome,actor_id:''});sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({...info,chave:a.chave,nome}));window.__csHeartbeatPresenca=setInterval(()=>csPresReq('/api/attendance/upsert',{atendimento_id:a.chave,sala:info.sala,display_name:nome,actor_id:''}).catch(()=>{}),45000);}
-    async function csExcluirPresencaConcluida(){let info=null;try{info=JSON.parse(sessionStorage.getItem(CS_PRESENCA_FILHA)||'null')}catch(_){}if(!info||!info.chave||!info.sala)return;try{await csPresReq('/api/attendance/delete',{atendimento_id:info.chave,sala:info.sala},true);}catch(_){}try{sessionStorage.removeItem(CS_PRESENCA_FILHA)}catch(_){}if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);}
+
+    async function csIdentidadeUsuario(){
+        let nome='',actor='';
+        try{
+            const r=await fetch('/current_usuario',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});
+            if(r.ok){
+                const u=await r.json();
+                const objs=[u,u?.usuario,u?.profissional,u?.pessoa,u?.current_user];
+                for(const o of objs){
+                    if(!o||typeof o!=='object')continue;
+                    for(const k of ['nome','name','nome_completo','nome_profissional','profissional_nome','usuario_nome']){
+                        const v=String(o?.[k]||'').replace(/\s+/g,' ').trim();
+                        if(v.length>=5){nome=v;break;}
+                    }
+                    if(nome)break;
+                }
+                actor=String(u?.id||u?.usuario?.id||u?.profissional_id||u?.profissional?.id||'');
+            }
+        }catch(_){}
+        if(!nome)nome=csNomeUsuario();
+        return {nome,actor};
+    }
+
+    async function csRegistrarPresencaFilha(info={}){
+        const a=csAtendimentoAtualPresenca(info);
+        const sala=csSalaAtualPresenca()||String(info?.sala||'');
+        if(!a||!sala){
+            console.warn('[OM30 PRESENÇA] não foi possível identificar atendimento/sala',{atendimento:a?.bruto||'',sala});
+            return;
+        }
+
+        try{sessionStorage.setItem(CS_ATENDIMENTO_PA_FILHO,a.id);}catch(_){}
+
+        const {nome,actor}=await csIdentidadeUsuario();
+        if(!nome){
+            console.warn('[OM30 PRESENÇA] nome do profissional não identificado.');
+            return;
+        }
+
+        let anterior=null;
+        try{anterior=JSON.parse(sessionStorage.getItem(CS_PRESENCA_FILHA)||'null');}catch(_){}
+        const chaves=[...new Set([a.chave,a.id].filter(Boolean))];
+
+        // Se a mesma aba avançou para outra sala, remove a presença da sala anterior.
+        if(anterior?.sala && anterior.sala!==sala && String(anterior.id||'')===String(a.id)){
+            for(const k of [...new Set([anterior.chave,anterior.id].filter(Boolean))]){
+                try{await csPresReq('/api/attendance/delete',{atendimento_id:k,sala:anterior.sala},true);}catch(_){}
+            }
+        }
+
+        const gravar=()=>Promise.allSettled(chaves.map(atendimento_id=>csPresReq('/api/attendance/upsert',{
+            atendimento_id,sala,display_name:nome,actor_id:actor
+        })));
+        const resultados=await gravar();
+        if(!resultados.some(x=>x.status==='fulfilled')){
+            throw resultados.find(x=>x.status==='rejected')?.reason||new Error('Cloudflare não confirmou a presença.');
+        }
+
+        try{sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({
+            atendimento:a.bruto,id:a.id,chave:a.chave,sala,nome,em:Date.now()
+        }));}catch(_){}
+
+        if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
+        window.__csHeartbeatPresenca=setInterval(()=>gravar().catch?.(()=>{}),45000);
+        console.log('[OM30 PRESENÇA] registrada',{atendimento:a.bruto,sala,nome});
+    }
+
+    async function csExcluirPresencaConcluida(){
+        let info=null;try{info=JSON.parse(sessionStorage.getItem(CS_PRESENCA_FILHA)||'null')}catch(_){}
+        if(!info?.sala)return;
+        for(const k of [...new Set([info.chave,info.id].filter(Boolean))]){
+            try{await csPresReq('/api/attendance/delete',{atendimento_id:k,sala:info.sala},true);}catch(_){}
+        }
+        try{sessionStorage.removeItem(CS_PRESENCA_FILHA)}catch(_){}
+        if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
+    }
 
     // Aba filha voltou à lista por conclusão/saída real do fluxo: agora sim limpa a presença.
     // Fechar a aba manualmente não passa por este bloco e NÃO apaga o registro.
@@ -3477,13 +3588,13 @@
     if (caminho === '/aplicacoes_medicamentos') iniciarFila();
     else if (caminho === '/aplicacoes_medicamentos/new' || caminho === '/aplicacoes_medicamentos/create') iniciarAplicacao();
     else if (fichaOutraSala && /^cs-atendimento-/.test(window.name)) {
+        // A identidade do AtendimentoPa permanece na sessionStorage da aba.
+        // Não depende mais do seed de 60 s nem reutiliza a sala anterior.
+        csRegistrarPresencaFilha({}).catch(e=>console.warn('[OM30 PRESENÇA] registro da sala não realizado:',e?.message||e));
         try {
             const seed=JSON.parse(localStorage.getItem('cs-presenca-seed')||'null');
-            if(seed&&Date.now()-Number(seed.em||0)<60000){
-                csRegistrarPresencaFilha(seed).catch(()=>{});
-                definirTitulo(seed.nome?`${seed.nome} · Atendimento`:'Atendimento');
-            }
-        } catch(_) {}
+            definirTitulo(seed?.nome?`${seed.nome} · Atendimento`:'Atendimento');
+        } catch(_) { definirTitulo('Atendimento'); }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -3561,7 +3672,10 @@
             };
 
             try {
-                const res=await presReq('/api/attendance/batch',{sala:setor.api,atendimentos:unicos.map(x=>x.chave)});
+                // Consulta as duas formas de chave no mesmo lote. Assim registros criados
+                // pela ponte atual ou por versões antigas aparecem sem esperar fallback.
+                const chavesBatch=[...new Set(unicos.flatMap(x=>[x.chave,x.id]).filter(Boolean))];
+                const res=await presReq('/api/attendance/batch',{sala:setor.api,atendimentos:chavesBatch});
                 let novo=interpretar(res);
 
                 // Fallback: se o Worker responder em outro formato ou houver registros
@@ -3589,13 +3703,18 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.14',
+            versao: '3.0.21',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
                 const a=atendimentoPres(String(atendimento||'').includes('#') ? atendimento : `AtendimentoPa#${String(atendimento||'').match(/\d+/)?.[0]||''}`);
                 if(!a) throw new Error('AtendimentoPa inválido');
-                return presReq('/api/attendance/get',{atendimento_id:a.chave,sala});
+                const saida={atendimento:a.bruto||`AtendimentoPa#${a.id}`,sala,resultados:[]};
+                for(const atendimento_id of [...new Set([a.chave,a.id].filter(Boolean))]){
+                    try{saida.resultados.push({atendimento_id,resposta:await presReq('/api/attendance/get',{atendimento_id,sala})});}
+                    catch(e){saida.resultados.push({atendimento_id,erro:String(e?.message||e)});}
+                }
+                return saida;
             }
         };
 

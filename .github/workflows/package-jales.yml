@@ -6,6 +6,8 @@ on:
     paths:
       - 'OM30-WhatsApp-GLPI-Jales.user.js'
       - '.github/workflows/package-jales.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

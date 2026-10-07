@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI - Jales
 // @namespace    om30
-// @version      0.9.14.2
+// @version      0.9.14.3
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI-Jales.user.js
 // @description  Jales · WhatsApp → GLPI: motor silencioso + fila + evidências + entidade 588
@@ -4051,7 +4051,7 @@
     // ============================================================
 
     const OM30_VERSION =
-        '0.9.14.2';
+        '0.9.14.3';
 
     function om30SanitizeLogValue(value, depth = 0) {
         if (depth > 5) return '[limite]';
@@ -6837,15 +6837,99 @@
     // CLASSIFICAÇÃO
     // ============================================================
 
+    // Categorias homologadas: o VALUE da opção já é o ID real do GLPI.
+    // O nome fica somente para exibição/classificação.
     const CATEGORIES = {
         "Saúde Simples": {
-            1: ["Configuração de Agenda","Consolidação de Munícipe","Munícipes","Profissionais","Instabilidade no Sistema","Tele Saúde"],
-            2: ["Agendamento","Ambulatorial","Aplicativo","Configurações","Atenção Primária","Atestado e Declaração","Cadastro","Configuração de Agenda","Consolidação de Munícipe","Munícipes","Profissionais","Consulta em banco","Estoque","Ferramentas","Implantação de novos processos","Nova unidade/módulo/funcionalidade","Odontológico","Ouvidoria","Produção BPA","Produção e-SUS","Produção RAAS","Pronto Atendimento","Prontuário Eletrônico","Regulação","Relatórios","Tele Saúde","Terapia","Transporte","Treinamento","Urgência e Emergência","Vacinação","Vigilância em Saúde"]
+            1: [
+                { id: 137, name: "Configuração de Agenda" },
+                { id: 140, name: "Consolidação de Munícipe" },
+                { id: 139, name: "Munícipes" },
+                { id: 136, name: "Profissionais" },
+                { id: 110, name: "Instabilidade no Sistema" },
+                { id: 122, name: "Tele Saúde" }
+            ],
+            2: [
+                { id: 76, name: "Agendamento" },
+                { id: 77, name: "Ambulatorial" },
+                { id: 120, name: "Aplicativo" },
+                { id: 121, name: "Configurações" },
+                { id: 78, name: "Atenção Primária" },
+                { id: 79, name: "Atestado e Declaração" },
+                { id: 80, name: "Cadastro" },
+                { id: 137, name: "Configuração de Agenda" },
+                { id: 140, name: "Consolidação de Munícipe" },
+                { id: 139, name: "Munícipes" },
+                { id: 136, name: "Profissionais" },
+                { id: 116, name: "Consulta em banco" },
+                { id: 81, name: "Estoque" },
+                { id: 82, name: "Ferramentas" },
+                { id: 117, name: "Implantação de novos processos" },
+                { id: 113, name: "Nova unidade/módulo/funcionalidade" },
+                { id: 83, name: "Odontológico" },
+                { id: 84, name: "Ouvidoria" },
+                { id: 85, name: "Produção BPA" },
+                { id: 86, name: "Produção e-SUS" },
+                { id: 87, name: "Produção RAAS" },
+                { id: 88, name: "Pronto Atendimento" },
+                { id: 89, name: "Prontuário Eletrônico" },
+                { id: 90, name: "Regulação" },
+                { id: 91, name: "Relatórios" },
+                { id: 122, name: "Tele Saúde" },
+                { id: 92, name: "Terapia" },
+                { id: 93, name: "Transporte" },
+                { id: 114, name: "Treinamento" },
+                { id: 94, name: "Urgência e Emergência" },
+                { id: 95, name: "Vacinação" },
+                { id: 96, name: "Vigilância em Saúde" }
+            ]
         },
-        "Totem": { 1: ["Touch"], 2: ["Touch"] },
-        "Painel de Senha": { 1: ["Erro"], 2: ["Erro"] },
-        "Impressora": { 1: ["Falha/Defeito","Manutenção em Geral"], 2: ["Falha/Defeito","Manutenção em Geral"] }
+        "Totem": {
+            1: [{ id: 52, name: "Touch" }],
+            2: [{ id: 52, name: "Touch" }]
+        },
+        "Painel de Senha": {
+            1: [{ id: 109, name: "Erro" }],
+            2: [{ id: 109, name: "Erro" }]
+        },
+        "Impressora": {
+            1: [
+                { id: 22, name: "Falha/Defeito" },
+                { id: 24, name: "Manutenção em Geral" }
+            ],
+            2: [
+                { id: 22, name: "Falha/Defeito" },
+                { id: 24, name: "Manutenção em Geral" }
+            ]
+        }
     };
+
+    function categoryDefinition(system, typeId, nameOrId) {
+        const list = CATEGORIES[system]?.[Number(typeId)] || [];
+        const wanted = String(nameOrId ?? '').trim();
+
+        return list.find(item =>
+            String(item.id) === wanted ||
+            glpiNormalize(item.name) === glpiNormalize(wanted)
+        ) || null;
+    }
+
+    function selectedOm30Category() {
+        const select = document.getElementById('om30-category');
+        const option = select?.selectedOptions?.[0];
+
+        if (!select || !option || !select.value) {
+            return { id: 0, name: '' };
+        }
+
+        return {
+            id: Number(select.value),
+            name:
+                option.dataset.categoryName ||
+                option.textContent?.trim() ||
+                ''
+        };
+    }
 
     const STRONG_SOLUTION = /\b(DEU CERTO|FUNCIONOU|VOLTOU|NORMALIZOU|RESOLVIDO|RESOLVEU|AGORA FOI|PODE FECHAR|ESTA FUNCIONANDO|TA FUNCIONANDO|TUDO CERTO|OK AGORA|ARRUMOU)\b/;
     const MEDIUM_SOLUTION = /\b(OBRIGADO|OBRIGADA|VALEU|PERFEITO)\b/;
@@ -7043,11 +7127,39 @@
         const category = document.getElementById('om30-category');
         if (!system || !type || !category) return;
 
-        const list = CATEGORIES[system.value]?.[Number(type.value)] || [];
+        const list =
+            CATEGORIES[system.value]?.[Number(type.value)] ||
+            [];
+
         category.innerHTML = '';
         category.add(new Option('— Selecione —', ''));
-        list.forEach(x => category.add(new Option(x, x)));
-        if (select && list.includes(select)) category.value = select;
+
+        for (const item of list) {
+            const option =
+                new Option(
+                    item.name,
+                    String(item.id)
+                );
+
+            option.dataset.categoryName =
+                item.name;
+
+            category.add(option);
+        }
+
+        if (select) {
+            const found =
+                categoryDefinition(
+                    system.value,
+                    Number(type.value),
+                    select
+                );
+
+            if (found) {
+                category.value =
+                    String(found.id);
+            }
+        }
     }
 
     function applyClassification() {
@@ -7070,7 +7182,6 @@
         if (result.type) type.value = String(result.type);
         system.value = result.system;
         updateCategories(result.category);
-        category.value = result.category;
 
         if (!titleManual) title.value = result.title;
 
@@ -8584,8 +8695,8 @@
         system.onchange = () => {
             classificationManual = true;
             updateCategories();
-            if (system.value === 'Totem') category.value = 'Touch';
-            if (system.value === 'Painel de Senha') category.value = 'Erro';
+            if (system.value === 'Totem') category.value = '52';
+            if (system.value === 'Painel de Senha') category.value = '109';
 
             if (!titleManual) {
                 if (system.value === 'Totem') panel.querySelector('#om30-title').value = 'Problema no touch do totem';
@@ -10173,17 +10284,59 @@
     });
 
     function silentResolveConfirmedCategory(data) {
-        const system = String(data?.system || '').trim();
-        const category = String(data?.category || '').trim();
-        const id = SILENT_CONFIRMED_CATEGORIES[system]?.[category];
+        const system =
+            String(data?.system || '').trim();
 
-        if (!id) return null;
+        const category =
+            String(data?.category || '').trim();
+
+        const suppliedId =
+            String(
+                data?.category_id ||
+                ''
+            ).trim();
+
+        const mappedId =
+            SILENT_CONFIRMED_CATEGORIES[
+                system
+            ]?.[category];
+
+        // Job novo: ID já veio diretamente do <option value="ID">.
+        if (suppliedId) {
+            if (
+                mappedId &&
+                suppliedId !==
+                    String(mappedId)
+            ) {
+                throw new Error(
+                    `Categoria divergente no job: ` +
+                    `${system} > ${category} deveria ser ID ${mappedId}, ` +
+                    `mas veio ${suppliedId}.`
+                );
+            }
+
+            return {
+                id: suppliedId,
+                text: category,
+                fullText:
+                    `${system} > ${category}`,
+                confirmed: true,
+                source: 'ui-option-id'
+            };
+        }
+
+        // Compatibilidade com job antigo que ainda carregue apenas o nome.
+        if (!mappedId) {
+            return null;
+        }
 
         return {
-            id: String(id),
+            id: String(mappedId),
             text: category,
-            fullText: `${system} > ${category}`,
+            fullText:
+                `${system} > ${category}`,
             confirmed: true,
+            source: 'fixed-name-map'
         };
     }
 
@@ -10199,6 +10352,7 @@
                     requested: `${data.system} > ${data.category}`,
                     id: confirmed.id,
                     text: confirmed.text,
+                    source: confirmed.source || 'fixed-map',
                 }
             );
 
@@ -13024,6 +13178,9 @@
         const current =
             currentProblem();
 
+        const selectedCategory =
+            selectedOm30Category();
+
         const data = {
             operation_id:
                 Number(
@@ -13048,10 +13205,10 @@
                 document.getElementById(
                     'om30-system'
                 ).value,
+            category_id:
+                selectedCategory.id,
             category:
-                document.getElementById(
-                    'om30-category'
-                ).value,
+                selectedCategory.name,
             initial_date:
                 document.getElementById(
                     'om30-initial-date'
@@ -13152,7 +13309,10 @@
             );
         }
 
-        if (!data.category) {
+        if (
+            !data.category_id ||
+            !data.category
+        ) {
             missing.push(
                 'Categoria'
             );
@@ -13230,7 +13390,7 @@
                 );
 
             // Mantido para compatibilidade com partes antigas do motor.
-            // A fonte oficial das imagens na v0.9.14.2 é evidenceImages.
+            // A fonte oficial das imagens na v0.9.14.3 é evidenceImages.
             const printDataUrl =
                 evidenceImages[0]?.dataUrl ||
                 '';
@@ -13301,7 +13461,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI Jales v0.9.14.2',
+                'OM30 WhatsApp → GLPI Jales v0.9.14.3',
                 {
                     job:
                         job.id,
@@ -13459,12 +13619,40 @@
             errors.push('Mapa fixo de categorias não carregado.');
         }
 
+        const categoryChecks = [
+            ['Saúde Simples', 2, 'Cadastro', 80],
+            ['Saúde Simples', 2, 'Produção BPA', 85],
+            ['Saúde Simples', 2, 'Produção RAAS', 87],
+            ['Totem', 1, 'Touch', 52],
+            ['Painel de Senha', 1, 'Erro', 109],
+            ['Impressora', 1, 'Falha/Defeito', 22]
+        ];
+
+        for (const [system, typeId, name, expectedId] of categoryChecks) {
+            const item =
+                categoryDefinition(
+                    system,
+                    typeId,
+                    name
+                );
+
+            if (
+                !item ||
+                String(item.id) !==
+                    String(expectedId)
+            ) {
+                errors.push(
+                    `Categoria sem ID correto: ${system} > ${name} deveria ser ${expectedId}.`
+                );
+            }
+        }
+
         if (errors.length) {
-            console.error('❌ OM30 Jales v0.9.14.2 self-check:', errors);
+            console.error('❌ OM30 Jales v0.9.14.3 self-check:', errors);
             return false;
         }
 
-        console.log('✅ OM30 Jales v0.9.14.2 self-check OK', {
+        console.log('✅ OM30 Jales v0.9.14.3 self-check OK', {
             operation_id: 588,
             operation: 'Jales',
             group_id: 18,
@@ -13478,5 +13666,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp Jales v0.9.14.2 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp Jales v0.9.14.3 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

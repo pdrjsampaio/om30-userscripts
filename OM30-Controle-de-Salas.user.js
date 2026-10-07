@@ -1,22 +1,23 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.14
+// @version      3.0.15
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
 // @match        https://guarujahomolog.saudesimples.net/*
-// @grant        none
-// @inject-into  page
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      om30-fluxo-controle-salas.om30-pedro.workers.dev
 // @run-at       document-start
 // ==/UserScript==
 
-(function () {
+(function (window) {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.14
+    /* OM30 - CONTROLE DE SALAS v3.0.15
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -24,6 +25,37 @@
      * Pendências/Cancelar preservados da v2.0.80, handoff exato por AtendimentoPa,
      * pendências/retorno pela ponte central do médico + handoff nativo; AtendimentoPa exato por linha/ficha; Cancelar e vínculo de local em todas as filas.
      */
+
+    // ── CLOUDFLARE / D1 ────────────────────────────────────────────────────────
+    // Usa o transporte do Tampermonkey para não depender de CORS/preflight do site.
+    const OM30_CF_BASE = 'https://om30-fluxo-controle-salas.om30-pedro.workers.dev';
+    const OM30_CF_KEY = 'om302026';
+    function om30CloudflareReq(path, payload, { timeout = 6500 } = {}) {
+        return new Promise((resolve, reject) => {
+            try {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: OM30_CF_BASE + path,
+                    timeout,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-OM30-Key': OM30_CF_KEY,
+                    },
+                    data: JSON.stringify(payload || {}),
+                    onload: r => {
+                        let body = {};
+                        try { body = JSON.parse(r.responseText || '{}'); } catch (_) {}
+                        if (r.status >= 200 && r.status < 300 && body?.ok) return resolve(body);
+                        reject(new Error(`HTTP ${r.status}: ${r.responseText || 'erro'}`));
+                    },
+                    onerror: () => reject(new Error('Falha de rede na ponte Cloudflare.')),
+                    ontimeout: () => reject(new Error('Timeout na ponte Cloudflare.')),
+                });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
 
     // ── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
     // Mostrar na fila os medicamentos de cada paciente (produto, via, posologia e
@@ -924,10 +956,51 @@
         } catch(_) {}
     })();
     function csAtendimentoPres(str){const m=String(str||'').match(/^([A-Za-z0-9_]+)#(\d+)$/);if(!m||!/^Atendimento/i.test(m[1]))return null;const t=m[1].toLowerCase(),id=m[2];let p;if(t==='atendimentopa')p='1';else if(t==='atendimentoambulatorial')p='2';else{let h=0;for(const ch of t)h=(h*31+ch.charCodeAt(0))%900000;p=String(100000+h);}return{tipo:m[1],id,chave:`${p}${id}`};}
-    async function csPresReq(path,payload,keepalive=false){const r=await fetch('https://om30-fluxo-controle-salas.om30-pedro.workers.dev'+path,{method:'POST',mode:'cors',cache:'no-store',credentials:'omit',keepalive,headers:{'Content-Type':'application/json','X-OM30-Key':'om302026'},body:JSON.stringify(payload||{})});const j=await r.json().catch(()=>({}));if(!r.ok||!j.ok)throw new Error(`HTTP ${r.status}`);return j;}
+    async function csPresReq(path,payload,keepalive=false){return om30CloudflareReq(path,payload,{timeout:keepalive?8000:6500});}
     function csNomeUsuario(){for(const sel of ['.navbar .dropdown-toggle','.navbar-nav .dropdown-toggle','.user-menu','.username'])for(const el of document.querySelectorAll(sel)){const t=String(el.textContent||'').replace(/\s+/g,' ').trim();if(t.length>=5&&t.length<=100&&!/Minha Conta|Sair/i.test(t))return t;}return '';}
-    async function csRegistrarPresencaFilha(info){if(!info||!info.atendimento||!info.sala)return;const a=csAtendimentoPres(info.atendimento);if(!a)return;let nome=csNomeUsuario();try{const r=await fetch('/current_usuario',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});if(r.ok){const u=await r.json();nome=String(u.nome||u.name||u.nome_completo||u.profissional_nome||u.usuario_nome||u.profissional?.nome||u.usuario?.nome||nome||'').trim();}}catch(_){}if(!nome)return;await csPresReq('/api/attendance/upsert',{atendimento_id:a.chave,sala:info.sala,display_name:nome,actor_id:''});sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({...info,chave:a.chave,nome}));window.__csHeartbeatPresenca=setInterval(()=>csPresReq('/api/attendance/upsert',{atendimento_id:a.chave,sala:info.sala,display_name:nome,actor_id:''}).catch(()=>{}),45000);}
-    async function csExcluirPresencaConcluida(){let info=null;try{info=JSON.parse(sessionStorage.getItem(CS_PRESENCA_FILHA)||'null')}catch(_){}if(!info||!info.chave||!info.sala)return;try{await csPresReq('/api/attendance/delete',{atendimento_id:info.chave,sala:info.sala},true);}catch(_){}try{sessionStorage.removeItem(CS_PRESENCA_FILHA)}catch(_){}if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);}
+    async function csRegistrarPresencaFilha(info){
+        if(!info||!info.atendimento||!info.sala)return;
+        const a=csAtendimentoPres(info.atendimento); if(!a)return;
+        let nome=csNomeUsuario(), actor='';
+        try{
+            const r=await fetch('/current_usuario',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});
+            if(r.ok){
+                const u=await r.json();
+                const candidatos=[
+                    u?.nome,u?.name,u?.nome_completo,u?.nome_profissional,u?.profissional_nome,u?.usuario_nome,
+                    u?.profissional?.nome,u?.usuario?.nome,u?.pessoa?.nome,u?.current_user?.nome,u?.current_user?.name
+                ];
+                nome=String(candidatos.find(v=>String(v||'').trim().length>=5)||nome||'').replace(/\s+/g,' ').trim();
+                actor=String(u?.id||u?.usuario?.id||u?.profissional_id||u?.profissional?.id||'');
+            }
+        }catch(_){}
+        if(!nome){
+            console.warn('[OM30 PRESENÇA] nome do profissional não identificado; presença não gravada.',info);
+            return;
+        }
+        const chaves=[...new Set([a.chave,a.id].filter(Boolean))];
+        const gravar=()=>Promise.allSettled(chaves.map(atendimento_id=>csPresReq('/api/attendance/upsert',{
+            atendimento_id,sala:info.sala,display_name:nome,actor_id:actor
+        })));
+        const resultados=await gravar();
+        if(!resultados.some(x=>x.status==='fulfilled')){
+            const erro=resultados.find(x=>x.status==='rejected')?.reason;
+            throw erro||new Error('Cloudflare não confirmou o registro.');
+        }
+        sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({...info,chave:a.chave,id:a.id,nome}));
+        if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
+        window.__csHeartbeatPresenca=setInterval(()=>gravar().catch?.(()=>{}),45000);
+        console.log('[OM30 PRESENÇA] registrada:',{atendimento:a.bruto,chaves,sala:info.sala,nome});
+    }
+    async function csExcluirPresencaConcluida(){
+        let info=null;try{info=JSON.parse(sessionStorage.getItem(CS_PRESENCA_FILHA)||'null')}catch(_){}
+        if(!info||!info.sala)return;
+        for(const atendimento_id of [...new Set([info.chave,info.id].filter(Boolean))]){
+            try{await csPresReq('/api/attendance/delete',{atendimento_id,sala:info.sala},true);}catch(_){}
+        }
+        try{sessionStorage.removeItem(CS_PRESENCA_FILHA)}catch(_){}
+        if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
+    }
 
     // Aba filha voltou à lista por conclusão/saída real do fluxo: agora sim limpa a presença.
     // Fechar a aba manualmente não passa por este bloco e NÃO apaga o registro.
@@ -3307,9 +3380,7 @@
             return {tipo,id,bruto:`${tipo}#${id}`,chave:`${p}${id}`};
         }
         async function presReq(path,payload) {
-            const ctrl=new AbortController(), timer=setTimeout(()=>ctrl.abort(),4500);
-            try { const r=await fetch(PRES.base+path,{method:'POST',mode:'cors',cache:'no-store',credentials:'omit',signal:ctrl.signal,headers:{'Content-Type':'application/json','X-OM30-Key':PRES.key},body:JSON.stringify(payload||{})}); const txt=await r.text(); let j={}; try{j=JSON.parse(txt||'{}')}catch(_){} if(!r.ok||!j.ok)throw new Error(`HTTP ${r.status}`); return j; }
-            finally { clearTimeout(timer); }
+            return om30CloudflareReq(path,payload,{timeout:6500});
         }
         async function atualizarPresencas(vm,lista) {
             const setor=setorDaColecao(vm); if(!setor) return;
@@ -3383,7 +3454,13 @@
             testar: async (atendimento, sala='medicacao') => {
                 const a=atendimentoPres(String(atendimento||'').includes('#') ? atendimento : `AtendimentoPa#${String(atendimento||'').match(/\d+/)?.[0]||''}`);
                 if(!a) throw new Error('AtendimentoPa inválido');
-                return presReq('/api/attendance/get',{atendimento_id:a.chave,sala});
+                const saida={atendimento:a.bruto,sala,chave:a.chave,id:a.id,resultados:[]};
+                for(const atendimento_id of [...new Set([a.chave,a.id].filter(Boolean))]){
+                    try{saida.resultados.push({atendimento_id,resposta:await presReq('/api/attendance/get',{atendimento_id,sala})});}
+                    catch(e){saida.resultados.push({atendimento_id,erro:String(e?.message||e)});}
+                }
+                console.log('[OM30 PRESENÇA] diagnóstico',saida);
+                return saida;
             }
         };
 
@@ -6370,4 +6447,4 @@
         if (document.body) iniciar();
         else document.addEventListener('DOMContentLoaded', iniciar);
     }
-})();
+}})(typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);

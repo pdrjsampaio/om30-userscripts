@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.16
+// @version      3.0.17
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.16
+    /* OM30 - CONTROLE DE SALAS v3.0.17
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3392,7 +3392,7 @@
             const idx=campos.findIndex(f=>f.key==='status'); const td=idx>=0?tr.children[idx]:null; if(!td)return;
             let box=td.querySelector(':scope > .cs-presenca');
             if(!d){if(box)box.remove();return;}
-            if(!box){box=document.createElement('div');box.className='cs-presenca';td.appendChild(box);} const html=`Em atendimento por ${esc(d.profissional)}`;if(box.__h!==html){box.innerHTML=html;box.__h=html;}
+            if(!box){box=document.createElement('div');box.className='cs-presenca';td.appendChild(box);} const html=`Por: ${esc(d.profissional)}`;if(box.__h!==html){box.innerHTML=html;box.__h=html;}
         }
         // ── Lista adiantada ───────────────────────────────────────────────────
         // A página só pede a lista depois de uma cadeia de etapas (sala, guichê,

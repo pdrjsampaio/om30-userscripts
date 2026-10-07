@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.28
+// @version      3.0.29
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.28
+    /* OM30 - CONTROLE DE SALAS v3.0.29
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3717,7 +3717,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.28',
+            versao: '3.0.29',
             atualizar: () => CS?.colecao ? atualizarPresencas(CS.colecao, Array.from(CS.itens?.values?.() || [])) : Promise.resolve(),
             cache: () => Array.from(PRES.cache.entries()),
             testar: async (atendimento, sala='medicacao') => {
@@ -4125,7 +4125,10 @@
             .cs-via-oral { background:#24704a; min-width:auto; padding-left:7px; padding-right:7px; } .cs-via-inal { background:#8a4c17; } .cs-via-outra { background:#475569; }
             /* Coluna Ação com medicações: botões com rótulo em vez de ícones soltos. */
             .cs-fila.cs-com-med td.cs-col-senha { white-space:pre-line; }
-            .cs-fila.cs-com-med td.cs-col-acoes { vertical-align:middle; }
+            .cs-fila.cs-com-med td.cs-col-acoes {
+                vertical-align:middle;
+                padding-right:2px !important;
+            }
             .cs-fila.cs-com-med td.cs-col-acoes > .row { display:flex !important; flex-direction:column !important; gap:2px; margin:0 !important; width:100% !important; }
             .cs-fila.cs-com-med td.cs-col-acoes > .row > * { width:100% !important; max-width:none !important; float:none !important; margin:0 !important; }
             .cs-fila.cs-com-med td.cs-col-acoes .botao-tempo-chegada { display:none !important; }
@@ -4221,8 +4224,8 @@
                 margin:0;
                 padding:0 6px;
                 border:1px solid #e3a5a5;
-                border-radius:5px;
-                background:#fff;
+                border-radius:5px !important;
+                background:#fff5f5;
                 color:#a32020;
                 font-size:12px;
                 line-height:1;
@@ -4233,7 +4236,7 @@
                 text-overflow:ellipsis;
                 box-shadow:none;
             }
-            .cs-cancelar-linha:hover:not(:disabled) { background:#fff5f5; border-color:#cf6b6b; }
+            .cs-cancelar-linha:hover:not(:disabled) { background:#fde2e2; border-color:#cf6b6b; }
             .cs-cancelar-linha:disabled { opacity:.6; cursor:progress; }
             .cs-cancelar-modal { background:rgba(15,23,42,.46); }
             .cs-cancelar-modal > div {

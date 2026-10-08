@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.35
+// @version      3.0.36
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.35
+    /* OM30 - CONTROLE DE SALAS v3.0.36
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -3848,22 +3848,48 @@
                 const interpretar = res => {
                     const novo=new Map();
                     const arr=[];
+
+                    // O Worker atual devolve:
+                    // { ok:true, sala:'medicacao', items:{ '13079536':{ profissional:'...' } } }
+                    // Versões anteriores também já devolveram arrays. Aceita os dois formatos.
                     for(const k of ['results','items','presencas','data','atendimentos']) {
-                        if(Array.isArray(res?.[k])) arr.push(...res[k]);
+                        const bloco=res?.[k];
+                        if(Array.isArray(bloco)){
+                            arr.push(...bloco);
+                            continue;
+                        }
+                        if(bloco && typeof bloco==='object'){
+                            for(const [chave,v] of Object.entries(bloco)){
+                                if(!v||typeof v!=='object'||Array.isArray(v))continue;
+                                arr.push({...v,atendimento_id:v.atendimento_id||chave});
+                            }
+                        }
                     }
-                    if(Array.isArray(res)) arr.push(...res);
+
+                    if(Array.isArray(res))arr.push(...res);
+
+                    // Compatibilidade com respostas antigas em que os atendimentos
+                    // vinham diretamente no objeto raiz.
                     if(!arr.length && res && typeof res==='object'){
                         for(const [k,v] of Object.entries(res)){
-                            if(k==='ok'||!v||typeof v!=='object'||Array.isArray(v))continue;
+                            if(['ok','sala'].includes(k)||!v||typeof v!=='object'||Array.isArray(v))continue;
                             arr.push({...v,atendimento_id:v.atendimento_id||k});
                         }
                     }
+
                     for(const item of arr){
                         if(item?.found===false)continue;
                         const chave=String(item?.atendimento_id||item?.id||item?.atendimento||'');
                         const original=mapaChave.get(chave);
                         const nome=String(item?.profissional||item?.display_name||item?.nome||'').trim();
-                        if(original&&nome)novo.set(original,{found:true,profissional:nome,vistoEm:Date.now()});
+                        if(original&&nome)novo.set(original,{
+                            found:true,
+                            profissional:nome,
+                            abertoEm:item?.aberto_em||item?.abertoEm||'',
+                            atualizadoEm:item?.atualizado_em||item?.atualizadoEm||'',
+                            expiraEm:item?.expira_em||item?.expiraEm||'',
+                            vistoEm:Date.now()
+                        });
                     }
                     return novo;
                 };
@@ -3900,7 +3926,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.35',
+            versao: '3.0.36',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length

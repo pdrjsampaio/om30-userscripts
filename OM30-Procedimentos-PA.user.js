@@ -1,17 +1,165 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      1.9.7
-// @description  Controle de Salas - Procedimentos integrado ao prontuário.
+// @version      2.0.0
+// @description  Procedimentos PA com favoritos pessoais por médico pré-carregados após o login + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
-// @match        https://guaruja.saudesimples.net/prontuarios/*
-// @match        https://guarujahomolog.saudesimples.net/prontuarios/*
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
+// @match        https://guaruja.saudesimples.net/*
+// @match        https://guarujahomolog.saudesimples.net/*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
 
+
+/* ============================================================
+   OM30 PA • PRELOAD DE FAVORITOS APÓS LOGIN
+   ------------------------------------------------------------
+   Roda leve em qualquer página autenticada do Saúde Simples.
+   NÃO monta painel fora do prontuário.
+   Faz no máximo 1 sincronização Cloudflare por sessão/aba.
+   O cache é separado por professional_id.
+   ============================================================ */
+(() => {
+  'use strict';
+
+  const CLOUD = 'https://om30-preferencias.om30-pedro.workers.dev';
+  const PREFIX = 'OM30_PA_CLOUD_PREF_V1';
+  const SESSION_KEY = 'OM30_PA_PREF_PRELOAD_SESSION_V1';
+  const FAV_KEY = 'OM30_PA_FAVORITOS_PC_V1';
+  const HIDDEN_KEY = 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1';
+
+  const clean = v => String(v ?? '').replace(/\s+/g, ' ').trim();
+  const scopedKey = (professionalId, baseKey) =>
+    `${PREFIX}::PROF_${professionalId}::${baseKey}`;
+  const metaKey = (professionalId, suffix) =>
+    `${PREFIX}::PROF_${professionalId}::${suffix}`;
+
+  function loginLikePath() {
+    return /(?:^|\/)(?:login|sign_in|signin|entrar|sessions?|logout|sign_out)(?:\/|$)/i.test(location.pathname);
+  }
+
+  // Se chegou à tela de autenticação/saída, libera uma nova sincronização
+  // para o próximo profissional que entrar nesta mesma aba.
+  if (loginLikePath()) {
+    try { sessionStorage.removeItem(SESSION_KEY); } catch {}
+    return;
+  }
+
+  let already = '';
+  try { already = sessionStorage.getItem(SESSION_KEY) || ''; } catch {}
+  if (already) return;
+
+  async function currentProfessional() {
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const r = await fetch('/current_usuario', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Accept': '*/*',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {})
+      },
+      cache: 'no-store'
+    });
+
+    if (!r.ok) return null;
+    const u = await r.json();
+    const professionalId = clean(u?.profissional_id);
+    return professionalId || null;
+  }
+
+  async function pushDirtyFirst(professionalId) {
+    const dirty = localStorage.getItem(metaKey(professionalId, 'DIRTY')) === '1';
+    if (!dirty) return;
+
+    const fav = localStorage.getItem(scopedKey(professionalId, FAV_KEY));
+    const hid = localStorage.getItem(scopedKey(professionalId, HIDDEN_KEY));
+    if (fav === null || hid === null) return;
+
+    const payload = {
+      professional_id: String(professionalId),
+      favorites_pc: fav || '{}',
+      default_hidden: hid || '{}'
+    };
+
+    const r = await fetch(`${CLOUD}/api/preferences`, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: {'Content-Type':'text/plain;charset=UTF-8'},
+      body: JSON.stringify(payload)
+    });
+
+    if (r.ok) {
+      const result = await r.json().catch(() => null);
+      if (result?.ok) {
+        localStorage.removeItem(metaKey(professionalId, 'DIRTY'));
+        localStorage.setItem(metaKey(professionalId, 'LAST_PUSH'), String(Date.now()));
+      }
+    }
+  }
+
+  async function pull(professionalId) {
+    const r = await fetch(`${CLOUD}/api/preferences/${encodeURIComponent(professionalId)}`, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store'
+    });
+    if (!r.ok) throw new Error(`Cloudflare GET HTTP ${r.status}`);
+
+    const remote = await r.json();
+
+    if (remote?.exists) {
+      localStorage.setItem(
+        scopedKey(professionalId, FAV_KEY),
+        String(remote?.preferences?.favorites_pc ?? '{}')
+      );
+      localStorage.setItem(
+        scopedKey(professionalId, HIDDEN_KEY),
+        String(remote?.preferences?.default_hidden ?? '{}')
+      );
+    } else {
+      localStorage.setItem(scopedKey(professionalId, FAV_KEY), '{}');
+      localStorage.setItem(scopedKey(professionalId, HIDDEN_KEY), '{}');
+    }
+
+    localStorage.setItem(metaKey(professionalId, 'LAST_PULL'), String(Date.now()));
+    return remote;
+  }
+
+  (async () => {
+    try {
+      const professionalId = await currentProfessional();
+      if (!professionalId) return;
+
+      // Se uma gravação anterior ficou pendente, ela sempre ganha prioridade
+      // para não ser sobrescrita por um GET da nuvem.
+      await pushDirtyFirst(professionalId);
+
+      await pull(professionalId);
+
+      try {
+        sessionStorage.setItem(SESSION_KEY, String(professionalId));
+      } catch {}
+
+      console.info('[OM30 PA] Favoritos pré-carregados após login para professional_id', professionalId);
+    } catch (err) {
+      // Não marca a sessão em caso de falha: outra página poderá tentar de novo.
+      console.warn('[OM30 PA] Pré-carga de favoritos não concluída:', err);
+    }
+  })();
+})();
+
+
+const __OM30_PA_PATH__ = location.pathname;
+
+// Base original v1.9.7: executa SOMENTE nas páginas de prontuário.
+// Foi incorporada ao arquivo para permitir o preload leve nas demais telas
+// sem fazer o painel completo do PA rodar no sistema inteiro.
+if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 (() => {
   'use strict';
 
@@ -2076,3 +2224,3773 @@
   status('');
   console.info('[OM30 PA] v1.9.5 carregada para',UNIT);
 })();
+}
+
+// Camada de preferências + fluxo: continua apenas onde realmente é necessária.
+if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_salas/.test(__OM30_PA_PATH__)) {
+/*
+  PACOTE ÚNICO DE TESTE
+  =====================
+  - Existe como UMA ÚNICA entrada no Tampermonkey.
+  - O Controle de Salas base está preso ao commit acima (v1.9.7).
+  - NÃO possui @updateURL / @downloadURL.
+  - NÃO publica nem altera nada no GitHub.
+  - FAVORITOS DO MÉDICO:
+      • separados por profissional_id;
+      • salvos no Worker/D1 om30-preferencias;
+      • favoritos adicionados pelo médico + itens do padrão ocultados por ele;
+      • padrão da unidade NÃO é misturado com o perfil pessoal.
+  - Padrão da unidade: continua sendo a base por trás das preferências pessoais.
+  - Login autenticado: pré-carrega 1 vez as preferências pessoais da nuvem.
+  - Ao entrar na ficha, usa o cache já preparado; não precisa esperar o primeiro clique para buscar na nuvem.
+  - Alteração de favorito: gravação Cloudflare 3s após a última mudança, sem polling/heartbeat.
+  - Fluxo real do Controle de Salas: após HTTP 2xx do POST /encaminhamentos_controle_salas,
+    envia exatamente prontuario + atendimento(se existir) + salas_ordem[] + retorno médico
+    para o Worker/D1 separado om30-fluxo-ordens.
+  - Item removido do padrão: fica oculto permanentemente para aquele profissional,
+    identificado por UNIDADE + GRUPO + CÓDIGO (o nome pode mudar sem fazê-lo reaparecer).
+  - Backup: Exportar/Importar meus favoritos.
+  - Pesquisa:
+      Raio X      -> Região -> Resultados -> Favoritos -> Selecionados
+      Exames      -> Resultados -> Favoritos -> Selecionados
+      Medicação   -> Resultados -> Favoritos -> Selecionados
+      Enfermagem  -> Resultados -> Favoritos -> Selecionados
+  - Para testar sem conflito, deixe DESATIVADO o Procedimentos PA normal
+    neste navegador e ative somente este script local.
+*/
+
+(() => {
+  'use strict';
+
+  if (window.__OM30_PA_V200__) return;
+  window.__OM30_PA_V200__ = true;
+
+  // ============================================================
+  // TESTE SEGURO
+  // - Não substitui nem publica o OM30 - Procedimentos PA.
+  // - Padrão da unidade continua sendo a base.
+  // - Personalização é separada por profissional_id.
+  // - Cloudflare só é consultado quando o profissional realmente usa o painel.
+  // - Sem polling, heartbeat ou request no simples login/carregamento.
+  // - Mantém Exportar/Importar para backup manual dos favoritos.
+  // ============================================================
+
+  const BASE_KEYS = Object.freeze([
+    'OM30_PA_FAVORITOS_PC_V1',
+    'OM30_PA_FAVORITOS_UNIDADE_V2',
+    'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1'
+  ]);
+
+  const clean = v => String(v ?? '').replace(/\s+/g, ' ').trim();
+  const norm = v => clean(v)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+
+  function slug(v) {
+    return norm(v)
+      .replace(/[^A-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 120);
+  }
+
+  function detectarUnidade() {
+    if (!document.documentElement) return null;
+
+    const texts = [...document.querySelectorAll('a.nav-link,.navbar a,.navbar-nav a,nav a')]
+      .map(x => clean(x.textContent))
+      .filter(Boolean);
+
+    const label = texts.find(t => /\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t));
+    if (!label) return null;
+    return { key: slug(label), label };
+  }
+
+  // ============================================================
+  // BUSCA DE PROCEDIMENTOS DE ENFERMAGEM
+  // ============================================================
+  // O Saúde Simples usa o endpoint abaixo no próprio Controle de Salas para
+  // "procedimento_enfermagem":
+  //   /procedimentos/search.json?sem_radiografias=1
+  //
+  // A base v1.9.7 estava chamando /procedimentos/procedimentos_ocupacoes.json
+  // também na aba Enfermagem. Esse endpoint filtra pela ocupação do profissional
+  // atual do prontuário e, em atendimento médico, escondia vários procedimentos
+  // de enfermagem (ex.: curativos). Aqui corrigimos SOMENTE essa aba e deixamos
+  // Raio X, Exames e Medicação exatamente com a busca original.
+  const nativeFetch = window.fetch.bind(window);
+
+
+  // ============================================================
+  // CLOUDFLARE • FLUXO REAL DO CONTROLE DE SALAS
+  // ============================================================
+  // Worker/D1 separado das preferências pessoais.
+  //
+  // Fonte: o próprio POST real de /encaminhamentos_controle_salas.
+  // Enviamos SOMENTE:
+  //   - prontuario
+  //   - atendimento (quando existir na página)
+  //   - ordem: valor_original + sala + posicao
+  //   - retorno_medico
+  //
+  // NÃO enviamos nome, CPF, CNS, CID, evolução, medicamento ou exame.
+  //
+  // O POST ao Cloudflare acontece somente quando o médico realmente
+  // submete o formulário do Controle de Salas. O fetch usa keepalive
+  // para sobreviver à navegação normal após o salvar.
+  // ============================================================
+
+  const CLOUD_FLOW_URL = 'https://om30-fluxo-ordens.om30-pedro.workers.dev';
+  const CLOUD_FLOW_PATH = '/api/fluxo';
+  const CONTROL_ROOMS_PATH = '/encaminhamentos_controle_salas';
+
+  const FLOW_ROOM_MAP = Object.freeze({
+    medicamentos: 'medicacao',
+    medicacao: 'medicacao',
+    exames: 'exames',
+    radiografias: 'radiografia',
+    radiografia: 'radiografia',
+    raio_x: 'radiografia',
+    procedimentos_enfermagem: 'enfermagem',
+    procedimento_enfermagem: 'enfermagem',
+    gessos_imobilizacoes: 'gesso',
+    gesso_imobilizacao: 'gesso',
+    repousos: 'repouso',
+    repouso: 'repouso'
+  });
+
+  const CLOUD_FLOW_STATUS_KEY = 'OM30_PA_FLUXO_CLOUD_STATUS_V1';
+
+  function loadCloudFlowStatus() {
+    try {
+      const v = JSON.parse(sessionStorage.getItem(CLOUD_FLOW_STATUS_KEY) || 'null');
+      return v && typeof v === 'object' ? v : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  const persistedCloudFlowState = loadCloudFlowStatus();
+
+  const cloudFlowState = {
+    lastCaptured: persistedCloudFlowState.lastCaptured || null,
+    lastSent: persistedCloudFlowState.lastSent || null,
+    lastResult: persistedCloudFlowState.lastResult || null,
+    lastError: persistedCloudFlowState.lastError || '',
+    lastSource: persistedCloudFlowState.lastSource || '',
+    lastSaudeStatus: persistedCloudFlowState.lastSaudeStatus || null,
+    lastSignature: '',
+    lastSignatureAt: 0
+  };
+
+  function persistCloudFlowState() {
+    try {
+      sessionStorage.setItem(
+        CLOUD_FLOW_STATUS_KEY,
+        JSON.stringify({
+          lastCaptured: cloudFlowState.lastCaptured,
+          lastSent: cloudFlowState.lastSent,
+          lastResult: cloudFlowState.lastResult,
+          lastError: cloudFlowState.lastError,
+          lastSource: cloudFlowState.lastSource,
+          lastSaudeStatus: cloudFlowState.lastSaudeStatus
+        })
+      );
+    } catch (_) {}
+  }
+
+  function flowRoomKey(value) {
+    const raw = String(value || '')
+      .replace(/^controle_de_salas_/, '')
+      .replace(/^controle_salas_/, '')
+      .trim();
+
+    return FLOW_ROOM_MAP[raw] || raw || '';
+  }
+
+  function flowAttendanceFromPage() {
+    for (const el of document.querySelectorAll('[atendimento-id]')) {
+      const type = String(
+        el.getAttribute('atendimento-type') ||
+        el.getAttribute('atendimento_type') ||
+        ''
+      );
+
+      const id = String(
+        el.getAttribute('atendimento-id') || ''
+      ).match(/\d+/)?.[0];
+
+      if (id && (!type || /AtendimentoPa/i.test(type))) {
+        return id;
+      }
+    }
+
+    const scripts = [...document.scripts]
+      .map(el => el.textContent || '')
+      .join('\n');
+
+    return (
+      scripts.match(/atendimento_id\s*:\s*["']?(\d+)/i)?.[1] ||
+      scripts.match(/atendimento-id=["'](\d+)/i)?.[1] ||
+      ''
+    );
+  }
+
+  function flowParamsFromBody(body) {
+    if (!body) return null;
+
+    if (body instanceof URLSearchParams) {
+      return body;
+    }
+
+    if (body instanceof FormData) {
+      const params = new URLSearchParams();
+
+      for (const [key, value] of body.entries()) {
+        if (typeof value === 'string') {
+          params.append(key, value);
+        }
+      }
+
+      return params;
+    }
+
+    if (typeof body === 'string') {
+      try {
+        return new URLSearchParams(body);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  function extractRealControlRoomFlowFromParams(params) {
+    if (!params) return null;
+
+    const prontuario = String(
+      params.get('encaminhamento_controle_salas[prontuario_id]') ||
+      params.get('prontuario_id') ||
+      ''
+    ).match(/\d+/)?.[0] || '';
+
+    if (!prontuario) return null;
+
+    const ordem = params.getAll('salas_ordem[]')
+      .map(value => {
+        const original = String(value || '');
+        const match = original.match(/^([^#]+)#(\d+)$/);
+
+        if (!match) return null;
+
+        const sala = flowRoomKey(match[1]);
+        const posicao = Number(match[2]);
+
+        if (!sala || !Number.isInteger(posicao) || posicao <= 0) {
+          return null;
+        }
+
+        return {
+          valor_original: original,
+          sala,
+          posicao
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.posicao - b.posicao);
+
+    if (!ordem.length) return null;
+
+    const retornoValores = params
+      .getAll('encaminhamento_controle_salas[retornar_paciente_para_avaliacao]')
+      .map(String);
+
+    return {
+      atendimento: flowAttendanceFromPage(),
+      prontuario,
+      ordem,
+      retorno_medico: retornoValores.includes('1')
+    };
+  }
+
+  function extractRealControlRoomFlowFromBody(body) {
+    return extractRealControlRoomFlowFromParams(
+      flowParamsFromBody(body)
+    );
+  }
+
+  function extractRealControlRoomFlow(form) {
+    if (!(form instanceof HTMLFormElement)) return null;
+    return extractRealControlRoomFlowFromBody(new FormData(form));
+  }
+
+  function flowSignature(flow) {
+    return JSON.stringify({
+      prontuario: flow?.prontuario || '',
+      atendimento: flow?.atendimento || '',
+      ordem: Array.isArray(flow?.ordem) ? flow.ordem : [],
+      retorno_medico: !!flow?.retorno_medico
+    });
+  }
+
+  async function sendRealControlRoomFlow(flow) {
+    if (!flow?.prontuario || !Array.isArray(flow?.ordem) || !flow.ordem.length) {
+      return;
+    }
+
+    const signature = flowSignature(flow);
+    const now = Date.now();
+
+    // Proteção contra submit duplicado/acidental no mesmo instante.
+    // O Worker também possui deduplicação no D1, mas evitar a segunda
+    // chamada aqui economiza request do Worker.
+    if (
+      signature === cloudFlowState.lastSignature &&
+      now - cloudFlowState.lastSignatureAt < 5000
+    ) {
+      return;
+    }
+
+    cloudFlowState.lastSignature = signature;
+    cloudFlowState.lastSignatureAt = now;
+    cloudFlowState.lastCaptured = typeof structuredClone === 'function'
+      ? structuredClone(flow)
+      : JSON.parse(JSON.stringify(flow));
+    cloudFlowState.lastError = '';
+    persistCloudFlowState();
+
+    try {
+      const response = await nativeFetch(
+        `${CLOUD_FLOW_URL}${CLOUD_FLOW_PATH}`,
+        {
+          method: 'POST',
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store',
+          keepalive: true,
+
+          // text/plain mantém a chamada CORS simples e evita OPTIONS/preflight.
+          headers: {
+            'Content-Type': 'text/plain;charset=UTF-8',
+            'Accept': 'application/json'
+          },
+
+          body: JSON.stringify(flow)
+        }
+      );
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+          `Cloudflare fluxo: HTTP ${response.status}`
+        );
+      }
+
+      cloudFlowState.lastSent = JSON.parse(JSON.stringify(flow));
+      cloudFlowState.lastResult = data;
+      persistCloudFlowState();
+
+      console.info(
+        '[OM30 PA FLUXO] Fluxo gravado no Cloudflare.',
+        {
+          prontuario: flow.prontuario,
+          atendimento: flow.atendimento || '',
+          ordem: flow.ordem,
+          retorno_medico: flow.retorno_medico,
+          cloudflare: data
+        }
+      );
+    } catch (error) {
+      cloudFlowState.lastError = String(error?.message || error || 'Erro desconhecido');
+      persistCloudFlowState();
+
+      // Não interfere no salvar clínico do Saúde Simples.
+      console.warn(
+        '[OM30 PA FLUXO] O Saúde Simples foi preservado, mas o envio do fluxo ao Cloudflare falhou:',
+        cloudFlowState.lastError,
+        flow
+      );
+    }
+  }
+
+  function installRealControlRoomFlowCapture() {
+    if (window.__OM30_PA_REAL_FLOW_CAPTURE_V2__) return;
+    window.__OM30_PA_REAL_FLOW_CAPTURE_V2__ = true;
+
+    function targetPath(rawUrl) {
+      try {
+        return new URL(String(rawUrl || ''), location.href).pathname;
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function registrarSucessoSaude(source, flow, status) {
+      if (!flow) {
+        console.warn(
+          '[OM30 PA FLUXO] O Saúde Simples concluiu o envio, mas o payload do fluxo não pôde ser interpretado.',
+          { source, status }
+        );
+        return;
+      }
+
+      cloudFlowState.lastSource = source;
+      cloudFlowState.lastSaudeStatus = Number(status || 0) || null;
+      persistCloudFlowState();
+
+      console.info(
+        '[OM30 PA FLUXO] Saúde Simples confirmou o fluxo. Enviando ao Cloudflare.',
+        {
+          source,
+          status,
+          prontuario: flow.prontuario,
+          atendimento: flow.atendimento || '',
+          ordem: flow.ordem,
+          retorno_medico: flow.retorno_medico
+        }
+      );
+
+      void sendRealControlRoomFlow(flow);
+    }
+
+    // ------------------------------------------------------------
+    // FETCH
+    // ------------------------------------------------------------
+    // Preserva qualquer wrapper já instalado pela própria v1.9.7.946
+    // (inclusive o ajuste da busca de Enfermagem).
+    const fetchBeforeFlowCapture = window.fetch;
+
+    if (
+      typeof fetchBeforeFlowCapture === 'function' &&
+      !fetchBeforeFlowCapture.__om30PaFlowCaptureV2
+    ) {
+      const fetchWrapped = function(input, init = {}) {
+        const rawUrl = typeof input === 'string'
+          ? input
+          : (input?.url || '');
+
+        const isTarget =
+          targetPath(rawUrl) === CONTROL_ROOMS_PATH &&
+          String(init?.method || input?.method || 'GET').toUpperCase() === 'POST';
+
+        const flow = isTarget
+          ? extractRealControlRoomFlowFromBody(init?.body)
+          : null;
+
+        const requestPromise = fetchBeforeFlowCapture.apply(this, arguments);
+
+        if (isTarget && flow) {
+          Promise.resolve(requestPromise)
+            .then(response => {
+              if (response?.ok) {
+                registrarSucessoSaude(
+                  'FETCH ' + CONTROL_ROOMS_PATH,
+                  flow,
+                  response.status
+                );
+              } else {
+                cloudFlowState.lastError =
+                  `Saúde Simples não confirmou o fluxo (FETCH HTTP ${response?.status || 'desconhecido'}).`;
+                persistCloudFlowState();
+                console.warn('[OM30 PA FLUXO]', cloudFlowState.lastError);
+              }
+            })
+            .catch(error => {
+              cloudFlowState.lastError =
+                `Falha no POST do Saúde Simples: ${String(error?.message || error || 'erro desconhecido')}`;
+              persistCloudFlowState();
+              console.warn('[OM30 PA FLUXO]', cloudFlowState.lastError);
+            });
+        }
+
+        return requestPromise;
+      };
+
+      fetchWrapped.__om30PaFlowCaptureV2 = true;
+      window.fetch = fetchWrapped;
+    }
+
+    // ------------------------------------------------------------
+    // XHR / jQuery.ajax
+    // ------------------------------------------------------------
+    // O envio real já foi observado anteriormente pelo monitor como XHR.
+    // Aqui só enviamos ao Cloudflare APÓS loadend com HTTP 2xx.
+    const xhrOpenBefore = XMLHttpRequest.prototype.open;
+    const xhrSendBefore = XMLHttpRequest.prototype.send;
+
+    if (!xhrOpenBefore.__om30PaFlowCaptureV2) {
+      const openWrapped = function(method, url) {
+        this.__om30PaFlowMethod = String(method || '').toUpperCase();
+        this.__om30PaFlowUrl = String(url || '');
+        return xhrOpenBefore.apply(this, arguments);
+      };
+
+      openWrapped.__om30PaFlowCaptureV2 = true;
+      XMLHttpRequest.prototype.open = openWrapped;
+
+      const sendWrapped = function(body) {
+        const isTarget =
+          targetPath(this.__om30PaFlowUrl) === CONTROL_ROOMS_PATH &&
+          String(this.__om30PaFlowMethod || 'GET').toUpperCase() === 'POST';
+
+        const flow = isTarget
+          ? extractRealControlRoomFlowFromBody(body)
+          : null;
+
+        if (isTarget && flow) {
+          const xhr = this;
+
+          xhr.addEventListener('loadend', function om30PaFlowLoadEnd() {
+            const status = Number(xhr.status || 0);
+
+            if (status >= 200 && status < 300) {
+              registrarSucessoSaude(
+                'XHR ' + CONTROL_ROOMS_PATH,
+                flow,
+                status
+              );
+            } else {
+              cloudFlowState.lastError =
+                `Saúde Simples não confirmou o fluxo (XHR HTTP ${status || 'desconhecido'}).`;
+              persistCloudFlowState();
+              console.warn('[OM30 PA FLUXO]', cloudFlowState.lastError);
+            }
+          }, { once: true });
+        }
+
+        return xhrSendBefore.apply(this, arguments);
+      };
+
+      sendWrapped.__om30PaFlowCaptureV2 = true;
+      XMLHttpRequest.prototype.send = sendWrapped;
+    }
+
+    // ============================================================
+    // CONFIRMAÇÃO • SALVAR SEM RETORNO MÉDICO
+    // ------------------------------------------------------------
+    // Só aparece quando o profissional tenta salvar o Controle de Salas
+    // SEM marcar "retornar paciente para avaliação".
+    //
+    // IMPORTANTE:
+    // - não altera o popup nativo de sucesso;
+    // - não altera o popup de revisão de medicações;
+    // - não marca o retorno automaticamente;
+    // - "Voltar e marcar retorno" fecha o aviso e destaca o campo real.
+    // ============================================================
+    const returnConfirmBypassForms = new WeakSet();
+
+    function controlRoomReturnMarked(form) {
+      if (!(form instanceof HTMLFormElement)) return true;
+
+      const values = new FormData(form)
+        .getAll('encaminhamento_controle_salas[retornar_paciente_para_avaliacao]')
+        .map(String);
+
+      return values.includes('1');
+    }
+
+    function removeReturnWarningModal() {
+      document.getElementById('om30-pa-return-warning-backdrop')?.remove();
+      document.documentElement.classList.remove('om30-pa-return-warning-open');
+      document.body?.classList.remove('om30-pa-return-warning-open');
+    }
+
+    function findReturnControl(form) {
+      if (!(form instanceof HTMLFormElement)) return null;
+
+      const selector =
+        '[name="encaminhamento_controle_salas[retornar_paciente_para_avaliacao]"][value="1"]';
+
+      const controls = [...form.querySelectorAll(selector)];
+      return controls.find(el => String(el.type || '').toLowerCase() !== 'hidden')
+        || controls[0]
+        || null;
+    }
+
+    function highlightReturnControl(form) {
+      const control = findReturnControl(form);
+      if (!control) return;
+
+      let label = null;
+      if (control.id) {
+        try {
+          label = form.querySelector(`label[for="${CSS.escape(control.id)}"]`);
+        } catch (_) {}
+      }
+
+      // Destaque compacto: envolve somente a opção real de retorno,
+      // sem contornar a linha/form-group inteira.
+      const target =
+        control.closest('label')
+        || label
+        || control.closest('.checkbox,.radio')
+        || control.parentElement
+        || control;
+
+      target.classList.add('om30-pa-return-field-highlight');
+      control.classList.add('om30-pa-return-control-highlight');
+      label?.classList.add('om30-pa-return-label-highlight');
+
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      if (typeof control.focus === 'function') {
+        try { control.focus({ preventScroll: true }); } catch (_) {}
+      }
+
+      window.setTimeout(() => {
+        target.classList.remove('om30-pa-return-field-highlight');
+        control.classList.remove('om30-pa-return-control-highlight');
+        label?.classList.remove('om30-pa-return-label-highlight');
+      }, 7000);
+    }
+
+    function showReturnWarningModal(form, submitter) {
+      removeReturnWarningModal();
+
+      const backdrop = document.createElement('div');
+      backdrop.id = 'om30-pa-return-warning-backdrop';
+      backdrop.innerHTML = `
+        <div class="om30-pa-return-warning-card"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="om30-pa-return-warning-title">
+          <button type="button"
+                  class="om30-pa-return-warning-close"
+                  aria-label="Fechar">×</button>
+
+          <div class="om30-pa-return-warning-title"
+               id="om30-pa-return-warning-title">
+            Salvar sem retorno médico?
+          </div>
+
+          <div class="om30-pa-return-warning-text">
+            Você não marcou o retorno ao consultório médico.
+            <br><br>
+            Se continuar assim, o munícipe seguirá apenas para as salas encaminhadas
+            e <strong>não voltará automaticamente à fila de atendimento médico.</strong>
+          </div>
+
+          <div class="om30-pa-return-warning-actions">
+            <button type="button" class="om30-pa-return-warning-back">
+              Voltar e marcar retorno
+            </button>
+            <button type="button" class="om30-pa-return-warning-continue">
+              Continuar sem retorno
+            </button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(backdrop);
+      document.documentElement.classList.add('om30-pa-return-warning-open');
+      document.body.classList.add('om30-pa-return-warning-open');
+
+      const closeAndHighlight = () => {
+        removeReturnWarningModal();
+        window.setTimeout(() => highlightReturnControl(form), 60);
+      };
+
+      backdrop
+        .querySelector('.om30-pa-return-warning-close')
+        ?.addEventListener('click', closeAndHighlight);
+
+      backdrop
+        .querySelector('.om30-pa-return-warning-back')
+        ?.addEventListener('click', closeAndHighlight);
+
+      backdrop
+        .querySelector('.om30-pa-return-warning-continue')
+        ?.addEventListener('click', () => {
+          removeReturnWarningModal();
+          returnConfirmBypassForms.add(form);
+
+          window.setTimeout(() => {
+            try {
+              if (typeof form.requestSubmit === 'function') {
+                form.requestSubmit(
+                  submitter instanceof HTMLElement ? submitter : undefined
+                );
+              } else if (submitter && typeof submitter.click === 'function') {
+                submitter.click();
+              } else {
+                form.dispatchEvent(new Event('submit', {
+                  bubbles: true,
+                  cancelable: true
+                }));
+              }
+            } finally {
+              window.setTimeout(() => returnConfirmBypassForms.delete(form), 0);
+            }
+          }, 0);
+        });
+
+      backdrop.addEventListener('click', event => {
+        if (event.target === backdrop) closeAndHighlight();
+      });
+
+      const escHandler = event => {
+        if (event.key !== 'Escape') return;
+        document.removeEventListener('keydown', escHandler, true);
+        closeAndHighlight();
+      };
+      document.addEventListener('keydown', escHandler, true);
+    }
+
+    if (!document.getElementById('om30-pa-return-warning-style')) {
+      const style = document.createElement('style');
+      style.id = 'om30-pa-return-warning-style';
+      style.textContent = `
+        html.om30-pa-return-warning-open,
+        body.om30-pa-return-warning-open {
+          overflow: hidden !important;
+        }
+
+        #om30-pa-return-warning-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 2147483646;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          box-sizing: border-box;
+          background: rgba(0, 0, 0, .36);
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        }
+
+        .om30-pa-return-warning-card {
+          position: relative;
+          width: min(520px, calc(100vw - 32px));
+          box-sizing: border-box;
+          padding: 22px 20px 18px;
+          border: 1px solid #e7e7e7;
+          border-radius: 24px;
+          background: #ffffff;
+          box-shadow:
+            0 18px 50px rgba(0, 0, 0, .18),
+            0 2px 8px rgba(0, 0, 0, .06);
+          color: #111111;
+        }
+
+        .om30-pa-return-warning-close {
+          position: absolute;
+          top: 15px;
+          right: 16px;
+          width: 30px;
+          height: 30px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0;
+          border: 0;
+          border-radius: 999px;
+          background: #ffffff;
+          color: #111111;
+          font-size: 22px;
+          line-height: 1;
+          font-weight: 400;
+          cursor: pointer;
+        }
+
+        .om30-pa-return-warning-close:hover {
+          background: #f7f7f7;
+        }
+
+        .om30-pa-return-warning-title {
+          padding-right: 42px;
+          color: #111111;
+          font-size: 20px;
+          line-height: 1.25;
+          font-weight: 650;
+          letter-spacing: -.2px;
+        }
+
+        .om30-pa-return-warning-text {
+          margin-top: 20px;
+          color: #4a4a4a;
+          font-size: 14px;
+          line-height: 1.52;
+          font-weight: 400;
+        }
+
+        .om30-pa-return-warning-text strong {
+          color: #111111;
+          font-weight: 650;
+        }
+
+        .om30-pa-return-warning-actions {
+          display: flex;
+          justify-content: flex-end;
+          align-items: center;
+          gap: 10px;
+          margin-top: 24px;
+          flex-wrap: wrap;
+        }
+
+        .om30-pa-return-warning-actions button {
+          min-height: 38px;
+          padding: 8px 16px;
+          border-radius: 999px;
+          font-size: 14px;
+          line-height: 1.2;
+          font-weight: 500;
+          cursor: pointer;
+          transition: transform .08s ease, background .15s ease, border-color .15s ease;
+        }
+
+        .om30-pa-return-warning-actions button:active {
+          transform: scale(.985);
+        }
+
+        .om30-pa-return-warning-back {
+          border: 1px solid #9ec5ff;
+          background: #eaf3ff;
+          color: #0f3f86;
+        }
+
+        .om30-pa-return-warning-back:hover {
+          background: #dcecff;
+          border-color: #78adf8;
+        }
+
+        .om30-pa-return-warning-continue {
+          border: 1px solid #ffd6d6;
+          background: #ffeaea;
+          color: #e53935;
+        }
+
+        .om30-pa-return-warning-continue:hover {
+          background: #ffdddd;
+          border-color: #ffc7c7;
+        }
+
+        .om30-pa-return-field-highlight {
+          position: relative !important;
+          z-index: 2 !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          gap: 6px !important;
+          width: auto !important;
+          max-width: calc(100% - 12px) !important;
+          padding: 7px 11px !important;
+          margin: 2px !important;
+          box-sizing: border-box !important;
+          border-radius: 999px !important;
+          outline: 2px solid #2563eb !important;
+          outline-offset: 2px !important;
+          background: #eef5ff !important;
+          box-shadow: 0 0 0 5px rgba(37, 99, 235, .10) !important;
+          animation: om30PaReturnPulse 1.05s ease-in-out 3;
+        }
+
+        .om30-pa-return-control-highlight {
+          accent-color: #2563eb !important;
+        }
+
+        .om30-pa-return-label-highlight {
+          width: auto !important;
+          max-width: max-content !important;
+        }
+
+        @keyframes om30PaReturnPulse {
+          0%, 100% {
+            box-shadow: 0 0 0 5px rgba(37, 99, 235, .08);
+          }
+          50% {
+            box-shadow: 0 0 0 8px rgba(37, 99, 235, .16);
+          }
+        }
+
+        @media (max-width: 560px) {
+          .om30-pa-return-warning-card {
+            padding: 20px 18px 16px;
+            border-radius: 20px;
+          }
+
+          .om30-pa-return-warning-actions {
+            align-items: stretch;
+            flex-direction: column;
+          }
+
+          .om30-pa-return-warning-actions button {
+            width: 100%;
+          }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    document.addEventListener('submit', event => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement)) return;
+
+      if (targetPath(form.action || location.href) !== CONTROL_ROOMS_PATH) {
+        return;
+      }
+
+      if (returnConfirmBypassForms.has(form)) {
+        returnConfirmBypassForms.delete(form);
+        return;
+      }
+
+      if (controlRoomReturnMarked(form)) {
+        return;
+      }
+
+      // Bloqueia apenas este primeiro envio para pedir confirmação.
+      // Nenhum dado clínico é alterado.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      showReturnWarningModal(form, event.submitter || null);
+    }, true);
+
+    // Mantém o submit apenas como DIAGNÓSTICO. Não grava na nuvem aqui,
+    // porque submit ocorre antes de sabermos se o Saúde Simples aceitou.
+    document.addEventListener('submit', event => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement)) return;
+
+      if (targetPath(form.action || location.href) !== CONTROL_ROOMS_PATH) {
+        return;
+      }
+
+      const flow = extractRealControlRoomFlow(form);
+
+      console.debug(
+        '[OM30 PA FLUXO] Submit detectado; aguardando confirmação HTTP antes de gravar.',
+        flow
+      );
+    }, true);
+
+    window.OM30_PA_FLUXO_CLOUD_STATUS = () => {
+      const persisted = loadCloudFlowStatus();
+
+      const status = {
+        endpoint: `${CLOUD_FLOW_URL}${CLOUD_FLOW_PATH}`,
+        paginaAtual: location.href,
+        lastSource: persisted.lastSource ?? cloudFlowState.lastSource,
+        lastSaudeStatus: persisted.lastSaudeStatus ?? cloudFlowState.lastSaudeStatus,
+        lastCaptured: persisted.lastCaptured ?? cloudFlowState.lastCaptured,
+        lastSent: persisted.lastSent ?? cloudFlowState.lastSent,
+        lastResult: persisted.lastResult ?? cloudFlowState.lastResult,
+        lastError: persisted.lastError ?? cloudFlowState.lastError
+      };
+
+      console.log('🏥 OM30 PA - STATUS FLUXO CLOUDFLARE');
+      console.log(status);
+      return status;
+    };
+
+    console.info(
+      '[OM30 PA FLUXO] Captura confirmada por XHR/fetch ativa em',
+      CONTROL_ROOMS_PATH
+    );
+  }
+
+
+  // ============================================================
+  // CLOUDFLARE • PREFERÊNCIAS PESSOAIS SOB DEMANDA
+  // ============================================================
+  // Objetivo de consumo:
+  // - ZERO request ao Cloudflare no login/carregamento da página.
+  // - Primeiro uso real do painel em navegador/computador sem cache:
+  //   1 GET para buscar preferências pessoais.
+  // - Alteração de favorito:
+  //   1 POST debounced; sem polling e sem heartbeat.
+  //
+  // O padrão da unidade NÃO vai para a conta do médico.
+  // O Cloudflare guarda somente as duas camadas pessoais:
+  //   1) favoritos adicionados pelo profissional;
+  //   2) favoritos padrão ocultados pelo profissional.
+  //
+  // STORE_UNIT continua sendo o padrão/configuração da unidade.
+  // ============================================================
+
+  const CLOUD_PREF_URL = 'https://om30-preferencias.om30-pedro.workers.dev';
+  const CLOUD_PREF_PREFIX = 'OM30_PA_CLOUD_PREF_V1';
+  const CLOUD_PULL_TTL_MS = 8 * 60 * 60 * 1000; // no máximo 1 leitura a cada 8h por navegador/profissional
+  const CLOUD_SAVE_DEBOUNCE_MS = 3000; // salva 3s após a ÚLTIMA alteração
+
+  const PERSONAL_KEYS = Object.freeze([
+    'OM30_PA_FAVORITOS_PC_V1',
+    'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1'
+  ]);
+  const PERSONAL_KEY_SET = new Set(PERSONAL_KEYS);
+
+  // ============================================================
+  // FAVORITOS PADRÃO OCULTOS • CHAVE ESTÁVEL
+  // ============================================================
+  // O formato antigo do Procedimentos.PA era:
+  //   grupo|codigo|NOME DO ITEM
+  //
+  // Isso fazia a preferência depender do texto do nome. Se o nome do
+  // procedimento fosse corrigido no padrão da unidade, o item poderia
+  // reaparecer para quem já o havia removido.
+  //
+  // A partir desta versão mantemos também uma chave canônica:
+  //   @OM30CODE|GRUPO|CODIGO
+  //
+  // A UNIDADE continua sendo a chave externa do objeto JSON. Portanto a
+  // identidade efetiva é:
+  //   UNIDADE + GRUPO + CODIGO
+  //
+  // Mantemos as entradas antigas junto da canônica por compatibilidade
+  // com a base v1.9.7. A canônica é a fonte de verdade para permanência.
+  // ============================================================
+
+  const DEFAULT_HIDDEN_STORE = 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1';
+  const HIDDEN_STABLE_PREFIX = '@OM30CODE';
+
+  function onlyDigits(value) {
+    return String(value ?? '').replace(/\D/g, '');
+  }
+
+  function hiddenGroup(value) {
+    return norm(value).replace(/[^A-Z0-9]+/g, '_');
+  }
+
+  function stableHiddenEntry(group, code) {
+    const g = hiddenGroup(group);
+    const c = onlyDigits(code);
+    if (!g || !c) return '';
+    return `${HIDDEN_STABLE_PREFIX}|${g}|${c}`;
+  }
+
+  function parseHiddenEntry(raw) {
+    const text = clean(raw);
+    if (!text) return null;
+
+    const parts = text.split('|');
+
+    if (parts[0] === HIDDEN_STABLE_PREFIX && parts.length >= 3) {
+      const group = hiddenGroup(parts[1]);
+      const code = onlyDigits(parts[2]);
+      if (!group || !code) return null;
+      return {
+        stable: stableHiddenEntry(group, code),
+        group,
+        code,
+        legacy: false,
+        raw: text
+      };
+    }
+
+    // Compatibilidade com:
+    //   grupo|codigo|nome
+    if (parts.length >= 2) {
+      const group = hiddenGroup(parts[0]);
+      const code = onlyDigits(parts[1]);
+      if (group && code) {
+        return {
+          stable: stableHiddenEntry(group, code),
+          group,
+          code,
+          legacy: true,
+          raw: text
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function normalizeHiddenStoreObject(input) {
+    const source = input && typeof input === 'object' && !Array.isArray(input)
+      ? input
+      : {};
+
+    const out = {};
+
+    for (const [unitKey, list] of Object.entries(source)) {
+      const result = [];
+      const seen = new Set();
+
+      for (const raw of Array.isArray(list) ? list : []) {
+        const text = clean(raw);
+        if (!text) continue;
+
+        const parsed = parseHiddenEntry(text);
+
+        // Preserva a entrada antiga para a base fixa v1.9.7 continuar
+        // filtrando normalmente sem qualquer regressão.
+        if (!seen.has(text)) {
+          seen.add(text);
+          result.push(text);
+        }
+
+        // E adiciona a identidade estável baseada no código.
+        if (parsed?.stable && !seen.has(parsed.stable)) {
+          seen.add(parsed.stable);
+          result.push(parsed.stable);
+        }
+      }
+
+      out[unitKey] = result;
+    }
+
+    return out;
+  }
+
+  function normalizeHiddenStoreString(value) {
+    try {
+      const parsed = JSON.parse(String(value ?? '{}'));
+      return JSON.stringify(normalizeHiddenStoreObject(parsed));
+    } catch {
+      return '{}';
+    }
+  }
+
+  function stableHiddenSetForUnit(unitKey) {
+    let store = {};
+
+    try {
+      store = JSON.parse(window.localStorage.getItem(DEFAULT_HIDDEN_STORE) || '{}');
+    } catch {
+      store = {};
+    }
+
+    const list = Array.isArray(store?.[unitKey]) ? store[unitKey] : [];
+    const result = new Set();
+
+    for (const raw of list) {
+      const parsed = parseHiddenEntry(raw);
+      if (parsed?.stable) result.add(parsed.stable);
+    }
+
+    return result;
+  }
+
+  function removeStableHiddenForItem(unitKey, group, code) {
+    const stable = stableHiddenEntry(group, code);
+    if (!stable) return false;
+
+    let store = {};
+
+    try {
+      store = JSON.parse(window.localStorage.getItem(DEFAULT_HIDDEN_STORE) || '{}');
+    } catch {
+      store = {};
+    }
+
+    const current = Array.isArray(store?.[unitKey]) ? store[unitKey] : [];
+    const next = current.filter(raw => {
+      const parsed = parseHiddenEntry(raw);
+      return parsed?.stable !== stable;
+    });
+
+    if (next.length === current.length) return false;
+
+    store[unitKey] = next;
+    window.localStorage.setItem(DEFAULT_HIDDEN_STORE, JSON.stringify(store));
+    return true;
+  }
+
+  const nativeStorage = {
+    getItem: Storage.prototype.getItem,
+    setItem: Storage.prototype.setItem,
+    removeItem: Storage.prototype.removeItem
+  };
+
+  let cloudScope = null;
+  let cloudReadyPromise = null;
+  let cloudReplayClick = false;
+  let cloudSuppressWrites = 0;
+  let cloudSaveTimer = null;
+  let cloudWriteQueue = Promise.resolve();
+
+  function isLocalStorage(storage) {
+    try { return storage === window.localStorage; }
+    catch { return false; }
+  }
+
+  function cloudScopedKey(professionalId, baseKey) {
+    return `${CLOUD_PREF_PREFIX}::PROF_${professionalId}::${baseKey}`;
+  }
+
+  function cloudMetaKey(professionalId, suffix) {
+    return `${CLOUD_PREF_PREFIX}::PROF_${professionalId}::${suffix}`;
+  }
+
+  function nativeGetLocal(key) {
+    return nativeStorage.getItem.call(window.localStorage, key);
+  }
+
+  function nativeSetLocal(key, value) {
+    return nativeStorage.setItem.call(window.localStorage, key, String(value));
+  }
+
+  function nativeRemoveLocal(key) {
+    return nativeStorage.removeItem.call(window.localStorage, key);
+  }
+
+  function scopedRead(professionalId, baseKey) {
+    const value = nativeGetLocal(cloudScopedKey(professionalId, baseKey));
+    const raw = value === null ? '{}' : value;
+
+    if (baseKey === DEFAULT_HIDDEN_STORE) {
+      return normalizeHiddenStoreString(raw);
+    }
+
+    return raw;
+  }
+
+  function scopedWrite(professionalId, baseKey, value) {
+    const next = baseKey === DEFAULT_HIDDEN_STORE
+      ? normalizeHiddenStoreString(value)
+      : (value ?? '{}');
+
+    nativeSetLocal(cloudScopedKey(professionalId, baseKey), next);
+  }
+
+  function cloudDirty(professionalId) {
+    return nativeGetLocal(cloudMetaKey(professionalId, 'DIRTY')) === '1';
+  }
+
+  function setCloudDirty(professionalId, dirty) {
+    const key = cloudMetaKey(professionalId, 'DIRTY');
+    if (dirty) nativeSetLocal(key, '1');
+    else nativeRemoveLocal(key);
+  }
+
+  function cloudLastPull(professionalId) {
+    return Number(nativeGetLocal(cloudMetaKey(professionalId, 'LAST_PULL')) || 0);
+  }
+
+  function setCloudLastPull(professionalId) {
+    nativeSetLocal(cloudMetaKey(professionalId, 'LAST_PULL'), String(Date.now()));
+  }
+
+  function cloudHasLocalCache(professionalId) {
+    return PERSONAL_KEYS.every(baseKey =>
+      nativeGetLocal(cloudScopedKey(professionalId, baseKey)) !== null
+    );
+  }
+
+  function cloudSnapshot(professionalId) {
+    return {
+      professional_id: String(professionalId),
+      favorites_pc: scopedRead(professionalId, 'OM30_PA_FAVORITOS_PC_V1'),
+      default_hidden: scopedRead(professionalId, 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1')
+    };
+  }
+
+  async function currentProfessionalCloud() {
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+    const response = await nativeFetch('/current_usuario', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Accept': '*/*',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {})
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`current_usuario HTTP ${response.status}`);
+    }
+
+    const usuario = await response.json();
+    const professionalId = clean(usuario?.profissional_id);
+
+    if (!professionalId) {
+      throw new Error('O usuário logado não possui profissional_id.');
+    }
+
+    return {
+      professionalId,
+      userId: clean(usuario?.id)
+    };
+  }
+
+  async function cloudPullPreferences(professionalId) {
+    const response = await nativeFetch(
+      `${CLOUD_PREF_URL}/api/preferences/${encodeURIComponent(professionalId)}`,
+      {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'no-store'
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Cloudflare GET HTTP ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  async function cloudPushPreferences(professionalId, options = {}) {
+    if (!professionalId) return false;
+
+    const payload = cloudSnapshot(professionalId);
+
+    try {
+      const response = await nativeFetch(`${CLOUD_PREF_URL}/api/preferences`, {
+        method: 'POST',
+        mode: 'cors',
+        credentials: 'omit',
+
+        // text/plain mantém o POST como CORS "simple request":
+        // evita OPTIONS/preflight e reduz o número de requests no Worker.
+        headers: {
+          'Content-Type': 'text/plain;charset=UTF-8'
+        },
+
+        body: JSON.stringify(payload),
+        keepalive: options.keepalive === true
+      });
+
+      if (!response.ok) {
+        throw new Error(`Cloudflare POST HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!result?.ok) {
+        throw new Error('Cloudflare não confirmou a gravação.');
+      }
+
+      setCloudDirty(professionalId, false);
+      nativeSetLocal(
+        cloudMetaKey(professionalId, 'LAST_PUSH'),
+        String(Date.now())
+      );
+
+      console.debug('[OM30 PA CLOUD] Preferências sincronizadas:', professionalId);
+      return true;
+    } catch (err) {
+      setCloudDirty(professionalId, true);
+      console.warn('[OM30 PA CLOUD] Falha ao gravar; cache local preservado:', err);
+      return false;
+    }
+  }
+
+  function scheduleCloudPush() {
+    const professionalId = cloudScope?.professionalId;
+    if (!professionalId || cloudSuppressWrites > 0) return;
+
+    setCloudDirty(professionalId, true);
+
+    clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = setTimeout(() => {
+      cloudWriteQueue = cloudWriteQueue
+        .catch(() => {})
+        .then(() => cloudPushPreferences(professionalId));
+    }, CLOUD_SAVE_DEBOUNCE_MS);
+  }
+
+  // Intercepta SOMENTE as duas chaves pessoais.
+  // A configuração/padrão da unidade continua intacta e compartilhada.
+  Storage.prototype.getItem = function(key) {
+    const k = String(key);
+
+    if (!isLocalStorage(this) || !PERSONAL_KEY_SET.has(k)) {
+      return nativeStorage.getItem.call(this, key);
+    }
+
+    const professionalId = cloudScope?.professionalId;
+
+    // Antes de o profissional usar o painel, mantém o comportamento base
+    // e não dispara absolutamente nada no Cloudflare.
+    if (!professionalId) {
+      return nativeStorage.getItem.call(this, key);
+    }
+
+    return scopedRead(professionalId, k);
+  };
+
+  Storage.prototype.setItem = function(key, value) {
+    const k = String(key);
+
+    if (!isLocalStorage(this) || !PERSONAL_KEY_SET.has(k)) {
+      return nativeStorage.setItem.call(this, key, value);
+    }
+
+    const professionalId = cloudScope?.professionalId;
+
+    if (!professionalId) {
+      const next = k === DEFAULT_HIDDEN_STORE
+        ? normalizeHiddenStoreString(value)
+        : value;
+      return nativeStorage.setItem.call(this, key, next);
+    }
+
+    scopedWrite(professionalId, k, String(value));
+    scheduleCloudPush();
+  };
+
+  Storage.prototype.removeItem = function(key) {
+    const k = String(key);
+
+    if (!isLocalStorage(this) || !PERSONAL_KEY_SET.has(k)) {
+      return nativeStorage.removeItem.call(this, key);
+    }
+
+    const professionalId = cloudScope?.professionalId;
+
+    if (!professionalId) {
+      return nativeStorage.removeItem.call(this, key);
+    }
+
+    scopedWrite(professionalId, k, '{}');
+    scheduleCloudPush();
+  };
+
+  function applyRemotePreferences(professionalId, remote) {
+    cloudSuppressWrites++;
+
+    try {
+      if (remote?.exists) {
+        scopedWrite(
+          professionalId,
+          'OM30_PA_FAVORITOS_PC_V1',
+          remote?.preferences?.favorites_pc ?? '{}'
+        );
+
+        scopedWrite(
+          professionalId,
+          'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1',
+          remote?.preferences?.default_hidden ?? '{}'
+        );
+      } else {
+        // Perfil novo: começa só com o padrão da unidade.
+        scopedWrite(professionalId, 'OM30_PA_FAVORITOS_PC_V1', '{}');
+        scopedWrite(professionalId, 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1', '{}');
+      }
+    } finally {
+      cloudSuppressWrites--;
+    }
+  }
+
+  function refreshCloudPanel(panel) {
+    const tab = panel?.querySelector('.tab.on');
+    if (!tab) return;
+
+    cloudReplayClick = true;
+    try {
+      tab.click();
+    } finally {
+      cloudReplayClick = false;
+    }
+  }
+
+  async function ensureCloudPreferences(panel, options = {}) {
+    if (cloudReadyPromise && !options.force) {
+      return cloudReadyPromise;
+    }
+
+    cloudReadyPromise = (async () => {
+      let identity;
+
+      try {
+        identity = await currentProfessionalCloud();
+      } catch (err) {
+        console.warn('[OM30 PA CLOUD] Não foi possível identificar o profissional:', err);
+        return { ok: false, reason: 'identity', error: err };
+      }
+
+      const professionalId = identity.professionalId;
+      cloudScope = identity;
+
+      // Se houve uma gravação local que falhou antes, ela ganha prioridade:
+      // tentamos enviar primeiro para não sobrescrever a alteração com um GET.
+      if (cloudDirty(professionalId) && cloudHasLocalCache(professionalId)) {
+        await cloudPushPreferences(professionalId);
+      }
+
+      const temCache = cloudHasLocalCache(professionalId);
+      const cacheRecente =
+        temCache &&
+        (Date.now() - cloudLastPull(professionalId) < CLOUD_PULL_TTL_MS);
+
+      if (!options.force && cacheRecente) {
+        cloudSuppressWrites++;
+        try {
+          // Regra local obrigatória (ex.: ocultar Dipirona 500 mg CP)
+          // aplicada dentro do escopo do profissional, sem POST automático.
+          ensurePadraoPaAtualizado();
+        } finally {
+          cloudSuppressWrites--;
+        }
+
+        return {
+          ok: true,
+          professionalId,
+          source: 'cache'
+        };
+      }
+
+      try {
+        const remote = await cloudPullPreferences(professionalId);
+        applyRemotePreferences(professionalId, remote);
+        setCloudLastPull(professionalId);
+
+        cloudSuppressWrites++;
+        try {
+          ensurePadraoPaAtualizado();
+        } finally {
+          cloudSuppressWrites--;
+        }
+
+        return {
+          ok: true,
+          professionalId,
+          source: remote?.exists ? 'cloud' : 'cloud-empty'
+        };
+      } catch (err) {
+        console.warn('[OM30 PA CLOUD] Cloudflare indisponível; usando cache local:', err);
+
+        cloudSuppressWrites++;
+        try {
+          if (!cloudHasLocalCache(professionalId)) {
+            scopedWrite(professionalId, 'OM30_PA_FAVORITOS_PC_V1', '{}');
+            scopedWrite(professionalId, 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1', '{}');
+          }
+
+          ensurePadraoPaAtualizado();
+        } finally {
+          cloudSuppressWrites--;
+        }
+
+        return {
+          ok: true,
+          professionalId,
+          source: 'local-fallback',
+          error: err
+        };
+      }
+    })();
+
+    try {
+      return await cloudReadyPromise;
+    } finally {
+      // Depois de resolvido, o próprio cloudScope/cache mantém o estado.
+      // O Promise permanece reutilizável nesta página.
+    }
+  }
+
+  function installCloudPreferenceGate(panel) {
+    if (!panel || panel.dataset.om30CloudPref === '1') return;
+    panel.dataset.om30CloudPref = '1';
+
+    // Primeiro clique real no painel:
+    // segura o clique, carrega a identidade/preferências e repete o clique.
+    panel.addEventListener('click', async event => {
+      if (cloudReplayClick || cloudScope?.professionalId) return;
+
+      const target = event.target.closest?.('button,a,input,label') || event.target;
+      if (!target) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      setStatus(panel, 'Carregando suas preferências...', '');
+
+      const result = await ensureCloudPreferences(panel);
+
+      if (result?.ok) {
+        refreshCloudPanel(panel);
+
+        if (result.source === 'local-fallback') {
+          setStatus(panel, 'Preferências carregadas do cache local; nuvem indisponível no momento.', 'err');
+        } else {
+          setStatus(panel, '', '');
+        }
+      } else {
+        setStatus(panel, 'Não foi possível identificar o profissional. Usando o padrão da unidade.', 'err');
+      }
+
+      cloudReplayClick = true;
+      try {
+        if (target.isConnected && typeof target.click === 'function') {
+          target.click();
+        }
+      } finally {
+        cloudReplayClick = false;
+      }
+    }, true);
+
+    // Navegação por teclado até a busca não precisa bloquear nada.
+    // Só pré-carrega quando há foco dentro do painel; isso acontece por ação
+    // do usuário, nunca no simples login/carregamento.
+    panel.addEventListener('focusin', () => {
+      if (!cloudScope?.professionalId && !cloudReadyPromise) {
+        void ensureCloudPreferences(panel).then(result => {
+          if (result?.ok) refreshCloudPanel(panel);
+        });
+      }
+    }, true);
+
+    // Diagnósticos manuais.
+    window.OM30_PA_CLOUD_STATUS = () => {
+      const professionalId = cloudScope?.professionalId || null;
+      const status = {
+        endpoint: CLOUD_PREF_URL,
+        professional_id: professionalId,
+        ready: !!professionalId,
+        dirty: professionalId ? cloudDirty(professionalId) : false,
+        last_pull: professionalId ? cloudLastPull(professionalId) : 0,
+        cache: professionalId ? cloudHasLocalCache(professionalId) : false
+      };
+
+      console.table([status]);
+      return status;
+    };
+
+    window.OM30_PA_CLOUD_SYNC = async () => {
+      const result = await ensureCloudPreferences(panel, { force: true });
+      if (result?.ok) {
+        refreshCloudPanel(panel);
+        setStatus(panel, 'Preferências atualizadas da nuvem.', 'ok');
+      }
+      return result;
+    };
+
+    // Nomes mais claros para diagnóstico manual dos FAVORITOS DO MÉDICO.
+    // São apenas aliases; não criam requests nem uma segunda sincronização.
+    window.OM30_PA_FAVORITOS_STATUS = window.OM30_PA_CLOUD_STATUS;
+    window.OM30_PA_FAVORITOS_SYNC = window.OM30_PA_CLOUD_SYNC;
+  }
+
+  // Se houver alteração pendente e a página for fechada logo depois,
+  // tenta concluir o POST com keepalive.
+  window.addEventListener('pagehide', () => {
+    const professionalId = cloudScope?.professionalId;
+    if (!professionalId || !cloudDirty(professionalId)) return;
+    void cloudPushPreferences(professionalId, { keepalive: true });
+  });
+
+
+  function abaEnfermagemAtiva() {
+    const panel = document.querySelector('#om30pa');
+    const tab = panel?.querySelector('.tab.on');
+    return tab?.dataset?.t === 'enfermagem';
+  }
+
+  window.fetch = function(input, init) {
+    let rawUrl = '';
+    try {
+      rawUrl = typeof input === 'string' ? input : (input?.url || '');
+    } catch (_) {}
+
+    if (rawUrl && abaEnfermagemAtiva()) {
+      try {
+        const parsed = new URL(rawUrl, location.origin);
+        if (parsed.origin === location.origin && parsed.pathname === '/procedimentos/procedimentos_ocupacoes.json') {
+          const termo = parsed.searchParams.get('q') || '';
+          const nova = '/procedimentos/search.json?' + new URLSearchParams({
+            sem_radiografias: '1',
+            q: termo
+          }).toString();
+
+          console.debug('[OM30 PA TESTE] Enfermagem: busca nativa sem_radiografias', termo);
+          return nativeFetch(nova, init);
+        }
+      } catch (err) {
+        console.debug('[OM30 PA TESTE] Não foi possível ajustar a URL de Enfermagem:', err);
+      }
+    }
+
+    return nativeFetch(input, init);
+  };
+
+  // ============================================================
+  // UI de teste
+  // ============================================================
+
+  function ensureStyle() {
+    if (document.getElementById('om30-pa-conta-teste-style')) return;
+    const style = document.createElement('style');
+    style.id = 'om30-pa-conta-teste-style';
+    style.textContent = `
+      /* ORDEM VISUAL FIXA: não movemos mais elementos no DOM após a busca.
+         Isso elimina a piscada em que o resultado nascia no fim e depois subia.
+         A ordem vale para as 4 abas; em Raio X, .rx contém a Região. */
+      #om30pa .obody {
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      #om30pa .searchrow { order: 10; }
+      #om30pa .rx        { order: 20; }
+      #om30pa .res       { order: 30; }
+      #om30pa .status    { order: 35; }
+      #om30pa .uf        { order: 40; }
+      #om30pa .lf        { order: 41; }
+      #om30pa .sel       { order: 50; }
+      #om30pa .medc      { order: 60; }
+
+      #om30pa .om30-backup-actions {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        margin-top: 6px;
+      }
+
+      #om30pa .om30-backup-actions button {
+        border: 1px solid #d7e0e5;
+        background: #fff;
+        color: #315a70;
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 9px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      #om30pa .om30-backup-actions button:hover {
+        background: #f3f7f9;
+      }
+
+
+      /* Preferências compactas SEM mover/reembrulhar o HTML original. */
+      #om30pa .settings .sbody {
+        padding: 9px !important;
+      }
+
+      #om30pa .om30-settings-summary {
+        border: 1px solid #dce6eb;
+        background: #fff;
+        border-radius: 8px;
+        padding: 9px 10px;
+        margin-bottom: 8px;
+        font-size: 9px;
+      }
+
+      #om30pa .om30-settings-summary-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      #om30pa .om30-settings-summary-title {
+        font-weight: 800;
+        color: #173f55;
+        font-size: 10px;
+      }
+
+      #om30pa .om30-settings-summary-sub {
+        margin-top: 2px;
+        color: #6f838d;
+        font-size: 8.5px;
+        line-height: 1.3;
+      }
+
+      #om30pa .om30-settings-summary-badge {
+        border: 1px solid #dfe7ea;
+        background: #f4f7f8;
+        color: #657985;
+        border-radius: 999px;
+        padding: 3px 6px;
+        font-size: 7.5px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      #om30pa .om30-settings-summary-actions {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        margin-top: 7px;
+      }
+
+      #om30pa .om30-settings-summary-actions button {
+        border: 1px solid #d5e0e5;
+        background: #fff;
+        color: #315a70;
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 8.5px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      #om30pa .om30-settings-summary-actions button.primary {
+        background: #123f61;
+        border-color: #123f61;
+        color: #fff;
+      }
+
+      #om30pa .settings .sbody.om30-advanced-closed textarea,
+      #om30pa .settings .sbody.om30-advanced-closed .sactions,
+      #om30pa .settings .sbody.om30-advanced-closed .om30-backup-actions {
+        display: none !important;
+      }
+
+      #om30pa .settings .sbody textarea {
+        min-height: 95px !important;
+        max-height: 145px !important;
+        font-size: 9px !important;
+        line-height: 1.35 !important;
+        border-radius: 7px !important;
+        border-color: #d8e2e7 !important;
+        background: #fbfcfd !important;
+      }
+
+      /* Engrenagem = página própria de preferências dentro do Controle de Salas.
+         Não abre modal e não empurra a tela de procedimentos para baixo. */
+      #om30pa.om30-settings-page > .oinfo,
+      #om30pa.om30-settings-page > .tabs,
+      #om30pa.om30-settings-page > .obody {
+        display: none !important;
+      }
+
+      #om30pa.om30-settings-page > .settings {
+        display: block !important;
+        margin: 0 !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        background: #fff !important;
+      }
+
+      #om30pa.om30-settings-page > .settings > .shead {
+        padding: 9px 10px !important;
+        background: #f8fafb !important;
+        border-bottom: 1px solid #e7edf0 !important;
+      }
+
+      #om30pa.om30-settings-page > .settings .stxt {
+        font-size: 11px !important;
+        color: #294858 !important;
+      }
+
+      #om30pa.om30-settings-page > .settings .sclose {
+        width: auto !important;
+        min-width: 72px !important;
+        padding: 0 9px !important;
+        font-size: 8.5px !important;
+        font-weight: 800 !important;
+      }
+
+      #om30pa.om30-settings-page .og {
+        display: none !important;
+      }
+
+      #om30pa .settings .sbody.om30-advanced-closed > .sunit,
+      #om30pa .settings .sbody.om30-advanced-closed > .snote,
+      #om30pa .settings .sbody.om30-advanced-closed > .sactions,
+      #om30pa .settings .sbody.om30-advanced-closed > .stextarea,
+      #om30pa .settings .sbody.om30-advanced-closed > .sfoot,
+      #om30pa .settings .sbody.om30-advanced-closed > .om30-backup-actions {
+        display: none !important;
+      }
+
+      #om30pa .om30-standard-card {
+        border: 1px solid #dce6eb;
+        background: #f8fbfc;
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin-top: 7px;
+        color: #526b77;
+        font-size: 8.5px;
+        line-height: 1.35;
+      }
+
+      #om30pa .om30-standard-card b {
+        color: #254a5d;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function setStatus(panel, text, kind = '') {
+    const el = panel.querySelector('.status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function updateSearchState(panel) {
+    const input = panel.querySelector('.search');
+    const active = !!clean(input?.value);
+    panel.classList.toggle('om30-search-active', active);
+  }
+
+  // A ordem visual é controlada exclusivamente por CSS (property order).
+  // Não reposicionamos nós depois que a API devolve os resultados; assim o
+  // resultado já nasce visualmente no lugar certo, sem qualquer piscada.
+
+  function effectiveStoreValue(baseKey) {
+    return window.localStorage.getItem(baseKey);
+  }
+
+  function exportBackup(panel) {
+    const unidade = detectarUnidade();
+
+    const data = {
+      format: 'OM30_PA_FAVORITOS_BACKUP_V1',
+      generatedAt: new Date().toISOString(),
+      unit: unidade ? { key: unidade.key, label: unidade.label } : null,
+      stores: Object.fromEntries(BASE_KEYS.map(k => [k, effectiveStoreValue(k)]))
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+
+    const sufixo = unidade?.label ? `-${slug(unidade.label)}` : '';
+    a.download = `OM30-Favoritos${sufixo}.txt`;
+
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    setStatus(panel, 'Backup dos favoritos exportado.', 'ok');
+  }
+
+  async function importBackup(panel, file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      if (!data || data.format !== 'OM30_PA_FAVORITOS_BACKUP_V1' || !data.stores) {
+        throw new Error('Arquivo de backup do Procedimentos PA não reconhecido.');
+      }
+
+      for (const baseKey of BASE_KEYS) {
+        const value = data.stores[baseKey];
+        if (value === null || value === undefined) {
+          window.localStorage.removeItem(baseKey);
+        } else {
+          window.localStorage.setItem(baseKey, String(value));
+        }
+      }
+
+      setStatus(panel, 'Backup restaurado. Recarregando...', 'ok');
+      setTimeout(() => location.reload(), 700);
+    } catch (err) {
+      console.error('[OM30 PA TESTE PREFERÊNCIAS] Falha ao importar backup:', err);
+      setStatus(panel, err?.message || String(err), 'err');
+    }
+  }
+
+  function addBackupButtons(panel) {
+    const settingsBody = panel.querySelector('.settings .sbody');
+    if (!settingsBody) return;
+
+    if (settingsBody.querySelector('.om30-settings-summary')) return;
+
+    settingsBody.classList.add('om30-advanced-closed');
+
+    const unidade = detectarUnidade();
+    const summary = document.createElement('div');
+    summary.className = 'om30-settings-summary';
+    summary.innerHTML = `
+      <div class="om30-settings-summary-top">
+        <div>
+          <div class="om30-settings-summary-title">Meus favoritos</div>
+          <div class="om30-settings-summary-sub om30-summary-account"></div>
+        </div>
+        <span class="om30-settings-summary-badge">NUVEM SOB DEMANDA</span>
+      </div>
+      <div class="om30-settings-summary-actions">
+        <button type="button" class="primary om30-summary-export">Exportar meus favoritos</button>
+        <button type="button" class="om30-summary-import">Importar meus favoritos</button>
+        <button type="button" class="om30-summary-cloud">Atualizar da nuvem</button>
+        <button type="button" class="om30-summary-toggle">Configuração avançada</button>
+        <input type="file" class="om30-summary-file" accept=".txt,.json,text/plain,application/json" hidden>
+      </div>
+      <div class="om30-standard-card"><b>Padrão da unidade ativo</b><br>As preferências pessoais são sincronizadas por profissional somente quando o painel é usado ou quando algo é alterado. As mudanças são agrupadas e salvas 3 segundos após a última alteração. Item removido do padrão fica oculto por unidade + código, sem prazo de expiração. Não há polling.</div>
+    `;
+
+    const account = summary.querySelector('.om30-summary-account');
+    if (account) {
+      account.textContent = unidade?.label
+        ? `Padrão da unidade • ${unidade.label} • pessoais por profissional`
+        : 'Padrão da unidade + preferências pessoais por profissional';
+    }
+
+    settingsBody.insertBefore(summary, settingsBody.firstChild);
+
+    const exportBtn = summary.querySelector('.om30-summary-export');
+    const importBtn = summary.querySelector('.om30-summary-import');
+    const cloudBtn = summary.querySelector('.om30-summary-cloud');
+    const toggleBtn = summary.querySelector('.om30-summary-toggle');
+    const fileInput = summary.querySelector('.om30-summary-file');
+
+    exportBtn?.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      exportBackup(panel);
+    });
+
+    importBtn?.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      fileInput?.click();
+    });
+
+    fileInput?.addEventListener('change', async () => {
+      const file = fileInput.files?.[0];
+      if (file) await importBackup(panel, file);
+      fileInput.value = '';
+    });
+
+    cloudBtn?.addEventListener('click', async e => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const result = await ensureCloudPreferences(panel, { force: true });
+      if (result?.ok) {
+        refreshCloudPanel(panel);
+        setStatus(panel, 'Preferências atualizadas da nuvem.', 'ok');
+      } else {
+        setStatus(panel, 'Não foi possível atualizar as preferências da nuvem.', 'err');
+      }
+    });
+
+    toggleBtn?.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const fechada = settingsBody.classList.toggle('om30-advanced-closed');
+      toggleBtn.textContent = fechada ? 'Configuração avançada' : 'Ocultar configuração avançada';
+    });
+  }
+
+  function baseUnitKeyFromScope() {
+    const unidade = detectarUnidade();
+    return norm(unidade?.label || 'UNIDADE NÃO IDENTIFICADA');
+  }
+
+  function ensurePadraoPaAtualizado() {
+    // O padrão original já contém a Dipirona injetável 1681. Neste teste
+    // apenas ocultamos do padrão a apresentação em comprimido (1035).
+    // Se o profissional quiser favoritar 1035 manualmente depois, continua possível.
+    const storeKey = 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1';
+    let store = {};
+    try { store = JSON.parse(window.localStorage.getItem(storeKey) || '{}'); }
+    catch { store = {}; }
+
+    const unitKey = baseUnitKeyFromScope();
+    const hidden = new Set(Array.isArray(store[unitKey]) ? store[unitKey] : []);
+    hidden.add('medicacao|1035|DIPIRONA 500 MG CP');
+    store[unitKey] = [...hidden];
+    window.localStorage.setItem(storeKey, JSON.stringify(store));
+  }
+
+
+  function activeLogicalGroup(panel) {
+    return hiddenGroup(panel?.querySelector('.tab.on')?.dataset?.t || '');
+  }
+
+  function applyStableHiddenFavorites(panel) {
+    if (!panel || !cloudScope?.professionalId) return;
+
+    const unitKey = baseUnitKeyFromScope();
+    const activeGroup = activeLogicalGroup(panel);
+    if (!unitKey || !activeGroup) return;
+
+    const hidden = stableHiddenSetForUnit(unitKey);
+
+    panel.querySelectorAll('.uf .fav').forEach(card => {
+      const code = onlyDigits(
+        card.querySelector('.fcode,.code')?.textContent || ''
+      );
+
+      const stable = stableHiddenEntry(activeGroup, code);
+      const mustHide = !!stable && hidden.has(stable);
+
+      if (mustHide) {
+        card.hidden = true;
+        card.dataset.om30StableHidden = '1';
+      } else if (card.dataset.om30StableHidden === '1') {
+        card.hidden = false;
+        delete card.dataset.om30StableHidden;
+      }
+    });
+  }
+
+  function installStableHiddenFavorites(panel) {
+    if (!panel || panel.dataset.om30StableHiddenInstalled === '1') return;
+    panel.dataset.om30StableHiddenInstalled = '1';
+
+    let timer = null;
+
+    const refresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => applyStableHiddenFavorites(panel), 0);
+    };
+
+    const observer = new MutationObserver(refresh);
+    observer.observe(panel, {
+      childList: true,
+      subtree: true
+    });
+
+    // Se o usuário pesquisar um item anteriormente ocultado e clicar na
+    // estrela fora da lista de favoritos, isso é tratado como restauração:
+    // remove a chave estável antes da lógica nativa favoritar o item.
+    panel.addEventListener('click', event => {
+      const star = event.target.closest?.('.star');
+      if (!star || star.closest('.uf')) return;
+
+      const host = star.closest('tr,.fav,.result,.item,li,div');
+      if (!host) return;
+
+      const code = onlyDigits(
+        host.querySelector?.('.fcode,.code,[data-code]')?.textContent ||
+        host.querySelector?.('[data-code]')?.dataset?.code ||
+        ''
+      );
+
+      const group = activeLogicalGroup(panel);
+      const unitKey = baseUnitKeyFromScope();
+
+      if (!code || !group || !unitKey) return;
+
+      if (removeStableHiddenForItem(unitKey, group, code)) {
+        // A remoção acima já aciona o POST debounced pela camada de storage.
+        setTimeout(refresh, 0);
+      }
+    }, true);
+
+    panel.addEventListener('click', refresh, true);
+    refresh();
+
+    window.OM30_PA_OCULTOS_ESTAVEIS = () => {
+      const unitKey = baseUnitKeyFromScope();
+      const hidden = [...stableHiddenSetForUnit(unitKey)];
+
+      console.log('🧷 OM30 PA - FAVORITOS PADRÃO OCULTOS');
+      console.log('Unidade:', unitKey);
+      console.table(hidden.map(key => {
+        const parsed = parseHiddenEntry(key);
+        return {
+          unidade: unitKey,
+          grupo: parsed?.group || '',
+          codigo: parsed?.code || '',
+          chave: key
+        };
+      }));
+
+      return hidden;
+    };
+  }
+
+  function enterSettingsPage(panel) {
+    const settings = panel.querySelector('.settings');
+    if (!settings) return;
+    panel.classList.add('om30-settings-page');
+    settings.classList.add('open');
+    const title = panel.querySelector('.ot');
+    if (title) {
+      if (!title.dataset.om30OriginalTitle) title.dataset.om30OriginalTitle = title.textContent || 'Procedimentos';
+      title.textContent = 'Preferências';
+    }
+    const st = settings.querySelector('.stxt');
+    if (st) st.textContent = 'Preferências do Controle de Salas';
+    const close = settings.querySelector('.sclose');
+    if (close) {
+      close.textContent = '← Voltar';
+      close.title = 'Voltar aos procedimentos';
+    }
+  }
+
+  function leaveSettingsPage(panel) {
+    const settings = panel.querySelector('.settings');
+    panel.classList.remove('om30-settings-page');
+    settings?.classList.remove('open');
+    const title = panel.querySelector('.ot');
+    if (title) title.textContent = title.dataset.om30OriginalTitle || 'Procedimentos';
+  }
+
+
+  // ============================================================
+  // EDIÇÃO DE MEDICAÇÃO JÁ SELECIONADA
+  // ============================================================
+  // A edição atua somente sobre a linha nativa já existente no formulário.
+  // Não remove/recria o medicamento e não cria duplicidade.
+  // Campos editáveis: via, posologia e observação.
+  // O medicamento em si permanece o mesmo.
+  // ============================================================
+
+  function ensureMedicationEditStyle() {
+    if (document.getElementById('om30-pa-edit-med-style')) return;
+    const st = document.createElement('style');
+    st.id = 'om30-pa-edit-med-style';
+    st.textContent = `
+      #om30pa .om30-edit-med{
+        flex:none;
+        min-width:44px;
+        border:1px solid #d8e4ea;
+        background:#fff;
+        color:#315f76;
+        border-radius:6px;
+        padding:4px 7px;
+        font-size:8.5px;
+        font-weight:800;
+        line-height:1.2;
+        cursor:pointer;
+        white-space:nowrap;
+      }
+      #om30pa .om30-edit-med:hover{
+        background:#edf5f8;
+        border-color:#c6dbe5;
+      }
+      #om30pa .om30-med-edit-card{
+        border:1px solid #d8e4ea;
+        background:#fbfcfd;
+        border-radius:9px;
+        padding:8px;
+      }
+      #om30pa .om30-med-edit-head{
+        display:flex;
+        align-items:flex-start;
+        justify-content:space-between;
+        gap:8px;
+        margin-bottom:7px;
+      }
+      #om30pa .om30-med-edit-title{
+        font-size:10px;
+        font-weight:800;
+        color:#294f63;
+      }
+      #om30pa .om30-med-edit-sub{
+        margin-top:2px;
+        font-size:8px;
+        color:#7b8b93;
+        line-height:1.25;
+      }
+      #om30pa .om30-med-edit-grid{
+        display:grid;
+        grid-template-columns:1fr 1fr;
+        gap:6px;
+      }
+      #om30pa .om30-med-edit-field.full{
+        grid-column:1 / -1;
+      }
+      #om30pa .om30-med-edit-field label{
+        display:block;
+        margin-bottom:3px;
+        font-size:8px;
+        font-weight:800;
+        color:#687b85;
+      }
+      #om30pa .om30-med-edit-field select,
+      #om30pa .om30-med-edit-field input,
+      #om30pa .om30-med-edit-field textarea{
+        width:100%;
+        border:1px solid #dfe5e8;
+        border-radius:7px;
+        padding:6px 7px;
+        background:#fff;
+        color:#2e434e;
+        font:10px "Segoe UI",Arial,sans-serif;
+        outline:none;
+      }
+      #om30pa .om30-med-edit-field textarea{
+        min-height:48px;
+        resize:vertical;
+      }
+      #om30pa .om30-med-edit-field select:focus,
+      #om30pa .om30-med-edit-field input:focus,
+      #om30pa .om30-med-edit-field textarea:focus{
+        border-color:#afc8d5;
+        box-shadow:0 0 0 2px rgba(18,63,104,.06);
+      }
+      #om30pa .om30-med-edit-actions{
+        display:flex;
+        justify-content:flex-end;
+        gap:5px;
+        margin-top:7px;
+      }
+      #om30pa .om30-med-edit-save,
+      #om30pa .om30-med-edit-cancel{
+        border:0;
+        border-radius:7px;
+        padding:6px 9px;
+        font-size:9px;
+        font-weight:800;
+        cursor:pointer;
+      }
+      #om30pa .om30-med-edit-save{
+        background:#123f68;
+        color:#fff;
+      }
+      #om30pa .om30-med-edit-cancel{
+        background:#eef2f4;
+        color:#546a75;
+      }
+      #om30pa .om30-med-edit-fixed{
+        margin-top:3px;
+        font-size:8px;
+        font-weight:700;
+        color:#7b6a39;
+      }
+      #om30pa .om30-med-edit-morevias{
+        display:inline-block;
+        margin-top:5px;
+        border:0;
+        background:transparent;
+        color:#285970;
+        padding:2px 0;
+        font-size:8px;
+        font-weight:800;
+        cursor:pointer;
+      }
+      #om30pa .om30-med-edit-morevias:hover{
+        color:#123f68;
+        text-decoration:underline;
+      }
+      @media(max-width:520px){
+        #om30pa .om30-med-edit-grid{grid-template-columns:1fr}
+        #om30pa .om30-med-edit-field.full{grid-column:auto}
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function medRowAtiva(row) {
+    if (!row) return false;
+    const destroy = row.querySelector('input[name$="[_destroy]"]');
+    const dv = clean(destroy?.value).toLowerCase();
+    if (dv === '1' || dv === 'true') return false;
+    return getComputedStyle(row).display !== 'none';
+  }
+
+  function medicationRowsAtivas() {
+    return [...document.querySelectorAll('tr.prontuario-medicamento-row')].filter(medRowAtiva);
+  }
+
+  function findRowField(row, patterns, tags = 'input,select,textarea') {
+    const els = [...row.querySelectorAll(tags)];
+    return els.find(el => {
+      const key = `${el.name || ''} ${el.id || ''} ${el.className || ''}`.toLowerCase();
+      return patterns.some(p => p.test(key));
+    }) || null;
+  }
+
+  function nomeMedicamentoDaLinha(row) {
+    if (!row) return 'Medicamento';
+
+    const candidatos = [...row.querySelectorAll('input[type="text"],textarea,input[type="hidden"]')]
+      .filter(el => !/posologia|observacao|quantidade|tipo_uso|via|_destroy/i.test(
+        `${el.name || ''} ${el.id || ''}`
+      ))
+      .map(el => clean(el.value))
+      .filter(v => v && /\D/.test(v) && v.length > 2);
+
+    const preferido = candidatos.find(v =>
+      !/^\d+$/.test(v) &&
+      !/^\d{1,3}\s*(MG|ML|G|MCG)$/i.test(v)
+    );
+
+    if (preferido) return preferido;
+
+    const texto = clean(row.innerText || row.textContent || '');
+    return texto || 'Medicamento';
+  }
+
+  function normalizarObservacaoMedicamento(valor) {
+    const v = clean(valor);
+
+    // O Saúde Simples/alguns fluxos usam traço para representar campo vazio.
+    // Para observação, isso deve ficar realmente vazio.
+    if (/^[-–—]+$/.test(v)) return '';
+
+    return v;
+  }
+
+  function limparTracoObservacaoLinha(row) {
+    if (!row) return;
+
+    const campo = findRowField(
+      row,
+      [/observacao/, /observação/],
+      'input,textarea'
+    );
+
+    if (!campo) return;
+
+    const atual = clean(campo.value);
+    if (!/^[-–—]+$/.test(atual)) return;
+
+    campo.value = '';
+    campo.dispatchEvent(new Event('input', { bubbles: true }));
+    campo.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function camposMedicamentoDaLinha(row) {
+    const via = findRowField(
+      row,
+      [
+        /tipo_uso_medicamento/,
+        /tipo_uso/,
+        /via_administracao/,
+        /via/
+      ],
+      'select,input'
+    );
+
+    const posologia = findRowField(
+      row,
+      [/posologia/],
+      'input,textarea'
+    );
+
+    const observacao = findRowField(
+      row,
+      [/observacao/,/observação/],
+      'input,textarea'
+    );
+
+    return { via, posologia, observacao };
+  }
+
+  function opcoesViaParaEdicao(rowVia) {
+    const fontes = [];
+
+    if (rowVia?.tagName === 'SELECT') {
+      fontes.push(rowVia);
+    }
+
+    const globalVia = document.querySelector('#prontuario_tipo_uso_medicamento_id');
+    if (globalVia?.tagName === 'SELECT' && !fontes.includes(globalVia)) {
+      fontes.push(globalVia);
+    }
+
+    const map = new Map();
+    for (const select of fontes) {
+      for (const opt of [...select.options]) {
+        const value = clean(opt.value);
+        const text = clean(opt.textContent);
+        if (!value || !text) continue;
+        map.set(value, { value, text });
+      }
+    }
+    return [...map.values()];
+  }
+
+  function nomeViaPadrao(v) {
+    return norm(v)
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function medicamentoEscopolaminaDipironaFr20ml(nome) {
+    const n = norm(nome);
+    return (
+      /ESCOPOLAMINA/.test(n) &&
+      /DIPIRONA/.test(n) &&
+      /6[,.]67\s*MG/.test(n) &&
+      /333\s*MG\s*\/\s*ML/.test(n) &&
+      /FR\s*20\s*ML/.test(n)
+    );
+  }
+
+  function filtrarViasEdicao(nome, opts, viaAtual = '') {
+    const principais = new Set([
+      'ORAL',
+      'SUBCUTANEA',
+      'INTRAMUSCULAR',
+      'INTRAVENOSA'
+    ]);
+
+    let filtradas = opts.filter(o => principais.has(nomeViaPadrao(o.text)));
+
+    // Este frasco de 20 mL é apresentação oral. Não oferece vias injetáveis.
+    if (medicamentoEscopolaminaDipironaFr20ml(nome)) {
+      filtradas = filtradas.filter(o => nomeViaPadrao(o.text) === 'ORAL');
+      return filtradas;
+    }
+
+    const n = norm(nome);
+
+    // Regras já existentes no fluxo original.
+    if (
+      /DICLOFENACO SAL SODICO/.test(n) ||
+      /PROMETAZINA CLORIDRATO/.test(n)
+    ) {
+      filtradas = filtradas.filter(o => nomeViaPadrao(o.text) === 'INTRAMUSCULAR');
+      return filtradas;
+    }
+
+    // Apresentação explicitamente injetável: não oferece ORAL no editor.
+    if (
+      /\bINJ\b/.test(n) ||
+      /\bINJETAVEL\b/.test(n) ||
+      /\bSOL(?:UCAO)?\.?\s*INJ\b/.test(n) ||
+      /\bSOLUCAO\s+INJETAVEL\b/.test(n)
+    ) {
+      filtradas = filtradas.filter(o => nomeViaPadrao(o.text) !== 'ORAL');
+    }
+
+    // Se o registro já usa uma via fora das quatro principais, preserva
+    // somente essa via como fallback para não apagar um dado existente.
+    const atual = clean(viaAtual);
+    if (atual && !filtradas.some(o => clean(o.value) === atual)) {
+      const existente = opts.find(o => clean(o.value) === atual);
+      const atualEhOral = existente && nomeViaPadrao(existente.text) === 'ORAL';
+      const inj = (
+        /\bINJ\b/.test(n) ||
+        /\bINJETAVEL\b/.test(n) ||
+        /\bSOL(?:UCAO)?\.?\s*INJ\b/.test(n) ||
+        /\bSOLUCAO\s+INJETAVEL\b/.test(n)
+      );
+
+      if (existente && !(inj && atualEhOral)) {
+        filtradas.push(existente);
+      }
+    }
+
+    return filtradas;
+  }
+
+  function medicamentoExplicitamenteInjetavel(nome) {
+    const n = norm(nome);
+    return (
+      /\bINJ\b/.test(n) ||
+      /\bINJETAVEL\b/.test(n) ||
+      /\bINJETAVEIS\b/.test(n) ||
+      /\bSOL(?:UCAO)?\.?\s*INJ\b/.test(n) ||
+      /\bSOLUCAO\s+INJETAVEL\b/.test(n)
+    );
+  }
+
+  function outrasViasEdicao(nome, optsTodos, optsPrincipais) {
+    const nomeNorm = norm(nome);
+
+    // Medicamentos com via fixa continuam sem "Outras vias".
+    const viaFixaIM =
+      /DICLOFENACO SAL SODICO/.test(nomeNorm) ||
+      /PROMETAZINA CLORIDRATO/.test(nomeNorm);
+
+    if (viaFixaIM) return [];
+
+    // A apresentação ESCOPOLAMINA+DIPIRONA FR20ML foi definida como oral.
+    if (medicamentoEscopolaminaDipironaFr20ml(nome)) return [];
+
+    const jaVisiveis = new Set(
+      (optsPrincipais || []).map(o => clean(o.value))
+    );
+
+    return (optsTodos || []).filter(o => {
+      const valor = clean(o.value);
+      const texto = nomeViaPadrao(o.text);
+
+      if (!valor || jaVisiveis.has(valor)) return false;
+
+      // Se a apresentação é explicitamente injetável, ORAL nunca volta
+      // nem mesmo em "Outras vias".
+      if (medicamentoExplicitamenteInjetavel(nome) && texto === 'ORAL') {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+
+  function textoViaPorValor(value, opts) {
+    const alvo = clean(value);
+    return opts.find(o => clean(o.value) === alvo)?.text || '';
+  }
+
+  function aplicarValorCampo(el, value) {
+    if (!el) return false;
+    el.value = value ?? '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function statusPainel(panel, msg, kind = '') {
+    const el = panel.querySelector('.status');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function abrirEditorMedicacao(panel, row) {
+    if (!row || !medRowAtiva(row)) {
+      statusPainel(panel, 'A medicação não está mais disponível para edição.', 'err');
+      return;
+    }
+
+    const mc = panel.querySelector('.medc');
+    if (!mc) return;
+
+    const nome = nomeMedicamentoDaLinha(row);
+    const campos = camposMedicamentoDaLinha(row);
+    const optsTodos = opcoesViaParaEdicao(campos.via);
+
+    if (!campos.posologia) {
+      statusPainel(panel, 'Não encontrei o campo nativo de posologia desta medicação.', 'err');
+      return;
+    }
+
+    const viaAtual = clean(campos.via?.value);
+    const posAtual = clean(campos.posologia?.value);
+    const obsAtual = normalizarObservacaoMedicamento(campos.observacao?.value);
+    const opts = filtrarViasEdicao(nome, optsTodos, viaAtual);
+    const optsOutras = outrasViasEdicao(nome, optsTodos, opts);
+
+    const nomeNorm = norm(nome);
+    const viaFixaIM =
+      /DICLOFENACO SAL SODICO/.test(nomeNorm) ||
+      /PROMETAZINA CLORIDRATO/.test(nomeNorm);
+
+    let viaInicial = viaAtual;
+    if (viaFixaIM && opts.length) {
+      const im = opts.find(o => norm(o.text) === 'INTRAMUSCULAR');
+      if (im) viaInicial = im.value;
+    }
+
+    const viaHtml = opts.length
+      ? `<select class="om30-med-edit-via"${viaFixaIM ? ' disabled' : ''}>
+          <option value="">Selecione...</option>
+          ${opts.map(o =>
+            `<option value="${String(o.value).replace(/"/g, '&quot;')}"${clean(o.value) === clean(viaInicial) ? ' selected' : ''}>${o.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`
+          ).join('')}
+        </select>`
+      : `<input class="om30-med-edit-via" value="${String(viaInicial).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" placeholder="Via">`;
+
+    mc.innerHTML = `
+      <div class="om30-med-edit-card">
+        <div class="om30-med-edit-head">
+          <div>
+            <div class="om30-med-edit-title">Editar medicação</div>
+            <div class="om30-med-edit-sub">${nome.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+          </div>
+        </div>
+
+        <div class="om30-med-edit-grid">
+          <div class="om30-med-edit-field">
+            <label>Via de administração</label>
+            ${viaHtml}
+            ${viaFixaIM
+              ? '<div class="om30-med-edit-fixed">Via fixa: Intramuscular</div>'
+              : (medicamentoEscopolaminaDipironaFr20ml(nome)
+                  ? '<div class="om30-med-edit-fixed">Via: Oral</div>'
+                  : (optsOutras.length
+                      ? '<button type="button" class="om30-med-edit-morevias">+ Outras vias</button>'
+                      : ''))}
+          </div>
+
+          <div class="om30-med-edit-field">
+            <label>Posologia</label>
+            <input class="om30-med-edit-pos" value="${String(posAtual).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}">
+          </div>
+
+          <div class="om30-med-edit-field full">
+            <label>Observação</label>
+            <textarea class="om30-med-edit-obs">${String(obsAtual).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+          </div>
+        </div>
+
+        <div class="om30-med-edit-actions">
+          <button type="button" class="om30-med-edit-cancel">Cancelar</button>
+          <button type="button" class="om30-med-edit-save">Salvar alteração</button>
+        </div>
+      </div>
+    `;
+
+    const viaEl = mc.querySelector('.om30-med-edit-via');
+    const posEl = mc.querySelector('.om30-med-edit-pos');
+    const obsEl = mc.querySelector('.om30-med-edit-obs');
+    const moreViasEl = mc.querySelector('.om30-med-edit-morevias');
+
+    if (moreViasEl && viaEl?.tagName === 'SELECT') {
+      let outrasAbertas = false;
+
+      moreViasEl.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        outrasAbertas = !outrasAbertas;
+
+        if (outrasAbertas) {
+          for (const o of optsOutras) {
+            if ([...viaEl.options].some(opt => clean(opt.value) === clean(o.value))) continue;
+
+            const option = document.createElement('option');
+            option.value = o.value;
+            option.textContent = o.text;
+            option.dataset.om30OutraVia = '1';
+            viaEl.appendChild(option);
+          }
+
+          moreViasEl.textContent = '− Ocultar outras vias';
+        } else {
+          const valoresOutros = new Set(optsOutras.map(o => clean(o.value)));
+
+          // Se uma via extra estiver selecionada, volta para "Selecione..."
+          // antes de esconder as opções extras.
+          if (valoresOutros.has(clean(viaEl.value))) {
+            viaEl.value = '';
+          }
+
+          [...viaEl.options].forEach(option => {
+            if (option.dataset.om30OutraVia === '1') option.remove();
+          });
+
+          moreViasEl.textContent = '+ Outras vias';
+        }
+      });
+    }
+
+    mc.querySelector('.om30-med-edit-cancel')?.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      mc.innerHTML = '';
+      statusPainel(panel, '');
+    });
+
+    mc.querySelector('.om30-med-edit-save')?.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (!medRowAtiva(row)) {
+        mc.innerHTML = '';
+        statusPainel(panel, 'A medicação foi removida antes de salvar a alteração.', 'err');
+        return;
+      }
+
+      const novosCampos = camposMedicamentoDaLinha(row);
+      if (!novosCampos.posologia) {
+        statusPainel(panel, 'Não encontrei o campo nativo de posologia para salvar.', 'err');
+        return;
+      }
+
+      let novaVia = clean(viaEl?.value);
+      const novaPos = clean(posEl?.value);
+      const novaObs = normalizarObservacaoMedicamento(obsEl?.value);
+
+      if (!novaPos) {
+        statusPainel(panel, 'Informe a posologia.', 'err');
+        posEl?.focus();
+        return;
+      }
+
+      if (viaFixaIM && opts.length) {
+        const im = opts.find(o => norm(o.text) === 'INTRAMUSCULAR');
+        if (im) novaVia = im.value;
+      }
+
+      if (novosCampos.via && !novaVia) {
+        statusPainel(panel, 'Selecione a via de administração.', 'err');
+        viaEl?.focus();
+        return;
+      }
+
+      if (novosCampos.via) aplicarValorCampo(novosCampos.via, novaVia);
+      aplicarValorCampo(novosCampos.posologia, novaPos);
+
+      if (novosCampos.observacao) {
+        aplicarValorCampo(novosCampos.observacao, novaObs);
+        limparTracoObservacaoLinha(row);
+      }
+
+      // Marca a linha para facilitar diagnóstico sem alterar o submit nativo.
+      row.dataset.om30Editada = '1';
+
+      mc.innerHTML = '';
+      statusPainel(panel, `${nome} atualizado.`, 'ok');
+
+      // Força apenas atualização visual local; o formulário nativo continua sendo a fonte real.
+      setTimeout(() => decorarSelecionadosMedicacao(panel), 60);
+    });
+
+    statusPainel(
+      panel,
+      `Editando ${nome}${viaAtual && opts.length ? ` · ${textoViaPorValor(viaAtual, opts) || viaAtual}` : ''}.`
+    );
+
+    setTimeout(() => posEl?.focus(), 0);
+  }
+
+  function decorarSelecionadosMedicacao(panel) {
+    // Garante que observações vazias não fiquem exibidas/salvas como "-".
+    medicationRowsAtivas().forEach(limparTracoObservacaoLinha);
+
+    const tab = panel.querySelector('.tab.on');
+    if (tab?.dataset?.t !== 'medicacao') return;
+
+    const lista = panel.querySelector('.sel .selected-list');
+    if (!lista) return;
+
+    const cards = [...lista.querySelectorAll(':scope > .selected-item')];
+
+    cards.forEach((card, i) => {
+      const remove = card.querySelector('.selected-remove');
+      if (!remove) return;
+
+      let btn = card.querySelector('.om30-edit-med');
+
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'om30-edit-med';
+        btn.textContent = 'Editar';
+        btn.title = 'Editar via, posologia e observação';
+
+        // Insere direto na linha, sem criar/mover wrappers.
+        // Isso evita o "pisca" causado por duas alterações seguidas no DOM.
+        remove.insertAdjacentElement('beforebegin', btn);
+      }
+
+      btn.dataset.i = String(i);
+    });
+  }
+
+
+  function instalarEdicaoMedicacao(panel) {
+    if (!panel || panel.dataset.om30EditMed === '1') return;
+    panel.dataset.om30EditMed = '1';
+
+    ensureMedicationEditStyle();
+    medicationRowsAtivas().forEach(limparTracoObservacaoLinha);
+
+    // Decora imediatamente, sem atraso de 40/50/80 ms.
+    // MutationObserver roda antes do próximo paint, evitando a piscada.
+    const obs = new MutationObserver(mutations => {
+      const precisa = mutations.some(m =>
+        [...m.addedNodes].some(node =>
+          node.nodeType === Node.ELEMENT_NODE &&
+          (
+            node.matches?.('.selected-list,.selected-item') ||
+            node.querySelector?.('.selected-list,.selected-item')
+          )
+        )
+      );
+
+      if (precisa) decorarSelecionadosMedicacao(panel);
+    });
+
+    obs.observe(panel, { childList: true, subtree: true });
+
+    panel.addEventListener('click', e => {
+      const edit = e.target.closest?.('.om30-edit-med');
+      if (edit) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const index = Number(edit.dataset.i);
+        const atuais = medicationRowsAtivas();
+        const row = atuais[index];
+
+        if (!row) {
+          statusPainel(panel, 'Não consegui localizar a linha nativa desta medicação.', 'err');
+          return;
+        }
+
+        abrirEditorMedicacao(panel, row);
+        return;
+      }
+
+      const tab = e.target.closest?.('.tab');
+      if (tab) queueMicrotask(() => decorarSelecionadosMedicacao(panel));
+    });
+
+    decorarSelecionadosMedicacao(panel);
+  }
+
+
+
+  // ============================================================
+  // REVISÃO DE MEDICAÇÃO ANTES DE "SALVAR E REVISAR"
+  // ============================================================
+  // Bloqueia a finalização quando encontrar:
+  // 1) duas ou mais linhas do mesmo medicamento;
+  // 2) medicamento selecionado no TokenInput, mas ainda não incluído;
+  // 3) medicamento claramente injetável configurado como via ORAL.
+  //
+  // Não bloqueia a inclusão nem altera medicação automaticamente:
+  // o médico continua podendo corrigir antes de finalizar.
+  // ============================================================
+
+  const OM30_FINALIZAR_RE =
+    /(?:SALVAR\s*(?:E|&)\s*(?:REVISAR|SAIR)|SALVAR\s*\/\s*(?:REVISAR|SAIR)|SALVAR\s+(?:E\s+)?VOLTAR|FINALIZAR|CONCLUIR\s*ATENDIMENTO)/i;
+
+  function escapeHtmlOm30(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#39;'
+    }[c]));
+  }
+
+  function formProntuarioOm30() {
+    const candidatos = [
+      document.querySelector('#new_prontuario'),
+      ...document.querySelectorAll('form[id^="edit_prontuario_"]'),
+      ...document.querySelectorAll('form[action$="/prontuarios"]'),
+      ...document.querySelectorAll('form[action*="/prontuarios/"]')
+    ].filter(Boolean);
+
+    const unicos = [...new Set(candidatos)];
+
+    return unicos.find(form =>
+      form.querySelector('#prontuario_medicamento_token') ||
+      form.querySelector('tr.prontuario-medicamento-row') ||
+      form.querySelector('[name^="prontuario["]')
+    ) || null;
+  }
+
+  function textoControleFinalizar(el) {
+    if (!el) return '';
+    return clean(
+      el.innerText ||
+      el.textContent ||
+      el.value ||
+      el.getAttribute?.('title') ||
+      el.getAttribute?.('aria-label') ||
+      ''
+    );
+  }
+
+  function ehControleFinalizar(el) {
+    if (!el) return false;
+
+    const texto = norm(textoControleFinalizar(el));
+    const meta = norm([
+      texto,
+      el.id || '',
+      el.getAttribute?.('name') || '',
+      el.getAttribute?.('class') || '',
+      el.getAttribute?.('title') || '',
+      el.getAttribute?.('aria-label') || ''
+    ].join(' '));
+
+    if (OM30_FINALIZAR_RE.test(meta)) return true;
+
+    // Fallback para pequenas variações de texto/layout.
+    if (/SALVAR/.test(meta) && /(REVIS|SAIR|VOLTAR)/.test(meta)) return true;
+    if (/FINALIZAR|CONCLUIR/.test(meta) && /ATEND/.test(meta)) return true;
+
+    return false;
+  }
+
+  function controlesFinalizacaoOm30() {
+    return [...document.querySelectorAll(
+      'button,a,input[type="submit"],input[type="button"]'
+    )].filter(ehControleFinalizar);
+  }
+
+  function ehSalvarESair(el) {
+    if (!el) return false;
+
+    const meta = norm([
+      textoControleFinalizar(el),
+      el.id || '',
+      el.getAttribute?.('name') || '',
+      el.getAttribute?.('class') || '',
+      el.getAttribute?.('title') || '',
+      el.getAttribute?.('aria-label') || ''
+    ].join(' '));
+
+    return /\bSALVAR\s*(?:E|&)\s*SAIR\b/.test(meta) ||
+           /\bSALVAR\s*\/\s*SAIR\b/.test(meta);
+  }
+
+  function controlesSalvarESair() {
+    return [...document.querySelectorAll(
+      'button,a,input[type="submit"],input[type="button"]'
+    )].filter(ehSalvarESair);
+  }
+
+  function bloquearSalvarESair(btn) {
+    if (!btn) return;
+
+    btn.classList.add('om30-salvar-sair-bloqueado');
+    btn.setAttribute('aria-disabled', 'true');
+    btn.setAttribute('title', 'Bloqueado para evitar saída sem finalizar o atendimento.');
+
+    if (
+      btn instanceof HTMLButtonElement ||
+      (btn instanceof HTMLInputElement && /^(submit|button)$/i.test(btn.type || ''))
+    ) {
+      btn.disabled = true;
+    }
+
+    if (btn instanceof HTMLAnchorElement) {
+      if (!('om30PrevHrefSalvarSair' in btn.dataset)) {
+        btn.dataset.om30PrevHrefSalvarSair = btn.getAttribute('href') || '';
+      }
+      btn.removeAttribute('href');
+      btn.setAttribute('tabindex', '-1');
+    }
+  }
+
+  function garantirSalvarESairBloqueado() {
+    controlesSalvarESair().forEach(bloquearSalvarESair);
+  }
+
+
+
+  function valorCampoMedicamento(row, patterns, tags = 'input,select,textarea') {
+    const el = [...row.querySelectorAll(tags)].find(campo => {
+      const chave = `${campo.name || ''} ${campo.id || ''} ${campo.className || ''}`.toLowerCase();
+      return patterns.some(re => re.test(chave));
+    }) || null;
+    return el;
+  }
+
+  function identidadeMedicamentoLinha(row) {
+    if (!row) return { key:'', nome:'Medicamento' };
+
+    const candidatosId = [...row.querySelectorAll('input,select,textarea')]
+      .filter(el => {
+        const chave = `${el.name || ''} ${el.id || ''}`.toLowerCase();
+        return /medicamento/.test(chave) &&
+               !/posologia|observacao|quantidade|tipo_uso|via|_destroy/.test(chave);
+      })
+      .map(el => clean(el.value))
+      .filter(Boolean);
+
+    // Prefere um ID numérico interno quando o formulário o expõe.
+    const id = candidatosId.find(v => /^\d+$/.test(v));
+
+    const nome = typeof nomeMedicamentoDaLinha === 'function'
+      ? nomeMedicamentoDaLinha(row)
+      : (
+          candidatosId.find(v => /\D/.test(v) && v.length > 2) ||
+          clean(row.innerText || row.textContent || '') ||
+          'Medicamento'
+        );
+
+    const nomeNormalizado = norm(nome)
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return {
+      key: id ? `ID:${id}` : `NOME:${nomeNormalizado}`,
+      nome: clean(nome) || 'Medicamento'
+    };
+  }
+
+  function viaMedicamentoLinha(row) {
+    if (!row) return { value:'', text:'' };
+
+    const campo = valorCampoMedicamento(
+      row,
+      [/tipo_uso_medicamento/, /tipo_uso/, /via_administracao/, /via/],
+      'select,input'
+    );
+
+    if (!campo) return { value:'', text:'' };
+
+    const value = clean(campo.value);
+    let text = '';
+
+    if (campo.tagName === 'SELECT') {
+      text = clean(campo.selectedOptions?.[0]?.textContent || '');
+    }
+
+    // Se a linha guarda somente o ID da via, usa o select nativo do formulário
+    // como tabela para transformar o valor em "ORAL", "INTRAMUSCULAR" etc.
+    if (!text && value) {
+      const global = document.querySelector('#prontuario_tipo_uso_medicamento_id');
+      if (global?.tagName === 'SELECT') {
+        const opt = [...global.options].find(o => clean(o.value) === value);
+        text = clean(opt?.textContent || '');
+      }
+    }
+
+    if (!text) text = value;
+
+    return { value, text };
+  }
+
+  function medicamentoPareceInjetavel(nome) {
+    // Exceção confirmada: ESCOPOLAMINA BUTIL+DIPIRONA 6,67MG+333MG/ML FR20ML
+    // é apresentação oral e não deve gerar alerta de via injetável.
+    if (medicamentoEscopolaminaDipironaFr20ml(nome)) return false;
+
+    const n = norm(nome);
+    return (
+      /\bINJ\b/.test(n) ||
+      /\bINJETAVEL\b/.test(n) ||
+      /\bINJETAVEIS\b/.test(n) ||
+      /\bSOL(?:UCAO)?\.?\s*INJ\b/.test(n) ||
+      /\bSOLUCAO\s+INJETAVEL\b/.test(n)
+    );
+  }
+
+  function viaEhOral(viaText) {
+    return /\bORAL\b/.test(norm(viaText));
+  }
+
+  function tokenMedicamentoPendente(panel = null) {
+    const pendencias = [];
+
+    // A) Composer do próprio OM30: o médico clicou em "Selecionar",
+    // abriu "Preparar medicamento", mas ainda NÃO clicou em "Incluir medicamento".
+    const painel = panel || document.querySelector('#om30pa');
+    const composer = painel?.querySelector('.medc .med');
+    const botaoIncluir = composer?.querySelector('.madd');
+
+    if (composer && botaoIncluir) {
+      const nome = clean(
+        composer.querySelector('.medname')?.textContent ||
+        'Medicamento selecionado'
+      );
+
+      pendencias.push({
+        origem: 'composer-om30',
+        nome
+      });
+    }
+
+    // B) TokenInput nativo do Saúde Simples: medicamento escolhido no campo
+    // nativo, mas ainda não transformado em uma linha de medicação.
+    const token = document.querySelector('#prontuario_medicamento_token');
+    if (token) {
+      let itens = [];
+
+      try {
+        const $ = window.jQuery;
+        if ($ && typeof $(token).tokenInput === 'function') {
+          const got = $(token).tokenInput('get');
+          itens = Array.isArray(got) ? got : (got ? [got] : []);
+        }
+      } catch (_) {}
+
+      // O jquery-tokeninput costuma criar um input visível separado:
+      // #token-input-prontuario_medicamento_token.
+      if (!itens.length) {
+        const inputVisivel =
+          document.querySelector('#token-input-prontuario_medicamento_token') ||
+          token.parentElement?.querySelector?.('input[id^="token-input-"]');
+
+        const valorVisivel = clean(inputVisivel?.value);
+        if (valorVisivel) itens = [{ name: valorVisivel }];
+      }
+
+      // Também procura os "chips" visuais do TokenInput.
+      if (!itens.length) {
+        const container =
+          token.closest('[class*="token-input"]') ||
+          token.parentElement ||
+          document;
+
+        const visuais = [
+          ...container.querySelectorAll(
+            'li.token-input-token, li[class*="token-input-token"], span[class*="token-input-token"]'
+          )
+        ];
+
+        itens = visuais
+          .map(el => ({
+            name: clean(el.textContent)
+              .replace(/[×✕]\s*$/, '')
+              .trim()
+          }))
+          .filter(x => x.name);
+      }
+
+      // Último fallback: valor do próprio campo original.
+      if (!itens.length && clean(token.value)) {
+        itens = [{ name: clean(token.value) }];
+      }
+
+      for (const item of itens) {
+        const nome = clean(
+          item?.name ||
+          item?.nome ||
+          item?.descricao ||
+          item?.text ||
+          item?.label ||
+          item?.codigo ||
+          item?.id ||
+          'Medicamento selecionado'
+        );
+
+        if (nome) {
+          pendencias.push({
+            origem: 'token-nativo',
+            nome
+          });
+        }
+      }
+    }
+
+    // Remove duplicação visual caso o mesmo medicamento apareça no composer
+    // e no token nativo ao mesmo tempo.
+    const unicos = [];
+    const vistos = new Set();
+
+    for (const p of pendencias) {
+      const chave = norm(p.nome);
+      if (!chave || vistos.has(chave)) continue;
+      vistos.add(chave);
+      unicos.push(p);
+    }
+
+    if (!unicos.length) return null;
+
+    return {
+      count: unicos.length,
+      nomes: unicos.map(x => x.nome),
+      origens: unicos.map(x => x.origem)
+    };
+  }
+
+  function revisarMedicacoesOm30(panel = null) {
+    const rows = typeof medicationRowsAtivas === 'function'
+      ? medicationRowsAtivas()
+      : [...document.querySelectorAll('tr.prontuario-medicamento-row')].filter(row => {
+          const destroy = row.querySelector('input[name$="[_destroy]"]');
+          const dv = clean(destroy?.value).toLowerCase();
+          return dv !== '1' && dv !== 'true' && getComputedStyle(row).display !== 'none';
+        });
+
+    const problemas = [];
+    const grupos = new Map();
+
+    for (const row of rows) {
+      const ident = identidadeMedicamentoLinha(row);
+      if (!ident.key || ident.key === 'NOME:MEDICAMENTO') continue;
+
+      if (!grupos.has(ident.key)) {
+        grupos.set(ident.key, { nome: ident.nome, rows: [] });
+      }
+      grupos.get(ident.key).rows.push(row);
+    }
+
+    // 1) Duplicidades
+    for (const grupo of grupos.values()) {
+      if (grupo.rows.length > 1) {
+        problemas.push({
+          tipo: 'duplicado',
+          titulo: 'Medicação duplicada',
+          mensagem: `${grupo.nome} foi incluída ${grupo.rows.length} vezes.`,
+          rows: grupo.rows
+        });
+      }
+    }
+
+    // 2) Medicamento selecionado, mas não incluído
+    const pendente = tokenMedicamentoPendente(panel);
+    if (pendente) {
+      problemas.push({
+        tipo: 'pendente',
+        titulo: 'Medicação ainda não incluída',
+        mensagem: pendente.nomes.length === 1
+          ? `${pendente.nomes[0]} está selecionada, mas o botão Incluir ainda não foi acionado.`
+          : `${pendente.count} medicamentos estão selecionados, mas ainda não foram incluídos.`,
+        rows: []
+      });
+    }
+
+    // 3) Injetável configurado como ORAL
+    for (const row of rows) {
+      const ident = identidadeMedicamentoLinha(row);
+      const via = viaMedicamentoLinha(row);
+
+      if (
+        ident.nome &&
+        medicamentoPareceInjetavel(ident.nome) &&
+        viaEhOral(via.text)
+      ) {
+        problemas.push({
+          tipo: 'via',
+          titulo: 'Via incompatível com a apresentação',
+          mensagem: `${ident.nome} está descrita como injetável, mas a via selecionada é ORAL.`,
+          rows: [row]
+        });
+      }
+    }
+
+    return problemas;
+  }
+
+  function abrirControleSalasParaRevisao(panel) {
+    try {
+      const body = panel?.closest('.om30-cs-native-body');
+      if (body) {
+        body.classList.add('open');
+        const header = body.previousElementSibling;
+        if (header?.classList?.contains('om30-cs-native-header')) {
+          header.classList.add('open');
+        }
+      }
+
+      // Vai direto para a aba de Medicação quando possível.
+      const tab = panel?.querySelector('.tab[data-t="medicacao"]');
+      if (tab && !tab.classList.contains('on')) tab.click();
+
+      setTimeout(() => {
+        panel?.scrollIntoView?.({ behavior:'smooth', block:'center' });
+      }, 60);
+    } catch (_) {}
+  }
+
+  function ensureReviewStyle() {
+    if (document.getElementById('om30-pa-review-med-style')) return;
+
+    const st = document.createElement('style');
+    st.id = 'om30-pa-review-med-style';
+    st.textContent = `
+      #om30pa .om30-med-review-banner{
+        display:none;
+        margin:7px 0 2px;
+        border:1px solid #efc9c5;
+        background:#fff7f6;
+        color:#8e3f39;
+        border-radius:8px;
+        padding:7px 8px;
+        font-size:8.5px;
+        line-height:1.35;
+        font-weight:700;
+      }
+      #om30pa .om30-med-review-banner.show{display:block}
+      .om30-salvar-sair-bloqueado{
+        opacity:.45!important;
+        cursor:not-allowed!important;
+        filter:grayscale(.15);
+      }
+      a.om30-salvar-sair-bloqueado{
+        pointer-events:none!important;
+      }
+      #om30-med-review-modal{
+        position:fixed;
+        inset:0;
+        z-index:2147483646;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        padding:24px;
+        box-sizing:border-box;
+        background:rgba(0,0,0,.34);
+        font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+      }
+      #om30-med-review-modal .om30-review-box{
+        position:relative;
+        width:min(540px,calc(100vw - 32px));
+        max-height:min(720px,calc(100vh - 42px));
+        overflow:auto;
+        box-sizing:border-box;
+        padding:22px 20px 18px;
+        background:#fff;
+        border:1px solid #e7e7e7;
+        border-radius:24px;
+        box-shadow:0 18px 50px rgba(0,0,0,.18),0 2px 8px rgba(0,0,0,.06);
+        color:#111;
+      }
+      #om30-med-review-modal .om30-review-close{
+        position:absolute;
+        top:14px;
+        right:15px;
+        width:31px;
+        height:31px;
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        padding:0;
+        border:0;
+        border-radius:999px;
+        background:#fff;
+        color:#111;
+        font-size:22px;
+        line-height:1;
+        font-weight:400;
+        cursor:pointer;
+      }
+      #om30-med-review-modal .om30-review-close:hover{
+        background:#f7f7f7;
+      }
+      #om30-med-review-modal .om30-review-head{
+        display:block;
+        padding:0 42px 0 0;
+        border:0;
+      }
+      #om30-med-review-modal .om30-review-badge{
+        display:none;
+      }
+      #om30-med-review-modal .om30-review-head-main{
+        min-width:0;
+      }
+      #om30-med-review-modal .om30-review-title{
+        margin:0;
+        color:#111;
+        font-size:20px;
+        line-height:1.28;
+        font-weight:650;
+        letter-spacing:-.2px;
+      }
+      #om30-med-review-modal .om30-review-sub{
+        margin-top:18px;
+        color:#565656;
+        font-size:14px;
+        line-height:1.5;
+        font-weight:400;
+      }
+      #om30-med-review-modal .om30-review-list{
+        padding:18px 0 0;
+      }
+      #om30-med-review-modal .om30-review-item{
+        margin:0 0 9px;
+        padding:11px 12px;
+        border:1px solid #f2c8c3;
+        background:#fff8f7;
+        border-radius:12px;
+      }
+      #om30-med-review-modal .om30-review-item:last-child{
+        margin-bottom:0;
+      }
+      #om30-med-review-modal .om30-review-item-title{
+        margin:0 0 3px;
+        color:#a13d36;
+        font-size:12.5px;
+        line-height:1.3;
+        font-weight:700;
+      }
+      #om30-med-review-modal .om30-review-item-msg{
+        color:#555;
+        font-size:11.5px;
+        line-height:1.45;
+        font-weight:400;
+      }
+      #om30-med-review-modal .om30-review-actions{
+        display:flex;
+        justify-content:flex-end;
+        align-items:center;
+        padding:0;
+        margin-top:20px;
+      }
+      #om30-med-review-modal .om30-review-return{
+        min-height:38px;
+        padding:8px 17px;
+        border:1px solid #9ec5ff;
+        border-radius:999px;
+        background:#eaf3ff;
+        color:#0f3f86;
+        font-size:14px;
+        line-height:1.2;
+        font-weight:600;
+        cursor:pointer;
+        box-shadow:none;
+        transition:background .15s ease,border-color .15s ease,transform .08s ease;
+      }
+      #om30-med-review-modal .om30-review-return:hover{
+        background:#dcecff;
+        border-color:#78adf8;
+      }
+      #om30-med-review-modal .om30-review-return:active{
+        transform:scale(.985);
+      }
+      @media (max-width:560px){
+        #om30-med-review-modal .om30-review-box{
+          padding:20px 18px 16px;
+          border-radius:20px;
+        }
+        #om30-med-review-modal .om30-review-actions{
+          align-items:stretch;
+        }
+        #om30-med-review-modal .om30-review-return{
+          width:100%;
+        }
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function mostrarModalRevisaoMedicacao(problemas, panel) {
+    ensureReviewStyle();
+
+    document.getElementById('om30-med-review-modal')?.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'om30-med-review-modal';
+    modal.innerHTML = `
+      <div class="om30-review-box" role="dialog" aria-modal="true" aria-labelledby="om30-review-title">
+        <button type="button" class="om30-review-close" aria-label="Fechar">×</button>
+
+        <div class="om30-review-head">
+          <div class="om30-review-head-main">
+            <div class="om30-review-title" id="om30-review-title">Revisar medicações antes de finalizar</div>
+            <div class="om30-review-sub">
+              ${problemas.length === 1
+                ? 'Encontramos 1 pendência na medicação deste atendimento.'
+                : `Encontramos ${problemas.length} pendências na medicação deste atendimento.`}
+            </div>
+          </div>
+        </div>
+
+        <div class="om30-review-list">
+          ${problemas.map(p => `
+            <div class="om30-review-item">
+              <div class="om30-review-item-title">${escapeHtmlOm30(p.titulo)}</div>
+              <div class="om30-review-item-msg">${escapeHtmlOm30(p.mensagem)}</div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="om30-review-actions">
+          <button type="button" class="om30-review-return">Revisar medicações</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const revisar = () => {
+      modal.remove();
+      abrirControleSalasParaRevisao(panel);
+    };
+
+    modal.querySelector('.om30-review-return')?.addEventListener('click', revisar);
+    modal.querySelector('.om30-review-close')?.addEventListener('click', () => modal.remove());
+
+    // Clique fora apenas fecha o popup; não finaliza.
+    modal.addEventListener('click', e => {
+      if (e.target === modal) modal.remove();
+    });
+
+    console.warn('[OM30 PA] Finalização impedida até revisar as medicações:', problemas);
+  }
+
+
+  function atualizarAvisoRevisaoMedicacao(panel) {
+    if (!panel) return;
+
+    ensureReviewStyle();
+
+    let banner = panel.querySelector('.om30-med-review-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.className = 'om30-med-review-banner';
+
+      const status = panel.querySelector('.status');
+      if (status?.parentElement) {
+        status.insertAdjacentElement('beforebegin', banner);
+      } else {
+        panel.querySelector('.obody')?.appendChild(banner);
+      }
+    }
+
+    const problemas = revisarMedicacoesOm30(panel);
+
+    if (problemas.length) {
+      const qtdDup = problemas.filter(p => p.tipo === 'duplicado').length;
+      const qtdPend = problemas.filter(p => p.tipo === 'pendente').length;
+      const qtdVia = problemas.filter(p => p.tipo === 'via').length;
+
+      const partes = [];
+      if (qtdDup) partes.push(`${qtdDup} duplicidade${qtdDup > 1 ? 's' : ''}`);
+      if (qtdPend) partes.push('medicação não incluída');
+      if (qtdVia) partes.push(`${qtdVia} via${qtdVia > 1 ? 's' : ''} para revisar`);
+
+      banner.textContent = `⚠ Revisão de medicação pendente: ${partes.join(' • ')}.`;
+      banner.classList.add('show');
+    } else {
+      banner.textContent = '';
+      banner.classList.remove('show');
+    }
+
+    // Regra operacional:
+    // - "Salvar e Sair" fica SEMPRE bloqueado, com ou sem pendência de medicação.
+    // - Pendências de medicação impedem "Finalizar"/"Salvar e revisar" até revisão.
+    garantirSalvarESairBloqueado();
+  }
+
+  function instalarRevisaoAntesDeFinalizar(panel) {
+    if (window.__OM30_PA_MED_REVIEW_INSTALLED__) return;
+    window.__OM30_PA_MED_REVIEW_INSTALLED__ = true;
+
+    ensureReviewStyle();
+
+    // Guardião visual: acompanha inclusão, remoção e edição de medicações.
+    let timerReview = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(timerReview);
+      timerReview = setTimeout(() => atualizarAvisoRevisaoMedicacao(panel), 90);
+    });
+
+    observer.observe(document.documentElement, {
+      childList:true,
+      subtree:true,
+      attributes:true,
+      attributeFilter:['value','style']
+    });
+
+    document.addEventListener('change', () => {
+      clearTimeout(timerReview);
+      timerReview = setTimeout(() => atualizarAvisoRevisaoMedicacao(panel), 60);
+    }, true);
+
+    document.addEventListener('input', () => {
+      clearTimeout(timerReview);
+      timerReview = setTimeout(() => atualizarAvisoRevisaoMedicacao(panel), 80);
+    }, true);
+
+
+    // O rodapé pode ser redesenhado pelo Saúde Simples sem mexer nas medicações.
+    // Mantém somente o "Salvar e Sair" bloqueado o tempo todo.
+    setInterval(garantirSalvarESairBloqueado, 700);
+    garantirSalvarESairBloqueado();
+
+    // "Salvar e Sair" é bloqueado SEMPRE, independente de medicação.
+    // A captura abaixo também protege caso o Saúde Simples recrie o botão
+    // antes do observer reaplicar o atributo disabled.
+    document.addEventListener('click', e => {
+      const alvo = e.target.closest?.(
+        'button,a,input[type="submit"],input[type="button"]'
+      );
+      if (!alvo) return;
+
+      // "Salvar e Sair" continua SEMPRE bloqueado.
+      if (ehSalvarESair(alvo)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        bloquearSalvarESair(alvo);
+        return;
+      }
+
+      if (!ehControleFinalizar(alvo)) return;
+
+      const problemas = revisarMedicacoesOm30(panel);
+      if (!problemas.length) return;
+
+      // Havendo pendência de medicação, não deixa finalizar.
+      // Mostra somente a opção "Revisar medicações".
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+
+      mostrarModalRevisaoMedicacao(problemas, panel);
+    }, true);
+
+
+    // Se "Salvar e Sair" tentar submeter por outro mecanismo, bloqueia também.
+    document.addEventListener('submit', e => {
+      const form = formProntuarioOm30();
+      if (!form || e.target !== form) return;
+
+      const submitter = e.submitter || null;
+
+      if (submitter && ehSalvarESair(submitter)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        bloquearSalvarESair(submitter);
+        return;
+      }
+
+      // Se for uma finalização e houver pendência de medicação, bloqueia.
+      if (submitter && ehControleFinalizar(submitter)) {
+        const problemas = revisarMedicacoesOm30(panel);
+        if (problemas.length) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          mostrarModalRevisaoMedicacao(problemas, panel);
+        }
+      }
+    }, true);
+
+
+    // Diagnóstico manual no console, se precisar conferir o que o script viu.
+    window.OM30_PA_REVISAR_MEDICACOES = () => {
+      const problemas = revisarMedicacoesOm30(panel);
+      console.table(problemas.map(p => ({
+        tipo:p.tipo,
+        titulo:p.titulo,
+        mensagem:p.mensagem
+      })));
+      return problemas;
+    };
+
+    window.OM30_PA_DIAGNOSTICO_FINALIZACAO = () => {
+      const form = formProntuarioOm30();
+      const botoes = controlesFinalizacaoOm30()
+        .map(el => ({
+          texto: textoControleFinalizar(el),
+          finalizador: true,
+          salvarESair: ehSalvarESair(el),
+          bloqueado: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+          tag: el.tagName,
+          type: el.getAttribute('type') || '',
+          id: el.id || '',
+          classe: clean(el.className)
+        }));
+
+      const pendente = tokenMedicamentoPendente(panel);
+      const problemas = revisarMedicacoesOm30(panel);
+
+      console.log('🧪 OM30 PA - DIAGNÓSTICO FINALIZAÇÃO');
+      console.log('Formulário:', form);
+      console.table(botoes);
+      console.log('Medicação pendente:', pendente);
+      console.table(problemas.map(p => ({
+        tipo:p.tipo,
+        titulo:p.titulo,
+        mensagem:p.mensagem
+      })));
+
+      return { form, botoes, pendente, problemas };
+    };
+
+    setTimeout(() => atualizarAvisoRevisaoMedicacao(panel), 180);
+  }
+
+  function enhancePanel(panel) {
+    if (!panel || panel.dataset.om30ContaTeste === '1') return;
+    panel.dataset.om30ContaTeste = '1';
+
+    ensureStyle();
+    ensureMedicationEditStyle();
+    installCloudPreferenceGate(panel);
+    installStableHiddenFavorites(panel);
+    ensurePadraoPaAtualizado();
+    addBackupButtons(panel);
+    instalarEdicaoMedicacao(panel);
+    instalarRevisaoAntesDeFinalizar(panel);
+    updateSearchState(panel);
+
+    const gear = panel.querySelector('.og');
+    const settingsClose = panel.querySelector('.settings .sclose');
+    gear?.addEventListener('click', () => {
+      // O onclick original alterna .open; normalizamos para a página própria logo depois.
+      setTimeout(() => enterSettingsPage(panel), 0);
+    });
+    settingsClose?.addEventListener('click', () => {
+      setTimeout(() => leaveSettingsPage(panel), 0);
+    });
+
+    // Favoritos pessoais usam Cloudflare sob demanda; padrão da unidade permanece como base.
+    // Remoções do padrão ficam persistidas por unidade + grupo + código.
+
+    const input = panel.querySelector('.search');
+    if (input) {
+      input.addEventListener('input', () => updateSearchState(panel));
+      input.addEventListener('search', () => updateSearchState(panel));
+    }
+
+    console.info('[OM30 PA CLOUD] Preferências pessoais sob demanda; ocultos persistentes por unidade/grupo/código; zero request Cloudflare no simples carregamento.');
+  }
+
+  function scan() {
+    document.querySelectorAll('#om30pa').forEach(enhancePanel);
+  }
+
+  function startUiWatcher() {
+    scan();
+    const observer = new MutationObserver(scan);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  installRealControlRoomFlowCapture();
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startUiWatcher, { once: true });
+  } else {
+    startUiWatcher();
+  }
+
+  console.info('[OM30 PA TESTE] OM30 Procedimentos PA v2.0.0 carregado; favoritos pessoais por médico no om30-preferencias + fluxo real do Controle de Salas no om30-fluxo-ordens no Worker om30-fluxo-ordens + padrão da unidade + ocultação permanente por unidade/grupo/código + salvamento de favoritos 3s após a última alteração + edição sem piscar + vias filtradas + Salvar e Sair sempre bloqueado + revisão obrigatória + aviso estilo ChatGPT ao salvar sem retorno médico + popup de sucesso nativo preservado + observação sem traço + outras vias no editar; GitHub não foi alterado.');
+})();
+}

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.39
+// @version      3.0.40
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.39
+    /* OM30 - CONTROLE DE SALAS v3.0.40
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -4024,6 +4024,9 @@
             atualizando:false,
             ultimaLeitura:0,
             ultimoErro:'',
+            emAndamento:new Set(),
+            retryMudancaTimer:null,
+            forcarDepois:false,
         };
         function atendimentoPres(str) {
             const m=String(str||'').match(/^([A-Za-z0-9_]+)#(\d+)$/); if(!m||!/^Atendimento/i.test(m[1]))return null;
@@ -4034,15 +4037,62 @@
         async function presReq(path,payload) {
             return csPresReq(path,payload,false);
         }
-        async function atualizarPresencas(vm,lista) {
-            const setor=setorDaColecao(vm); if(!setor||PRES.atualizando) return;
+        async function atualizarPresencas(vm,lista,opcoes={}) {
+            const setor=setorDaColecao(vm); if(!setor) return;
 
-            // A lista pode recarregar várias vezes entre timer/foco/render. No máximo
-            // um batch normal por minuto nesta aba. A primeira leitura nunca é bloqueada.
-            const agora=Date.now();
-            if(PRES.ultimaLeitura && agora-PRES.ultimaLeitura<55000){
+            // Detecta a mudança que realmente importa: paciente entrou em "Em Andamento".
+            // A própria carga da fila chama esta função; portanto, quando o status muda,
+            // fazemos um batch imediatamente sem esperar o watchdog.
+            const atualEmAndamento=new Set(
+                (lista||[])
+                    .filter(it=>it?.status==='Em Andamento')
+                    .map(it=>String(
+                        it?.atendimento_str||
+                        it?.atendimentoStr||
+                        it?.atendimento||
+                        it?.encaminhamento_id||
+                        it?.senha||
+                        ''
+                    ))
+                    .filter(Boolean)
+            );
+            const novosEmAndamento=[...atualEmAndamento].filter(k=>!PRES.emAndamento.has(k));
+            PRES.emAndamento=atualEmAndamento;
+
+            const forcarMudanca=novosEmAndamento.length>0;
+            const forcar=Boolean(opcoes?.forcar||forcarMudanca);
+
+            if(PRES.atualizando){
+                if(forcar)PRES.forcarDepois=true;
+                return;
+            }
+
+            // Sem ninguém em atendimento, não há motivo para fazer polling de presença.
+            // Uma nova entrada será percebida pela próxima carga normal da fila.
+            if(!atualEmAndamento.size&&!forcar){
                 try{vm.$nextTick(pintarMedicacoes);}catch(_){}
                 return;
+            }
+
+            // Watchdog: no máximo um batch normal a cada ~30 s por aba.
+            // Mudança para Em Andamento e retry explícito ignoram este throttle.
+            const agora=Date.now();
+            if(!forcar&&PRES.ultimaLeitura&&agora-PRES.ultimaLeitura<28000){
+                try{vm.$nextTick(pintarMedicacoes);}catch(_){}
+                return;
+            }
+
+            if(forcarMudanca){
+                // A ficha e a fila podem mudar quase ao mesmo tempo. Faz uma segunda
+                // conferência única 6 s depois para cobrir a pequena corrida do upsert.
+                clearTimeout(PRES.retryMudancaTimer);
+                PRES.retryMudancaTimer=setTimeout(()=>{
+                    if(document.visibilityState==='hidden')return;
+                    const atual=Array.isArray(CS?.colecao?.items)&&CS.colecao.items.length
+                        ? CS.colecao.items
+                        : Array.from(CS?.itens?.values?.()||[]);
+                    atualizarPresencas(vm,atual,{forcar:true,motivo:'retry-entrada-em-atendimento'}).catch(()=>{});
+                },6000);
             }
 
             PRES.atualizando=true;
@@ -4156,10 +4206,20 @@
                 try{vm.$nextTick(pintarMedicacoes);}catch(_){}
             }finally{
                 PRES.atualizando=false;
+                if(PRES.forcarDepois){
+                    PRES.forcarDepois=false;
+                    setTimeout(()=>{
+                        if(document.visibilityState==='hidden')return;
+                        const atual=Array.isArray(CS?.colecao?.items)&&CS.colecao.items.length
+                            ? CS.colecao.items
+                            : Array.from(CS?.itens?.values?.()||[]);
+                        atualizarPresencas(vm,atual,{forcar:true,motivo:'mudanca-durante-leitura'}).catch(()=>{});
+                    },250);
+                }
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.39',
+            versao: '3.0.40',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length
@@ -4176,7 +4236,9 @@
                 atualizando:PRES.atualizando,
                 usoLocalCloudflare:(()=>{
                     try{return JSON.parse(localStorage.getItem(CS_REQ_DIA)||'null');}catch(_){return null;}
-                })()
+                })(),
+                emAndamento:Array.from(PRES.emAndamento),
+                watchdogMs:30000
             }),
             testar: async (atendimento, sala='medicacao') => {
                 const a=atendimentoPres(String(atendimento||'').includes('#') ? atendimento : `AtendimentoPa#${String(atendimento||'').match(/\d+/)?.[0]||''}`);
@@ -4194,9 +4256,14 @@
             window.__OM30_PRESENCA_AUTOREFRESH__=true;
             const atualizarPresencaVisivel=()=>{
                 if(document.visibilityState==='hidden')return;
-                window.OM30CloudflarePresenca?.atualizar?.().catch?.(()=>{});
+                const lista=Array.isArray(CS?.colecao?.items)&&CS.colecao.items.length
+                    ? CS.colecao.items
+                    : Array.from(CS?.itens?.values?.()||[]);
+                if(!lista.some(it=>it?.status==='Em Andamento'))return;
+                atualizarPresencas(CS.colecao,lista,{motivo:'watchdog'}).catch?.(()=>{});
             };
-            window.__OM30_PRESENCA_TIMER__=setInterval(atualizarPresencaVisivel,60000);
+            // Watchdog apenas enquanto houver alguém em atendimento.
+            window.__OM30_PRESENCA_TIMER__=setInterval(atualizarPresencaVisivel,30000);
             window.addEventListener('focus',atualizarPresencaVisivel,{passive:true});
             window.addEventListener('online',atualizarPresencaVisivel,{passive:true});
             document.addEventListener('visibilitychange',()=>{
@@ -4205,16 +4272,37 @@
         }
 
         function nomePresencaVisual(nome){
-            const original=String(nome||'').replace(/\s+/g,' ').trim();
+            let original=String(nome||'').replace(/\s+/g,' ').trim();
             if(!original)return '';
-            // /current_usuario costuma devolver o nome em caixa alta. Para o card,
-            // converte apenas quando ele vier TODO em maiúsculas.
-            if(original!==original.toUpperCase())return original;
-            const minusculas=new Set(['da','das','de','do','dos','e']);
-            return original.toLocaleLowerCase('pt-BR').split(' ').map((p,i)=>{
-                if(i>0&&minusculas.has(p))return p;
-                return p ? p.charAt(0).toLocaleUpperCase('pt-BR')+p.slice(1) : p;
-            }).join(' ');
+
+            const conectores=new Set(['da','das','de','do','dos','e']);
+            if(original===original.toUpperCase()){
+                original=original.toLocaleLowerCase('pt-BR').split(' ').map((p,i)=>{
+                    if(i>0&&conectores.has(p))return p;
+                    return p ? p.charAt(0).toLocaleUpperCase('pt-BR')+p.slice(1) : p;
+                }).join(' ');
+            }
+
+            // Nome curto: preserva inteiro. Nome longo: Primeiro + iniciais + Último,
+            // ex.: PEDRO JUSTINO SAMPAIO ANDRADE -> Pedro J. S. Andrade.
+            if(original.length<=24)return original;
+
+            const partes=original.split(' ').filter(Boolean);
+            if(partes.length<2)return original;
+
+            const primeiro=partes[0];
+            const ultimo=partes[partes.length-1];
+            const meios=partes.slice(1,-1)
+                .filter(p=>!conectores.has(p.toLocaleLowerCase('pt-BR')))
+                .map(p=>p.charAt(0).toLocaleUpperCase('pt-BR')+'.');
+
+            const compacto=[primeiro,...meios,ultimo].join(' ');
+            if(compacto.length<=26)return compacto;
+
+            const curto=`${primeiro} ${ultimo}`;
+            if(curto.length<=26)return curto;
+
+            return `${primeiro.charAt(0).toLocaleUpperCase('pt-BR')}. ${ultimo}`;
         }
 
         function aplicarPresencaNaLinha(tr,it,setor,campos){
@@ -4401,52 +4489,60 @@
               box-sizing:border-box !important;
             }
             .om30-ficha-aberta {
-              display:inline-grid;
-              grid-template-columns:8px minmax(0,1fr);
+              position:relative;
+              display:inline-flex;
               align-items:center;
-              column-gap:6px;
+              justify-content:center;
               width:128px;
               max-width:100%;
               box-sizing:border-box;
               margin:0 auto;
-              padding:6px 7px;
+              padding:6px 16px;
               border:1px solid #1d4ed8;
               border-radius:8px;
               background:#2563eb;
               color:#fff !important;
               font-family:Arial,sans-serif !important;
-              text-align:left;
+              text-align:center;
               white-space:normal;
               box-shadow:0 1px 3px rgba(37,99,235,.22);
             }
             .om30-ficha-aberta::before { content:none; }
             .om30-ficha-aberta .om30-atendimento-ponto {
-              width:8px;
-              height:8px;
+              position:absolute;
+              left:7px;
+              top:50%;
+              transform:translateY(-50%);
+              width:7px;
+              height:7px;
               border-radius:50%;
               background:#fff;
               display:block;
               box-shadow:0 0 0 2px rgba(255,255,255,.20);
             }
             .om30-ficha-aberta .om30-atendimento-texto {
+              display:block;
+              width:100%;
               min-width:0;
               color:#fff !important;
+              text-align:center !important;
             }
             .om30-ficha-aberta .om30-atendimento-texto strong {
               display:block;
+              width:100%;
               color:#fff !important;
               font-size:8px !important;
               line-height:1.08;
               font-weight:900;
               text-transform:uppercase;
-              letter-spacing:.045em;
+              letter-spacing:.035em;
               white-space:nowrap;
+              text-align:center !important;
             }
             .om30-ficha-aberta .om30-atendimento-texto small {
-              display:-webkit-box;
-              -webkit-box-orient:vertical;
-              -webkit-line-clamp:2;
-              overflow:hidden;
+              display:block;
+              width:100%;
+              overflow:visible;
               margin-top:3px;
               color:#eaf2ff !important;
               font-size:8.5px !important;
@@ -4454,6 +4550,8 @@
               font-weight:700;
               letter-spacing:0;
               text-transform:none !important;
+              text-align:center !important;
+              white-space:normal;
               word-break:normal;
               overflow-wrap:anywhere;
             }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.32
+// @version      3.0.33
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.32
+    /* OM30 - CONTROLE DE SALAS v3.0.33
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -995,42 +995,116 @@
         return null;
     }
 
-    function csNomeUsuario(){for(const sel of ['.navbar .dropdown-toggle','.navbar-nav .dropdown-toggle','.user-menu','.username'])for(const el of document.querySelectorAll(sel)){const t=String(el.textContent||'').replace(/\s+/g,' ').trim();if(t.length>=5&&t.length<=100&&!/Minha Conta|Sair/i.test(t))return t;}return '';}
+    const CS_USUARIO_CACHE='om30-presenca-usuario-v1';
+
+    function csTextoUsuarioValido(valor){
+        const t=String(valor||'').replace(/\s+/g,' ').trim();
+        if(t.length<5||t.length>100)return '';
+        if(/Minha Conta|Sair|Logout|Entrar|Menu|Notifica[cç][aã]o|Configura[cç][oõ]es/i.test(t))return '';
+        if(/^\d+$/.test(t))return '';
+        return t;
+    }
+
+    function csNomeUsuario(){
+        const seletores=[
+            '.navbar .dropdown-toggle',
+            '.navbar-nav .dropdown-toggle',
+            '.user-menu .dropdown-toggle',
+            '.user-menu',
+            '.username',
+            '[data-user-name]',
+            '[data-usuario-nome]',
+            '[data-profissional-nome]',
+            '[aria-label*="usuário" i]',
+            '[aria-label*="usuario" i]',
+            '[title*="usuário" i]',
+            '[title*="usuario" i]'
+        ];
+        for(const sel of seletores){
+            for(const el of document.querySelectorAll(sel)){
+                const atributos=[
+                    el.getAttribute?.('data-user-name'),
+                    el.getAttribute?.('data-usuario-nome'),
+                    el.getAttribute?.('data-profissional-nome'),
+                    el.getAttribute?.('aria-label'),
+                    el.getAttribute?.('title'),
+                    el.textContent
+                ];
+                for(const bruto of atributos){
+                    const t=csTextoUsuarioValido(bruto);
+                    if(t)return t;
+                }
+            }
+        }
+
+        // Alguns layouts deixam o nome junto ao link de conta/sair.
+        for(const a of document.querySelectorAll('a[href*="logout" i],a[href*="sign_out" i],a[href*="minha_conta" i],a[href*="perfil" i]')){
+            const alvos=[a.previousElementSibling,a.parentElement?.querySelector?.('.name,.nome,.username'),a.parentElement];
+            for(const el of alvos){
+                const t=csTextoUsuarioValido(el?.textContent);
+                if(t&&!/Sair|Logout/i.test(t))return t;
+            }
+        }
+        return '';
+    }
+
+    function csActorAtual(){
+        const seletores=[
+            '#current_profissional',
+            'input[name="current_profissional"]',
+            'input[id$="_current_profissional"]',
+            'input[name$="[current_profissional]"]'
+        ];
+        for(const sel of seletores){
+            for(const el of document.querySelectorAll(sel)){
+                const v=String(el.value||'').trim();
+                if(v)return v;
+            }
+        }
+        return '';
+    }
 
     async function csIdentidadeUsuario(){
-        let nome='',actor='';
+        let nome=csNomeUsuario();
+        let actor=csActorAtual();
+
+        if(nome){
+            try{localStorage.setItem(CS_USUARIO_CACHE,JSON.stringify({nome,actor,em:Date.now()}));}catch(_){}
+            return {nome,actor};
+        }
+
+        // /current_usuario não existe nesta instalação (404). Reaproveita o último
+        // nome confirmado neste navegador apenas por curto período.
         try{
-            const r=await fetch('/current_usuario',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});
-            if(r.ok){
-                const u=await r.json();
-                const objs=[u,u?.usuario,u?.profissional,u?.pessoa,u?.current_user];
-                for(const o of objs){
-                    if(!o||typeof o!=='object')continue;
-                    for(const k of ['nome','name','nome_completo','nome_profissional','profissional_nome','usuario_nome']){
-                        const v=String(o?.[k]||'').replace(/\s+/g,' ').trim();
-                        if(v.length>=5){nome=v;break;}
-                    }
-                    if(nome)break;
-                }
-                actor=String(u?.id||u?.usuario?.id||u?.profissional_id||u?.profissional?.id||'');
+            const c=JSON.parse(localStorage.getItem(CS_USUARIO_CACHE)||'null');
+            if(c?.nome&&Date.now()-Number(c.em||0)<8*60*60*1000){
+                nome=csTextoUsuarioValido(c.nome);
+                if(!actor)actor=String(c.actor||'');
             }
         }catch(_){}
-        if(!nome)nome=csNomeUsuario();
+
         return {nome,actor};
     }
 
     function csAgendarRetryPresenca(info,tentativa,motivo){
-        if(tentativa>=6)return;
-        const atraso=Math.min(3500,650+(tentativa*450));
+        // Não desiste mais depois de poucos segundos. Enquanto a ficha estiver aberta,
+        // tenta novamente sem tocar no Cloudflare até AtendimentoPa/sala/usuário existirem.
+        const atraso=tentativa<6 ? Math.min(5000,900+(tentativa*650)) : 15000;
         clearTimeout(window.__csRetryPresenca);
         window.__csRetryPresenca=setTimeout(()=>{
+            if(document.visibilityState==='hidden'){
+                csAgendarRetryPresenca(info,tentativa+1,motivo);
+                return;
+            }
             csRegistrarPresencaFilha(info,tentativa+1).catch(e=>
                 console.warn('[OM30 PRESENÇA] retry falhou:',e?.message||e)
             );
         },atraso);
-        console.warn('[OM30 PRESENÇA] aguardando dados para registrar presença',{
-            tentativa:tentativa+1,motivo
-        });
+        if(tentativa<6||tentativa%4===0){
+            console.warn('[OM30 PRESENÇA] aguardando dados para registrar presença',{
+                tentativa:tentativa+1,motivo,proximaTentativaMs:atraso
+            });
+        }
     }
 
     function csInstalarRecuperacaoPresenca(){
@@ -1038,7 +1112,12 @@
         window.__csPresencaRecuperacaoInstalada=true;
         const renovar=()=>{
             if(document.visibilityState==='hidden')return;
-            Promise.resolve(window.__csRenovarPresenca?.()).catch(()=>{});
+            if(typeof window.__csRenovarPresenca==='function'){
+                Promise.resolve(window.__csRenovarPresenca()).catch(()=>{});
+            }else{
+                clearTimeout(window.__csRetryPresenca);
+                csRegistrarPresencaFilha({},0).catch(()=>{});
+            }
         };
         window.addEventListener('focus',renovar,{passive:true});
         window.addEventListener('pageshow',renovar,{passive:true});
@@ -1049,6 +1128,9 @@
     }
 
     async function csRegistrarPresencaFilha(info={},tentativa=0){
+        // Instala recuperação antes mesmo do primeiro sucesso: foco/retorno da aba
+        // também pode destravar DOM/identidade que ainda não existiam na abertura.
+        csInstalarRecuperacaoPresenca();
         const a=csAtendimentoAtualPresenca(info);
         const sala=csSalaAtualPresenca()||String(info?.sala||'');
         if(!a||!sala){
@@ -1111,7 +1193,7 @@
         if(window.__csHeartbeatPresenca)clearInterval(window.__csHeartbeatPresenca);
         window.__csHeartbeatPresenca=setInterval(()=>{
             if(document.visibilityState!=='hidden')window.__csRenovarPresenca?.();
-        },60000);
+        },180000);
 
         console.log('[OM30 PRESENÇA] registrada e protegida',{
             atendimento:a.bruto,sala,nome,tentativa
@@ -3818,7 +3900,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.32',
+            versao: '3.0.33',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length

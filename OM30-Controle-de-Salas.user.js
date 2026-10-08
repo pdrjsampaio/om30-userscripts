@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.40
+// @version      3.0.41
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.40
+    /* OM30 - CONTROLE DE SALAS v3.0.41
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -1964,18 +1964,77 @@
       };
     }
 
-    async function buscarFluxoCentral(atendimento, forcar = false) {
-      const id = String(atendimento || '').match(/\d+/)?.[0] || '';
-      if (!id) return null;
-      const anterior = fluxoCentralCache.get(id);
-      if (!forcar && anterior && Date.now() - anterior.em < 10000) return anterior.valor;
+    const FLUXO_ORDENS_BASE = 'https://om30-fluxo-ordens.om30-pedro.workers.dev';
+    const FLUXO_ORDENS_CACHE_MS = 10000;
+
+    async function buscarFluxoCentral(prontuario, atendimento = '', forcar = false) {
+      // Compatibilidade com chamadas antigas de diagnóstico: (id, true).
+      if (typeof atendimento === 'boolean') {
+        forcar = atendimento;
+        atendimento = '';
+      }
+
+      const idProntuario = String(prontuario || '').match(/\d+/)?.[0] || '';
+      const idAtendimento = String(atendimento || '').match(/\d+/)?.[0] || '';
+      if (!idProntuario) return null;
+
+      const cacheKey = `ordens:${idProntuario}`;
+      const anterior = fluxoCentralCache.get(cacheKey);
+      if (!forcar && anterior && Date.now() - anterior.em < FLUXO_ORDENS_CACHE_MS) {
+        return anterior.valor;
+      }
+
       try {
-        const body = await csPresReq('/api/flow/get', { atendimento_id: id });
-        const valor = normalizarFluxoCentral(body);
-        fluxoCentralCache.set(id, { em: Date.now(), valor });
+        const r = await fetch(
+          `${FLUXO_ORDENS_BASE}/api/fluxo/prontuario/${encodeURIComponent(idProntuario)}`,
+          {
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'omit',
+            cache: 'no-store',
+            headers: { Accept: 'application/json' }
+          }
+        );
+
+        const body = await r.json().catch(() => null);
+        if (!r.ok || !body?.ok) {
+          throw new Error(body?.error || `HTTP ${r.status}`);
+        }
+
+        // O Worker om30-fluxo-ordens é a fonte do fluxo original definido pelo médico.
+        // Se não houver registro, NÃO tenta inventar SIM/NÃO e NÃO usa outra nuvem:
+        // o restante do Controle de Salas segue pelas APIs nativas já existentes.
+        let valor = null;
+        if (body?.exists) {
+          valor = normalizarFluxoCentral({ ...body, found: true });
+          if (valor) {
+            valor = {
+              ...valor,
+              prontuario: idProntuario,
+              atendimento: idAtendimento || String(body.atendimento || ''),
+              fonte: 'cloudflare_fluxo_ordens',
+              fonteCentral: true,
+              flow_hash: String(body.flow_hash || ''),
+              updated_at: body.updated_at || ''
+            };
+          }
+        }
+
+        fluxoCentralCache.set(cacheKey, { em: Date.now(), valor });
+
+        if (valor) {
+          console.info('[OM30 FLUXO ORDENS] Fluxo do médico lido por prontuário.', {
+            prontuario: idProntuario,
+            atendimento: idAtendimento,
+            ordem: valor.ordem,
+            retorno_medico: valor.retorno_medico,
+            flow_hash: valor.flow_hash
+          });
+        }
+
         return valor;
       } catch (e) {
-        console.warn('[OM30 FLUXO CENTRAL] Falha ao consultar fluxo/pendências:', e?.message || e);
+        console.warn('[OM30 FLUXO ORDENS] Falha ao consultar ordem/retorno; seguindo pelas APIs nativas:', e?.message || e);
         return anterior?.valor || null;
       }
     }
@@ -1997,15 +2056,18 @@
       unido.atendimento = atendimento || unido.atendimento || '';
       unido.prontuario = prontuario || unido.prontuario || '';
 
-      // Fonte entre computadores: fluxo salvo pelo médico na ponte Cloudflare.
-      // O formato atual (ordem + retorno_medico) continua válido. Também deixamos
-      // preparado para receber pendências explícitas, próxima sala e concluídas.
-      let central = atendimento ? await buscarFluxoCentral(atendimento) : null;
+      // Fonte principal entre computadores: fluxo original salvo pelo médico
+      // no Worker om30-fluxo-ordens, indexado pelo PRONTUÁRIO.
+      //
+      // Se a nuvem não responder ou não houver registro, NÃO bloqueia o fluxo:
+      // as datatables exatas + buscar_url_encaminhamentos_prontuario continuam
+      // sendo a fonte nativa para pendências e próxima sala quando for inequívoca.
+      let central = prontuario ? await buscarFluxoCentral(prontuario, atendimento) : null;
       if (central?.found && typeof central.retorno_medico !== 'boolean') {
-        central = await buscarFluxoCentral(atendimento, true);
+        central = await buscarFluxoCentral(prontuario, atendimento, true);
       }
       if (central?.found) {
-        unido.fonte = 'ponte_central';
+        unido.fonte = String(central.fonte || 'cloudflare_fluxo_ordens');
         unido.fonteCentral = true;
 
         const ordemCentral = (Array.isArray(central.ordem) ? central.ordem : [])
@@ -2014,7 +2076,7 @@
           .sort((a,b) => a.posicao - b.posicao);
         if (ordemCentral.length) {
           unido.ordem = ordemCentral;
-          unido.ordemFonte = 'ponte_central';
+          unido.ordemFonte = String(central.fonte || 'cloudflare_fluxo_ordens');
           unido.transicoes = { ...(unido.transicoes || {}) };
           for (let i = 0; i < ordemCentral.length - 1; i++) {
             unido.transicoes[ordemCentral[i].sala] = ordemCentral[i + 1].sala;
@@ -2046,6 +2108,7 @@
           unido.semRetornoConfirmado = central.retorno_medico === false;
         }
         unido.fluxoCentralAtualizadoEm = central.updated_at || central.atualizado_em || '';
+        unido.cloudFlowHash = String(central.flow_hash || '');
       }
 
       // Retorno médico: aceita apenas fontes vinculadas ao AtendimentoPa exato.
@@ -2084,6 +2147,14 @@
       handoffDaPagina,
       aprenderResposta,
       buscarFluxoCentral,
+      async testarNuvem(atendimento = '') {
+        const idAtendimento = String(atendimento || atendimentoDaPagina() || '').match(/\d+/)?.[0] || '';
+        const prontuario = await resolverProntuario(idAtendimento);
+        const cloud = prontuario ? await buscarFluxoCentral(prontuario, idAtendimento, true) : null;
+        const resultado = { atendimento: idAtendimento, prontuario, cloud };
+        console.log('☁️ OM30 - TESTE FLUXO ORDENS', resultado);
+        return resultado;
+      },
       get dados() { return ler(); }
     };
   })();
@@ -2710,10 +2781,78 @@
         }
         #${ID_PAINEL} .om30cs-row.om30cs-row-andamento .om30cs-room{color:#1e3a5f;}
         #${ID_PAINEL} .om30cs-retorno{
-          margin-top:11px; padding:9px 11px; border-radius:8px; border:1px solid #dbe3e7;
-          background:#f8fafb; color:#33464f; font-size:12px; font-weight:700;
+          margin-top:12px;
+          padding:10px 12px;
+          border-radius:9px;
+          border:1px solid #dbe3e7;
+          background:#f8fafb;
+          color:#33464f;
+          font-size:12px;
+          font-weight:700;
         }
-        #${ID_PAINEL} .om30cs-retorno.sim{ border-left:4px solid #111827; }
+        #${ID_PAINEL} .om30cs-retorno.sim{
+          position:relative;
+          display:flex;
+          align-items:center;
+          gap:11px;
+          padding:12px 13px;
+          border:2px solid #263238;
+          border-left:6px solid #c62828;
+          background:#fff;
+          box-shadow:0 3px 10px rgba(38,50,56,.10);
+          color:#17262d;
+        }
+        #${ID_PAINEL} .om30cs-retorno-icon{
+          width:34px;
+          height:34px;
+          border-radius:50%;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          flex:0 0 auto;
+          background:#263238;
+          color:#fff;
+          font-size:19px;
+          font-weight:900;
+          line-height:1;
+        }
+        #${ID_PAINEL} .om30cs-retorno-main{
+          min-width:0;
+          flex:1 1 auto;
+        }
+        #${ID_PAINEL} .om30cs-retorno-top{
+          display:flex;
+          align-items:center;
+          gap:8px;
+          flex-wrap:wrap;
+        }
+        #${ID_PAINEL} .om30cs-retorno-title{
+          color:#17262d;
+          font-size:13px;
+          font-weight:950;
+          letter-spacing:.15px;
+          line-height:1.25;
+        }
+        #${ID_PAINEL} .om30cs-retorno-badge{
+          display:inline-flex;
+          align-items:center;
+          min-height:20px;
+          padding:2px 7px;
+          border-radius:999px;
+          background:#c62828;
+          color:#fff;
+          font-size:9px;
+          font-weight:900;
+          letter-spacing:.45px;
+          white-space:nowrap;
+        }
+        #${ID_PAINEL} .om30cs-retorno-desc{
+          margin-top:4px;
+          color:#50636c;
+          font-size:11px;
+          font-weight:650;
+          line-height:1.35;
+        }
         #${ID_PAINEL} .om30cs-empty{
           padding:8px 10px;
           border:1px solid #e3e9ec;
@@ -3095,12 +3234,10 @@
       const retornoFinalSim = retornoConhecido === true;
       const retornoFinalNao = retornoConhecido === false;
       const retornoConfirmadoAgora = retornoDiretoAgora || (retornoFinalSim && !pendencias.length);
-      // O médico sempre define SIM/NÃO ao criar o fluxo. Se não chegou booleano,
-      // isso é falha de leitura da ponte, não um estado "a confirmar".
-      const retornoLeituraFalhou =
-        retornoConhecido === null &&
-        proximo.key !== 'atendimento' &&
-        !pendencias.length;
+      // Se o SIM/NÃO do retorno não estiver disponível, não existe um terceiro
+      // estado clínico. O painel simplesmente omite a informação de retorno e
+      // continua mostrando o que as APIs nativas conseguem confirmar.
+      const retornoLeituraFalhou = false;
 
       const chipData = episodio?.ancora?.data && episodio?.ancora?.hora
         ? `<span class="om30cs-chip">${escaparHtml(episodio.ancora.data)} às ${escaparHtml(episodio.ancora.hora)}</span>`
@@ -3108,8 +3245,8 @@
       const semRetornoFinal = retornoFinalNao && !pendencias.length;
       const labelSecao = retornoConfirmadoAgora
         ? 'Próximo destino'
-        : (semRetornoFinal ? 'Retorno médico' : (retornoLeituraFalhou ? 'Retorno médico' : 'Ainda precisa passar por'));
-      const countSecao = retornoConfirmadoAgora ? '↩' : (retornoLeituraFalhou ? '!' : (semRetornoFinal ? '—' : pendencias.length));
+        : (semRetornoFinal ? 'Retorno médico' : 'Ainda precisa passar por');
+      const countSecao = retornoConfirmadoAgora ? '↩' : (semRetornoFinal ? '—' : pendencias.length);
 
       let html = `
         <div class="om30cs-meta">
@@ -3125,16 +3262,6 @@
       if (!pendencias.length && retornoConfirmadoAgora) {
         // O cartão de retorno confirmado é renderizado logo abaixo; não mostra
         // "0 / nenhuma pendência", porque isso esconde a informação importante.
-      } else if (!pendencias.length && retornoLeituraFalhou) {
-        html += `
-          <div class="om30cs-row om30cs-retorno-pendente">
-            <span class="om30cs-dot"></span>
-            <div class="om30cs-room-wrap">
-              <div class="om30cs-room">Retorno médico</div>
-              <div class="om30cs-status">NÃO FOI POSSÍVEL LER O SIM/NÃO</div>
-            </div>
-          </div>
-        `;
       } else if (!pendencias.length && retornoConhecido === false) {
         // O cartão explícito "Sem retorno" é renderizado abaixo; não duplica com
         // "Nenhuma outra sala pendente" porque o que interessa aqui é o destino final.
@@ -3170,10 +3297,36 @@
       }
 
       if (retornoConfirmadoAgora) {
-        html += '<div class="om30cs-retorno sim">↩ Retorno ao consultório médico</div>';
+        html += `
+          <div class="om30cs-retorno sim">
+            <div class="om30cs-retorno-icon">↩</div>
+            <div class="om30cs-retorno-main">
+              <div class="om30cs-retorno-top">
+                <div class="om30cs-retorno-title">RETORNO MÉDICO OBRIGATÓRIO</div>
+                <span class="om30cs-retorno-badge">PRÓXIMO DESTINO</span>
+              </div>
+              <div class="om30cs-retorno-desc">
+                Encaminhar o munícipe de volta ao consultório médico.
+              </div>
+            </div>
+          </div>
+        `;
       } else if (retornoFinalSim) {
         // Há salas antes do retorno, mas o destino final já foi confirmado.
-        html += '<div class="om30cs-retorno sim">↩ Retorno ao consultório médico</div>';
+        html += `
+          <div class="om30cs-retorno sim">
+            <div class="om30cs-retorno-icon">↩</div>
+            <div class="om30cs-retorno-main">
+              <div class="om30cs-retorno-top">
+                <div class="om30cs-retorno-title">RETORNO MÉDICO OBRIGATÓRIO</div>
+                <span class="om30cs-retorno-badge">ÚLTIMA ETAPA</span>
+              </div>
+              <div class="om30cs-retorno-desc">
+                Após concluir as salas pendentes, o munícipe deve retornar ao consultório médico.
+              </div>
+            </div>
+          </div>
+        `;
       } else if (retornoFinalNao) {
         html += '<div class="om30cs-retorno">✓ Sem retorno ao consultório médico</div>';
       }
@@ -3778,9 +3931,10 @@
                 const retorno=/^Retorno ao consultório médico$/i.test(destino.nome);
                 box.innerHTML=`<div class="cs-destino-label">${retorno?'PRÓXIMO DESTINO':'PRÓXIMA SALA'}</div><div class="cs-destino-valor">${retorno?'↩':'→'} ${esc(destino.nome).toUpperCase()}</div>`;
             }else{
-                // Se nenhuma próxima sala foi confirmada, o que falta saber é o retorno médico.
-                // Não expõe termo técnico de backend para quem está usando a unidade.
-                box.innerHTML='<div class="cs-destino-label">RETORNO MÉDICO</div><div class="cs-destino-valor">A CONFIRMAR</div><div class="cs-destino-ajuda">Nenhuma outra sala foi confirmada neste momento.</div>';
+                // Sem destino confirmado, não inventa "retorno a confirmar".
+                // O popup nativo de sucesso permanece suficiente; a próxima sala
+                // será mostrada quando a resposta/fila do Saúde Simples confirmar.
+                box.remove();
             }
 
             modal.dataset.om30DestinoProcessando='0';

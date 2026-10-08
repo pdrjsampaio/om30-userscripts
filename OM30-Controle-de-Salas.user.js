@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.38
+// @version      3.0.39
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.38
+    /* OM30 - CONTROLE DE SALAS v3.0.39
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -938,11 +938,25 @@
         window.__csPresCooldownAte=0;
         try{localStorage.removeItem(CS_PRES_COOLDOWN);}catch(_){}
     }
+    const CS_REQ_DIA='om30-cloudflare-requests-dia-v1';
+    function csContarReqLocal(path){
+        try{
+            const hoje=new Date().toISOString().slice(0,10);
+            let d=JSON.parse(localStorage.getItem(CS_REQ_DIA)||'null');
+            if(!d||d.dia!==hoje)d={dia:hoje,total:0,porEndpoint:{}};
+            d.total=Number(d.total||0)+1;
+            const ep=String(path||'');
+            d.porEndpoint[ep]=Number(d.porEndpoint[ep]||0)+1;
+            localStorage.setItem(CS_REQ_DIA,JSON.stringify(d));
+            window.__OM30_CLOUDFLARE_USO_LOCAL__=d;
+        }catch(_){}
+    }
     async function csPresReq(path,payload,keepalive=false){
         const ate=csPresCooldownAte();
         if(Date.now()<ate)throw new Error(`Ponte Cloudflare em cooldown por ${Math.ceil((ate-Date.now())/1000)}s`);
         const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),5000);
         try{
+            csContarReqLocal(path);
             const r=await fetch('https://om30-fluxo-controle-salas.om30-pedro.workers.dev'+path,{
                 method:'POST',mode:'cors',cache:'no-store',credentials:'omit',keepalive,signal:ctrl.signal,
                 headers:{'Content-Type':'application/json','X-OM30-Key':'om302026'},
@@ -4022,6 +4036,15 @@
         }
         async function atualizarPresencas(vm,lista) {
             const setor=setorDaColecao(vm); if(!setor||PRES.atualizando) return;
+
+            // A lista pode recarregar várias vezes entre timer/foco/render. No máximo
+            // um batch normal por minuto nesta aba. A primeira leitura nunca é bloqueada.
+            const agora=Date.now();
+            if(PRES.ultimaLeitura && agora-PRES.ultimaLeitura<55000){
+                try{vm.$nextTick(pintarMedicacoes);}catch(_){}
+                return;
+            }
+
             PRES.atualizando=true;
 
             try{
@@ -4136,7 +4159,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.38',
+            versao: '3.0.39',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length
@@ -4150,7 +4173,10 @@
                 misses:Array.from(PRES.misses.entries()),
                 ultimaLeitura:PRES.ultimaLeitura,
                 ultimoErro:PRES.ultimoErro,
-                atualizando:PRES.atualizando
+                atualizando:PRES.atualizando,
+                usoLocalCloudflare:(()=>{
+                    try{return JSON.parse(localStorage.getItem(CS_REQ_DIA)||'null');}catch(_){return null;}
+                })()
             }),
             testar: async (atendimento, sala='medicacao') => {
                 const a=atendimentoPres(String(atendimento||'').includes('#') ? atendimento : `AtendimentoPa#${String(atendimento||'').match(/\d+/)?.[0]||''}`);

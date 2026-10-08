@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.41
+// @version      3.0.42
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.41
+    /* OM30 - CONTROLE DE SALAS v3.0.42
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -2853,6 +2853,24 @@
           font-weight:650;
           line-height:1.35;
         }
+        #${ID_PAINEL} .om30cs-retorno.nao{
+          position:relative;
+          display:flex;
+          align-items:center;
+          gap:11px;
+          padding:12px 13px;
+          border:2px solid #263238;
+          border-left:6px solid #2e7d32;
+          background:#fff;
+          box-shadow:0 3px 10px rgba(38,50,56,.10);
+          color:#17262d;
+        }
+        #${ID_PAINEL} .om30cs-retorno.nao .om30cs-retorno-icon{
+          background:#2e7d32;
+        }
+        #${ID_PAINEL} .om30cs-retorno.nao .om30cs-retorno-badge{
+          background:#2e7d32;
+        }
         #${ID_PAINEL} .om30cs-empty{
           padding:8px 10px;
           border:1px solid #e3e9ec;
@@ -3328,7 +3346,22 @@
           </div>
         `;
       } else if (retornoFinalNao) {
-        html += '<div class="om30cs-retorno">✓ Sem retorno ao consultório médico</div>';
+        const semRetornoBadge = pendencias.length ? 'DESTINO FINAL' : 'FLUXO FINALIZADO';
+        const semRetornoDesc = pendencias.length
+          ? 'Após concluir as salas pendentes, o munícipe não retorna ao consultório médico.'
+          : 'Não há retorno ao consultório médico após esta etapa.';
+        html += `
+          <div class="om30cs-retorno nao">
+            <div class="om30cs-retorno-icon">✓</div>
+            <div class="om30cs-retorno-main">
+              <div class="om30cs-retorno-top">
+                <div class="om30cs-retorno-title">SEM RETORNO MÉDICO</div>
+                <span class="om30cs-retorno-badge">${semRetornoBadge}</span>
+              </div>
+              <div class="om30cs-retorno-desc">${semRetornoDesc}</div>
+            </div>
+          </div>
+        `;
       }
 
       // Este painel trabalha pelo AtendimentoPa exato; não usa mais aviso de

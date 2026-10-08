@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.33
+// @version      3.0.34
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.33
+    /* OM30 - CONTROLE DE SALAS v3.0.34
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -997,93 +997,181 @@
 
     const CS_USUARIO_CACHE='om30-presenca-usuario-v1';
 
-    function csTextoUsuarioValido(valor){
-        const t=String(valor||'').replace(/\s+/g,' ').trim();
-        if(t.length<5||t.length>100)return '';
-        if(/Minha Conta|Sair|Logout|Entrar|Menu|Notifica[cç][aã]o|Configura[cç][oõ]es/i.test(t))return '';
-        if(/^\d+$/.test(t))return '';
-        return t;
+    function csLimparUsuario(v){
+        return String(v??'').replace(/\s+/g,' ').trim();
+    }
+    function csSlugUsuario(v){
+        return csLimparUsuario(v)
+            .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+            .toUpperCase()
+            .replace(/[^A-Z0-9]+/g,'_')
+            .replace(/^_+|_+$/g,'')
+            .slice(0,120);
+    }
+    function csIdUsuarioObj(obj){
+        if(!obj||typeof obj!=='object')return '';
+        return csLimparUsuario(obj.id??obj.user_id??obj.usuario_id??obj.uid??'');
+    }
+    function csNomeUsuarioObj(obj){
+        if(!obj||typeof obj!=='object')return '';
+        return csLimparUsuario(obj.nome??obj.name??obj.nome_completo??obj.full_name??obj.login??obj.email??'');
+    }
+    function csNomeVisualUsuario(label){
+        const t=csLimparUsuario(label);
+        if(!t)return '';
+        // Saúde Simples costuma exibir "NOME DO PROFISSIONAL | XX000".
+        const semCodigo=t.replace(/\s*\|\s*[A-Z]{1,8}\s*\d{2,}\s*$/i,'').trim();
+        return semCodigo||t;
     }
 
-    function csNomeUsuario(){
-        const seletores=[
-            '.navbar .dropdown-toggle',
-            '.navbar-nav .dropdown-toggle',
-            '.user-menu .dropdown-toggle',
-            '.user-menu',
-            '.username',
-            '[data-user-name]',
-            '[data-usuario-nome]',
-            '[data-profissional-nome]',
-            '[aria-label*="usuário" i]',
-            '[aria-label*="usuario" i]',
-            '[title*="usuário" i]',
-            '[title*="usuario" i]'
+    // Mesma estratégia usada no teste de Favoritos por Conta do Procedimentos PA.
+    function csDetectarUsuarioGlobal(){
+        const candidatos=[
+            window.currentUser,
+            window.current_user,
+            window.usuarioLogado,
+            window.usuario_logado,
+            window.loggedUser,
+            window.logged_user,
+            window.gon?.current_user,
+            window.gon?.user
         ];
-        for(const sel of seletores){
-            for(const el of document.querySelectorAll(sel)){
-                const atributos=[
-                    el.getAttribute?.('data-user-name'),
-                    el.getAttribute?.('data-usuario-nome'),
-                    el.getAttribute?.('data-profissional-nome'),
-                    el.getAttribute?.('aria-label'),
-                    el.getAttribute?.('title'),
-                    el.textContent
-                ];
-                for(const bruto of atributos){
-                    const t=csTextoUsuarioValido(bruto);
-                    if(t)return t;
+        const idDireto=csLimparUsuario(
+            window.current_user_id??
+            window.currentUserId??
+            window.usuario_logado_id??
+            window.logged_user_id??
+            window.gon?.current_user_id??
+            window.gon?.user_id??
+            ''
+        );
+        if(idDireto){
+            for(const obj of candidatos){
+                const label=csNomeUsuarioObj(obj);
+                if(label)return {nome:csNomeVisualUsuario(label),actor:idDireto,fonte:'global-id+object'};
+            }
+            return {nome:'',actor:idDireto,fonte:'global-id'};
+        }
+        for(const obj of candidatos){
+            const id=csIdUsuarioObj(obj);
+            const label=csNomeUsuarioObj(obj);
+            if(id||label)return {nome:csNomeVisualUsuario(label),actor:id,fonte:id?'global-object':'global-object-name'};
+        }
+        return null;
+    }
+
+    function csDetectarUsuarioDom(){
+        if(!document.documentElement)return null;
+
+        const roots=[document.documentElement,document.body].filter(Boolean);
+        const attrs=[
+            ['data-current-user-id','id'],
+            ['data-current-user','nome'],
+            ['data-logged-user-id','id'],
+            ['data-usuario-logado-id','id']
+        ];
+        let actor='',nome='';
+        for(const root of roots){
+            for(const [attr,tipo] of attrs){
+                const value=csLimparUsuario(root.getAttribute?.(attr));
+                if(!value)continue;
+                if(tipo==='id'&&!actor)actor=value;
+                if(tipo==='nome'&&!nome)nome=csNomeVisualUsuario(value);
+            }
+        }
+
+        const hiddenSelectors=[
+            'input[name="current_user_id"]',
+            'input[name="logged_user_id"]',
+            'input[name="usuario_logado_id"]',
+            'input[id="current_user_id"]',
+            'input[id="logged_user_id"]'
+        ];
+        for(const selector of hiddenSelectors){
+            const value=csLimparUsuario(document.querySelector(selector)?.value);
+            if(value&&!actor){actor=value;break;}
+        }
+
+        // Campo real já existente nas fichas do Controle de Salas.
+        if(!actor){
+            for(const selector of [
+                '#current_profissional',
+                'input[name="current_profissional"]',
+                'input[id$="_current_profissional"]',
+                'input[name$="[current_profissional]"]'
+            ]){
+                const value=csLimparUsuario(document.querySelector(selector)?.value);
+                if(value){actor=value;break;}
+            }
+        }
+
+        // ID mais confiável quando o topo aponta para /usuarios/{id}.
+        for(const a of document.querySelectorAll('.navbar a[href*="/usuarios/"],nav a[href*="/usuarios/"],.topbar a[href*="/usuarios/"]')){
+            const href=csLimparUsuario(a.getAttribute('href'));
+            const m=href.match(/\/usuarios\/(\d+)/i);
+            if(!m)continue;
+            if(!actor)actor=m[1];
+            const label=csLimparUsuario(a.textContent);
+            if(label&&!nome)nome=csNomeVisualUsuario(label);
+            if(nome&&actor)break;
+        }
+
+        // Exatamente o fallback que funcionava no Procedimentos PA:
+        // "NOME DO PROFISSIONAL | XX000".
+        if(!nome){
+            const navCandidates=[...document.querySelectorAll(
+                '.navbar a,.navbar button,.navbar .dropdown-toggle,nav a,nav button,.topbar a,.topbar button'
+            )]
+                .map(el=>csLimparUsuario(el.textContent))
+                .filter(Boolean)
+                .filter(t=>t.length>=4&&t.length<=180)
+                .filter(t=>/\|\s*[A-Z]{1,6}\s*\d{2,}$/i.test(t));
+            if(navCandidates.length){
+                const label=navCandidates.sort((a,b)=>b.length-a.length)[0];
+                nome=csNomeVisualUsuario(label);
+            }
+        }
+
+        // Fallback adicional para layouts sem código após o nome.
+        if(!nome){
+            for(const sel of ['.navbar .dropdown-toggle','.navbar-nav .dropdown-toggle','.user-menu .dropdown-toggle','.user-menu','.username']){
+                for(const el of document.querySelectorAll(sel)){
+                    const t=csLimparUsuario(el.textContent);
+                    if(t.length>=5&&t.length<=100&&!/Minha Conta|Sair|Logout/i.test(t)){
+                        nome=csNomeVisualUsuario(t);
+                        break;
+                    }
                 }
+                if(nome)break;
             }
         }
 
-        // Alguns layouts deixam o nome junto ao link de conta/sair.
-        for(const a of document.querySelectorAll('a[href*="logout" i],a[href*="sign_out" i],a[href*="minha_conta" i],a[href*="perfil" i]')){
-            const alvos=[a.previousElementSibling,a.parentElement?.querySelector?.('.name,.nome,.username'),a.parentElement];
-            for(const el of alvos){
-                const t=csTextoUsuarioValido(el?.textContent);
-                if(t&&!/Sair|Logout/i.test(t))return t;
-            }
-        }
-        return '';
-    }
-
-    function csActorAtual(){
-        const seletores=[
-            '#current_profissional',
-            'input[name="current_profissional"]',
-            'input[id$="_current_profissional"]',
-            'input[name$="[current_profissional]"]'
-        ];
-        for(const sel of seletores){
-            for(const el of document.querySelectorAll(sel)){
-                const v=String(el.value||'').trim();
-                if(v)return v;
-            }
-        }
-        return '';
+        return (nome||actor)?{nome,actor,fonte:'dom'}:null;
     }
 
     async function csIdentidadeUsuario(){
-        let nome=csNomeUsuario();
-        let actor=csActorAtual();
+        let achado=csDetectarUsuarioGlobal()||csDetectarUsuarioDom()||{nome:'',actor:'',fonte:''};
 
-        if(nome){
-            try{localStorage.setItem(CS_USUARIO_CACHE,JSON.stringify({nome,actor,em:Date.now()}));}catch(_){}
-            return {nome,actor};
+        if(achado.nome){
+            try{localStorage.setItem(CS_USUARIO_CACHE,JSON.stringify({
+                nome:achado.nome,actor:achado.actor||'',fonte:achado.fonte||'',em:Date.now()
+            }));}catch(_){}
+            return {nome:achado.nome,actor:achado.actor||''};
         }
 
-        // /current_usuario não existe nesta instalação (404). Reaproveita o último
-        // nome confirmado neste navegador apenas por curto período.
+        // Se já identificamos esta mesma conta neste navegador recentemente,
+        // reutiliza apenas o nome confirmado; não faz nenhuma requisição externa.
         try{
             const c=JSON.parse(localStorage.getItem(CS_USUARIO_CACHE)||'null');
             if(c?.nome&&Date.now()-Number(c.em||0)<8*60*60*1000){
-                nome=csTextoUsuarioValido(c.nome);
-                if(!actor)actor=String(c.actor||'');
+                return {
+                    nome:csNomeVisualUsuario(c.nome),
+                    actor:achado.actor||String(c.actor||'')
+                };
             }
         }catch(_){}
 
-        return {nome,actor};
+        return {nome:'',actor:achado.actor||''};
     }
 
     function csAgendarRetryPresenca(info,tentativa,motivo){
@@ -3900,7 +3988,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.33',
+            versao: '3.0.34',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length

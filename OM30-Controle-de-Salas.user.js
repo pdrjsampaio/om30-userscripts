@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.36
+// @version      3.0.37
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.36
+    /* OM30 - CONTROLE DE SALAS v3.0.37
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -1045,6 +1045,23 @@
                 if(t&&!/Sair|Logout/i.test(t))return t;
             }
         }
+
+        // Fallback já usado no Procedimentos PA:
+        // cabeçalho no formato "NOME DO PROFISSIONAL | XX000".
+        const candidatosPa=[...document.querySelectorAll(
+            '.navbar a,.navbar button,.navbar .dropdown-toggle,'+
+            'nav a,nav button,.topbar a,.topbar button'
+        )]
+            .map(el=>String(el.textContent||'').replace(/\s+/g,' ').trim())
+            .filter(t=>t.length>=5&&t.length<=180)
+            .filter(t=>/\|\s*[A-Z]{1,8}\s*\d{2,}$/i.test(t));
+        if(candidatosPa.length){
+            const melhor=candidatosPa.sort((a,b)=>b.length-a.length)[0];
+            const nome=melhor.replace(/\s*\|\s*[A-Z]{1,8}\s*\d{2,}\s*$/i,'').trim();
+            const valido=csTextoUsuarioValido(nome);
+            if(valido)return valido;
+        }
+
         return '';
     }
 
@@ -1067,6 +1084,32 @@
     async function csIdentidadeUsuario(){
         let nome=csNomeUsuario();
         let actor=csActorAtual();
+
+        // Fallback adicional do Procedimentos PA: alguns layouts deixam
+        // o usuário logado exposto em globals do próprio Saúde Simples.
+        if(!nome){
+            const objs=[
+                window.currentUser,
+                window.current_user,
+                window.usuarioLogado,
+                window.usuario_logado,
+                window.loggedUser,
+                window.logged_user,
+                window.gon?.current_user,
+                window.gon?.user
+            ];
+            for(const o of objs){
+                if(!o||typeof o!=='object')continue;
+                const candidato=csTextoUsuarioValido(
+                    o.nome||o.name||o.nome_completo||o.full_name||o.login||''
+                );
+                if(candidato){
+                    nome=candidato;
+                    if(!actor)actor=String(o.id||o.user_id||o.usuario_id||o.profissional_id||'');
+                    break;
+                }
+            }
+        }
 
         if(nome){
             try{localStorage.setItem(CS_USUARIO_CACHE,JSON.stringify({nome,actor,em:Date.now()}));}catch(_){}
@@ -3926,7 +3969,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.36',
+            versao: '3.0.37',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length

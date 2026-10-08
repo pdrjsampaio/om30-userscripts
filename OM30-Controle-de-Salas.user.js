@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.37
+// @version      3.0.38
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,7 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.37
+    /* OM30 - CONTROLE DE SALAS v3.0.38
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -1006,6 +1006,23 @@
     }
 
     function csNomeUsuario(){
+        // Primeiro tenta o padrão mais específico já usado no Procedimentos PA:
+        // "NOME DO PROFISSIONAL | XX000". Se não existir neste layout, cai nos
+        // seletores genéricos abaixo.
+        const candidatosPa=[...document.querySelectorAll(
+            '.navbar a,.navbar button,.navbar .dropdown-toggle,'+
+            'nav a,nav button,.topbar a,.topbar button'
+        )]
+            .map(el=>String(el.textContent||'').replace(/\s+/g,' ').trim())
+            .filter(t=>t.length>=5&&t.length<=180)
+            .filter(t=>/\|\s*[A-Z]{1,8}\s*\d{2,}$/i.test(t));
+        if(candidatosPa.length){
+            const melhor=candidatosPa.sort((a,b)=>b.length-a.length)[0];
+            const nome=melhor.replace(/\s*\|\s*[A-Z]{1,8}\s*\d{2,}\s*$/i,'').trim();
+            const valido=csTextoUsuarioValido(nome);
+            if(valido)return valido;
+        }
+
         const seletores=[
             '.navbar .dropdown-toggle',
             '.navbar-nav .dropdown-toggle',
@@ -1044,22 +1061,6 @@
                 const t=csTextoUsuarioValido(el?.textContent);
                 if(t&&!/Sair|Logout/i.test(t))return t;
             }
-        }
-
-        // Fallback já usado no Procedimentos PA:
-        // cabeçalho no formato "NOME DO PROFISSIONAL | XX000".
-        const candidatosPa=[...document.querySelectorAll(
-            '.navbar a,.navbar button,.navbar .dropdown-toggle,'+
-            'nav a,nav button,.topbar a,.topbar button'
-        )]
-            .map(el=>String(el.textContent||'').replace(/\s+/g,' ').trim())
-            .filter(t=>t.length>=5&&t.length<=180)
-            .filter(t=>/\|\s*[A-Z]{1,8}\s*\d{2,}$/i.test(t));
-        if(candidatosPa.length){
-            const melhor=candidatosPa.sort((a,b)=>b.length-a.length)[0];
-            const nome=melhor.replace(/\s*\|\s*[A-Z]{1,8}\s*\d{2,}\s*$/i,'').trim();
-            const valido=csTextoUsuarioValido(nome);
-            if(valido)return valido;
         }
 
         return '';
@@ -3800,6 +3801,172 @@
         };
         if(document.body)ligarDestino();else document.addEventListener('DOMContentLoaded',ligarDestino,{once:true});
     }
+
+    // ============================================================
+    // PROTEÇÃO DA FICHA - NÃO SALVAR COM MEDICAÇÕES SEM AÇÃO
+    // Restaurado da lógica estável da v2.0.80 como módulo independente.
+    // ============================================================
+    (function instalarBloqueioSalvarComPendenciasV2080() {
+        'use strict';
+
+        if (location.hostname !== 'guaruja.saudesimples.net') return;
+        if (!/^\/aplicacoes_medicamentos\/(?:new|create)\/?$/.test(location.pathname)) return;
+        if (window.__OM30_BLOQUEIO_SALVAR_MEDICACAO_V2080__) return;
+        window.__OM30_BLOQUEIO_SALVAR_MEDICACAO_V2080__ = true;
+
+        const ID_AVISO='om30-aviso-salvar-pendencias';
+        const ID_CSS='om30-aviso-salvar-pendencias-css';
+
+        const limpar=valor=>String(valor??'').replace(/\s+/g,' ').trim();
+        const ehTrue=valor=>/^(?:true|1)$/i.test(String(valor??'').trim());
+
+        function instalarCss(){
+            if(document.getElementById(ID_CSS))return;
+            const st=document.createElement('style');
+            st.id=ID_CSS;
+            st.textContent=`
+                .om30-pendente-salvar-destaque{outline:3px solid #dc2626!important;outline-offset:2px!important;border-radius:7px!important;background:#fff7f7!important}
+                #${ID_AVISO}{position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:18px;font-family:Arial,sans-serif}
+                #${ID_AVISO} .om30-box{width:min(500px,95vw);background:#fff;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.34);overflow:hidden}
+                #${ID_AVISO} .om30-head{padding:13px 15px;background:#fff1f2;border-bottom:1px solid #fecaca;color:#991b1b}
+                #${ID_AVISO} .om30-title{font-size:16px;line-height:1.2;font-weight:900}
+                #${ID_AVISO} .om30-sub{margin-top:4px;font-size:12px;line-height:1.35;font-weight:700;color:#7f1d1d}
+                #${ID_AVISO} .om30-body{padding:13px 15px;color:#334155;font-size:12px}
+                #${ID_AVISO} .om30-contagem{padding:8px 10px;border:1px solid #e2e8f0;border-radius:7px;background:#f8fafc;font-weight:800;margin-bottom:9px}
+                #${ID_AVISO} .om30-pend-title{font-weight:900;margin-bottom:5px;color:#991b1b}
+                #${ID_AVISO} ul{margin:0;padding-left:19px;max-height:180px;overflow:auto}
+                #${ID_AVISO} li{margin:4px 0;line-height:1.3;font-weight:700}
+                #${ID_AVISO} .om30-foot{display:flex;justify-content:flex-end;padding:0 15px 14px}
+                #${ID_AVISO} .om30-ok{border:0;border-radius:7px;background:#b91c1c;color:#fff;padding:8px 12px;font-size:12px;font-weight:900;cursor:pointer}
+            `;
+            (document.head||document.documentElement).appendChild(st);
+        }
+
+        function itensDoFormulario(form){
+            return [...form.querySelectorAll('.item-encaminhamento-controle-salas')];
+        }
+
+        function itemEstaPendente(item){
+            const paraAtendimento=item.querySelector('input[id$="_para_atendimento"],input[name$="[para_atendimento]"]');
+            const paraCancelamento=item.querySelector('input[id$="_para_cancelamento"],input[name$="[para_cancelamento]"]');
+            const cancelada=item.querySelector('input[id$="_cancelada"],input[name$="[cancelada]"]');
+
+            const aplicada=ehTrue(paraAtendimento?.value);
+            const canceladaSelecionada=ehTrue(paraCancelamento?.value)||ehTrue(cancelada?.value);
+            return !aplicada&&!canceladaSelecionada;
+        }
+
+        function nomeMedicamento(item,indice){
+            const texto=limpar(item?.innerText||item?.textContent||'');
+            const m=texto.match(/\bProduto\s+(.+?)(?=\s+(?:Situa[cç][aã]o|Posologia|Via\s+de\s+Administra[cç][aã]o|Unidade\s+de\s+Medida|Observa[cç][aã]o|Aplicar|Cancelar)\b)/i);
+            if(m?.[1])return limpar(m[1]);
+
+            const candidato=[...item.querySelectorAll('strong,b,label,span,td')]
+                .map(el=>limpar(el.textContent))
+                .find(v=>v&&v.length>=3&&v.length<=140&&!/^(produto|situa[cç][aã]o|posologia|aplicar|cancelar)$/i.test(v));
+            return candidato||`Medicação ${indice+1}`;
+        }
+
+        function analisar(form){
+            const itens=itensDoFormulario(form);
+            const pendentes=itens.filter(itemEstaPendente);
+            return {
+                total:itens.length,
+                pendentes,
+                resolvidos:Math.max(0,itens.length-pendentes.length)
+            };
+        }
+
+        function destacarPendentes(pendentes){
+            document.querySelectorAll('.om30-pendente-salvar-destaque').forEach(el=>el.classList.remove('om30-pendente-salvar-destaque'));
+            for(const item of pendentes)item.classList.add('om30-pendente-salvar-destaque');
+            if(pendentes[0]){
+                try{pendentes[0].scrollIntoView({behavior:'smooth',block:'center'});}catch(_){}
+            }
+            setTimeout(()=>pendentes.forEach(item=>item.classList.remove('om30-pendente-salvar-destaque')),6500);
+        }
+
+        function abrirAviso(resumo){
+            instalarCss();
+            document.getElementById(ID_AVISO)?.remove();
+
+            const overlay=document.createElement('div');
+            overlay.id=ID_AVISO;
+            overlay.innerHTML=`
+                <div class="om30-box">
+                    <div class="om30-head">
+                        <div class="om30-title">⚠</div>
+                        <div class="om30-sub">Antes de salvar, aplique ou cancele todas as medicações da ficha.</div>
+                    </div>
+                    <div class="om30-body">
+                        <div class="om30-contagem">${resumo.total} medicação(ões) na ficha • ${resumo.resolvidos} resolvida(s) • ${resumo.pendentes.length} sem ação</div>
+                        <div class="om30-pend-title">${resumo.pendentes.length===1?'Medicação que ainda precisa de ação:':'Medicações que ainda precisam de ação:'}</div>
+                        <ul>${resumo.pendentes.map((item,i)=>`<li>${String(nomeMedicamento(item,i)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</li>`).join('')}</ul>
+                    </div>
+                    <div class="om30-foot"><button type="button" class="om30-ok">Voltar e finalizar as medicações</button></div>
+                </div>
+            `;
+
+            const fechar=()=>{
+                overlay.remove();
+                destacarPendentes(resumo.pendentes);
+            };
+            overlay.querySelector('.om30-ok')?.addEventListener('click',fechar);
+            overlay.addEventListener('click',e=>{if(e.target===overlay)fechar();});
+            document.body.appendChild(overlay);
+        }
+
+        function bloquearSeNecessario(evento,form){
+            if(!form)return false;
+            const resumo=analisar(form);
+            if(!resumo.pendentes.length)return false;
+
+            evento?.preventDefault?.();
+            evento?.stopPropagation?.();
+            evento?.stopImmediatePropagation?.();
+            abrirAviso(resumo);
+
+            console.warn('[OM30][SALVAR BLOQUEADO] Existem medicações sem aplicar/cancelar.',{
+                total:resumo.total,
+                resolvidos:resumo.resolvidos,
+                pendentes:resumo.pendentes.length,
+                medicamentos:resumo.pendentes.map(nomeMedicamento)
+            });
+            return true;
+        }
+
+        // Captura antes dos handlers nativos do Saúde Simples.
+        document.addEventListener('click',evento=>{
+            const salvar=evento.target?.closest?.('.salvar-encaminhamento-controle-salas');
+            if(!salvar)return;
+            const form=salvar.closest('form')||document.querySelector('form.encaminhamento_medicacao,form[id^="edit_encaminhamento_medicacao_"]');
+            bloquearSeNecessario(evento,form);
+        },true);
+
+        // Fallback para submit por Enter ou qualquer outro disparo do formulário.
+        document.addEventListener('submit',evento=>{
+            const form=evento.target;
+            if(!(form instanceof HTMLFormElement))return;
+            if(!form.querySelector('.salvar-encaminhamento-controle-salas'))return;
+            bloquearSeNecessario(evento,form);
+        },true);
+
+        instalarCss();
+
+        // Exposto apenas para diagnóstico manual, sem alterar estado.
+        window.OM30BloqueioSalvarMedicacao={
+            analisar:()=>{
+                const form=document.querySelector('form.encaminhamento_medicacao,form[id^="edit_encaminhamento_medicacao_"]');
+                if(!form)return {ok:false,motivo:'FORM_NAO_ENCONTRADO'};
+                const r=analisar(form);
+                return {
+                    ok:true,total:r.total,resolvidos:r.resolvidos,pendentes:r.pendentes.length,
+                    medicamentos:r.pendentes.map(nomeMedicamento)
+                };
+            }
+        };
+    })();
+
     if (caminho === '/aplicacoes_medicamentos') iniciarFila();
     else if (caminho === '/aplicacoes_medicamentos/new' || caminho === '/aplicacoes_medicamentos/create') iniciarAplicacao();
     else if (fichaOutraSala && /^cs-atendimento-/.test(window.name)) {
@@ -3969,7 +4136,7 @@
             }
         }
         window.OM30CloudflarePresenca = {
-            versao: '3.0.37',
+            versao: '3.0.38',
             atualizar: () => {
                 if(!CS?.colecao)return Promise.resolve();
                 const lista=Array.isArray(CS.colecao.items)&&CS.colecao.items.length
@@ -7055,53 +7222,6 @@
         }
 
 
-
-        // ── Não salvar ficha com medicação sem ação ───────────────────────────
-        // Proteção da ficha: impede o popup nativo de
-        // confirmação enquanto existir item sem Aplicar/Cancelar.
-        function csItemSemAcao(item) {
-            const ehTrue = v => /^(?:true|1)$/i.test(String(v ?? '').trim());
-            const aplicar = item.querySelector('input[id$="_para_atendimento"],input[name$="[para_atendimento]"]');
-            const paraCancelar = item.querySelector('input[id$="_para_cancelamento"],input[name$="[para_cancelamento]"]');
-            const cancelada = item.querySelector('input[id$="_cancelada"],input[name$="[cancelada]"]');
-            return !ehTrue(aplicar?.value) && !ehTrue(paraCancelar?.value) && !ehTrue(cancelada?.value);
-        }
-        function csNomeItem(item, i) {
-            const texto = String(item?.innerText || item?.textContent || '').replace(/\s+/g,' ').trim();
-            const m = texto.match(/\bProduto\s+(.+?)(?=\s+(?:Situa[cç][aã]o|Posologia|Via\s+de\s+Administra[cç][aã]o|Unidade\s+de\s+Medida|Observa[cç][aã]o|Aplicar|Cancelar)\b)/i);
-            return (m?.[1] || `Medicação ${i+1}`).trim();
-        }
-        function csAvisarPendenciasSalvar(form) {
-            const itens = [...form.querySelectorAll('.item-encaminhamento-controle-salas')];
-            const pendentes = itens.filter(csItemSemAcao);
-            if (!pendentes.length) return false;
-            document.querySelector('.cs-salvar-pend-overlay')?.remove();
-            const overlay = document.createElement('div');
-            overlay.className = 'cs-salvar-pend-overlay';
-            const nomes = pendentes.map(csNomeItem);
-            overlay.innerHTML = `<div class="cs-salvar-pend-box"><div class="cs-salvar-pend-head"><div class="cs-salvar-pend-title">Medicações pendentes</div><div class="cs-salvar-pend-sub">Antes de salvar, aplique ou cancele todas as medicações da ficha.</div></div><div class="cs-salvar-pend-body"><div class="cs-salvar-pend-count">${pendentes.length} ${pendentes.length===1?'medicação precisa':'medicações precisam'} de uma ação antes de salvar</div><ul>${nomes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div><div class="cs-salvar-pend-foot"><button type="button">Voltar às medicações</button></div></div>`;
-            const fechar = () => {
-                overlay.remove();
-                try { pendentes[0]?.scrollIntoView({behavior:'smooth',block:'center'}); } catch (_) {}
-            };
-            overlay.querySelector('button').addEventListener('click', fechar);
-            overlay.addEventListener('click', ev => { if (ev.target === overlay) fechar(); });
-            document.body.appendChild(overlay);
-            return true;
-        }
-        document.addEventListener('click', ev => {
-            const salvar = ev.target?.closest?.('.salvar-encaminhamento-controle-salas');
-            if (!salvar) return;
-            const form = salvar.closest('form') || document.querySelector('form.encaminhamento_medicacao,form[id^="edit_encaminhamento_medicacao_"]');
-            if (!form || !csAvisarPendenciasSalvar(form)) return;
-            ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
-        }, true);
-        document.addEventListener('submit', ev => {
-            const form = ev.target;
-            if (!(form instanceof HTMLFormElement) || !form.querySelector('.salvar-encaminhamento-controle-salas')) return;
-            if (!csAvisarPendenciasSalvar(form)) return;
-            ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
-        }, true);
 
         // Alergia lida pela lista antes de abrir esta aba (MOSTRAR_ALERGIA).
         function alertaAlergiaFicha() {

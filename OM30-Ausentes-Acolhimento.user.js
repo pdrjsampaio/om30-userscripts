@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.4
+// @version      2.0.5
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,11 @@
 (() => {
   'use strict';
 
+  // v2.0.5:
+  // - Ponte CLOUD OM30 2: após o encaminhamento do acolhimento ser confirmado, envia a classificação
+  //   uma única vez ao Worker om30-classificacao-risco. API key fica somente no localStorage do navegador.
+  // - Retry automático em falha de rede/Worker; pendência fica na sessão até receber confirmação 2xx.
+  //
   // v2.0.4:
   // - Captura confirmada da classificação de risco enviada pelo Acolhimento ao Senha Simples:
   //   PUT /api/v2/filas/{categoria}/{tipo}/{senha_id}/encaminhar, lendo grau_risco_id (1..4).
@@ -302,9 +307,8 @@
   //   PUT /api/v2/filas/{categoria_origem}/{tipo_origem}/{senha_id}/encaminhar
   //   body: grau_risco_id + tipo_atendimento_destino_id
   //
-  //   Por enquanto NÃO envia ao Cloudflare. Guarda só a última captura da sessão e
-  //   dispara "om30:classificacao-risco". A ponte para a CLOUD OM30 2 pode ouvir esse
-  //   evento e fazer um único POST sem tocar no fluxo nativo do acolhimento.
+  //   Guarda a última captura da sessão e dispara "om30:classificacao-risco".
+  //   A ponte CLOUD OM30 2, abaixo, escuta esse evento e faz o POST sem alterar o fluxo nativo.
   // ---------------------------------------------------------------------------
 
   const OM30_CLASSIFICACAO_RISCO_CAPTURE_V1 = true;
@@ -463,6 +467,180 @@
 
   // Diagnóstico rápido no console. Retorna somente a última classificação desta aba.
   window.OM30ClassificacaoRiscoUltima = () => lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
+
+
+  // ---------------------------------------------------------------------------
+  // Ponte CLOUD OM30 2
+  //   A chave NÃO fica no GitHub. Cada navegador configura uma vez por:
+  //   OM30ClassificacaoCloudConfig('CHAVE')
+  // ---------------------------------------------------------------------------
+
+  const OM30_CLASSIFICACAO_CLOUD_V1 = true;
+  const CLASSIFICACAO_CLOUD_URL = 'https://om30-classificacao-risco.cloud-om30-2.workers.dev';
+  const STORAGE_CLASSIFICACAO_CLOUD_KEY = `${PREFIX}:classificacao-cloud-api-key`;
+  const SESSION_CLASSIFICACAO_PENDENTE = `${PREFIX}:classificacao-cloud-pendente`;
+  const SESSION_CLASSIFICACAO_ULTIMO_ENVIO = `${PREFIX}:classificacao-cloud-ultimo-envio`;
+
+  let envioClassificacaoEmCurso = null;
+  let avisoCloudSemChave = false;
+
+  function classificacaoCloudKey() {
+    try { return clean(localStorage.getItem(STORAGE_CLASSIFICACAO_CLOUD_KEY)); }
+    catch { return ''; }
+  }
+
+  function payloadClassificacaoCloud(info) {
+    return {
+      senha_id: String(info?.senha_id || ''),
+      grau_risco_id: Number(info?.grau_risco_id || 0),
+      categoria_origem_id: info?.categoria_origem_id || null,
+      tipo_atendimento_origem_id: info?.tipo_atendimento_origem_id || null,
+      tipo_atendimento_destino_id: info?.tipo_atendimento_destino_id || null
+    };
+  }
+
+  function assinaturaClassificacaoCloud(info) {
+    return [
+      info?.senha_id || '',
+      info?.grau_risco_id || '',
+      info?.tipo_atendimento_destino_id || ''
+    ].join(':');
+  }
+
+  async function postarClassificacaoCloud(info, { tentativas = 3 } = {}) {
+    const apiKey = classificacaoCloudKey();
+    if (!apiKey) {
+      if (!avisoCloudSemChave) {
+        avisoCloudSemChave = true;
+        console.info('[OM30 Ausentes] CLOUD OM30 2 ainda sem chave neste navegador. Configure com OM30ClassificacaoCloudConfig(...).');
+      }
+      return { ok: false, sem_chave: true };
+    }
+
+    const payload = payloadClassificacaoCloud(info);
+    if (!payload.senha_id || !RISCO_POR_ID[payload.grau_risco_id]) {
+      return { ok: false, invalido: true };
+    }
+
+    const assinatura = assinaturaClassificacaoCloud(payload);
+    const ultimo = lerJSON(SESSION_CLASSIFICACAO_ULTIMO_ENVIO, sessionStorage);
+    if (ultimo.assinatura === assinatura && Date.now() - Number(ultimo.t || 0) < 10000) {
+      return { ok: true, duplicado: true };
+    }
+
+    gravar(SESSION_CLASSIFICACAO_PENDENTE, info, sessionStorage);
+
+    let erro = null;
+    for (let i = 0; i < tentativas; i++) {
+      try {
+        const r = await fetch(`${CLASSIFICACAO_CLOUD_URL}/v1/classificacoes`, {
+          method: 'POST',
+          mode: 'cors',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-OM30-Key': apiKey
+          },
+          body: JSON.stringify(payload)
+        });
+
+        let resposta = null;
+        try { resposta = await r.json(); } catch {}
+
+        if (!r.ok) {
+          const detalhe = resposta?.erro || `HTTP ${r.status}`;
+          // 401 não melhora com retry: chave configurada neste navegador está incorreta.
+          if (r.status === 401) throw Object.assign(new Error(detalhe), { semRetry: true, status: 401 });
+          throw new Error(detalhe);
+        }
+
+        try { sessionStorage.removeItem(SESSION_CLASSIFICACAO_PENDENTE); } catch {}
+        gravar(SESSION_CLASSIFICACAO_ULTIMO_ENVIO, { assinatura, t: Date.now() }, sessionStorage);
+        console.info('[OM30 Ausentes] classificação enviada à CLOUD OM30 2:', {
+          senha_id: payload.senha_id,
+          classificacao: RISCO_POR_ID[payload.grau_risco_id]
+        });
+        return { ok: true, resposta };
+      } catch (e) {
+        erro = e;
+        if (e?.semRetry || i === tentativas - 1) break;
+        await new Promise(ok => setTimeout(ok, [1000, 3000, 6000][i] || 6000));
+      }
+    }
+
+    console.warn('[OM30 Ausentes] CLOUD OM30 2: classificação ficou pendente para reenvio:', erro);
+    return { ok: false, erro: String(erro?.message || erro) };
+  }
+
+  function enviarClassificacaoCloud(info) {
+    // Serializa os envios nesta aba para não criar duas gravações concorrentes
+    // caso Axios/XHR notifiquem quase juntos.
+    const anterior = envioClassificacaoEmCurso || Promise.resolve();
+    const atual = anterior.catch(() => {}).then(() => postarClassificacaoCloud(info));
+    envioClassificacaoEmCurso = atual.finally(() => {
+      if (envioClassificacaoEmCurso === atual) envioClassificacaoEmCurso = null;
+    });
+    return atual;
+  }
+
+  window.addEventListener('om30:classificacao-risco', ev => {
+    const info = ev?.detail;
+    if (info?.senha_id) void enviarClassificacaoCloud(info);
+  });
+
+  // Configura a chave somente neste navegador/origem. Não imprime nem devolve a chave.
+  window.OM30ClassificacaoCloudConfig = chave => {
+    const valor = clean(chave);
+    if (!valor) {
+      return {
+        ok: false,
+        configurada: !!classificacaoCloudKey(),
+        mensagem: 'Informe a chave da CLOUD OM30 2.'
+      };
+    }
+    try { localStorage.setItem(STORAGE_CLASSIFICACAO_CLOUD_KEY, valor); }
+    catch { return { ok: false, configurada: false, mensagem: 'Não consegui gravar no localStorage.' }; }
+
+    avisoCloudSemChave = false;
+    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
+    const ultima = lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
+    const reenviar = pendente?.senha_id ? pendente : ultima?.senha_id ? ultima : null;
+    if (reenviar) void enviarClassificacaoCloud(reenviar);
+
+    return {
+      ok: true,
+      configurada: true,
+      endpoint: CLASSIFICACAO_CLOUD_URL,
+      reenviando_pendente: !!reenviar
+    };
+  };
+
+  window.OM30ClassificacaoCloudStatus = () => {
+    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
+    return {
+      versao: '1.0',
+      configurada: !!classificacaoCloudKey(),
+      endpoint: CLASSIFICACAO_CLOUD_URL,
+      pendente: pendente?.senha_id ? {
+        senha_id: pendente.senha_id,
+        grau_risco_id: pendente.grau_risco_id,
+        classificacao: pendente.classificacao
+      } : null
+    };
+  };
+
+  window.OM30ClassificacaoCloudReenviar = () => {
+    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
+    const ultima = lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
+    const info = pendente?.senha_id ? pendente : ultima?.senha_id ? ultima : null;
+    return info ? enviarClassificacaoCloud(info) : Promise.resolve({ ok: false, vazio: true });
+  };
+
+  // Se a página recarregou depois de uma falha, tenta novamente a classificação pendente.
+  setTimeout(() => {
+    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
+    if (pendente?.senha_id && classificacaoCloudKey()) void enviarClassificacaoCloud(pendente);
+  }, 1500);
 
   // ---------------------------------------------------------------------------
   // Senha Simples (somente leitura)

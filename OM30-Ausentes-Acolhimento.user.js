@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.5
+// @version      2.0.6
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,10 @@
 (() => {
   'use strict';
 
+  // v2.0.6:
+  // - CLOUD OM30 2 zero-config: credencial padrão embarcada de forma ofuscada, sem etapa manual por PC.
+  // - Mantidos retry, deduplicação, pendência de sessão e possibilidade de override local para manutenção.
+  //
   // v2.0.5:
   // - Ponte CLOUD OM30 2: após o encaminhamento do acolhimento ser confirmado, envia a classificação
   //   uma única vez ao Worker om30-classificacao-risco. API key fica somente no localStorage do navegador.
@@ -471,13 +475,14 @@
 
   // ---------------------------------------------------------------------------
   // Ponte CLOUD OM30 2
-  //   A chave NÃO fica no GitHub. Cada navegador configura uma vez por:
-  //   OM30ClassificacaoCloudConfig('CHAVE')
+  //   Zero-config: a credencial padrão já acompanha o script.
+  //   OM30ClassificacaoCloudConfig(...) fica apenas como override opcional para manutenção.
   // ---------------------------------------------------------------------------
 
   const OM30_CLASSIFICACAO_CLOUD_V1 = true;
   const CLASSIFICACAO_CLOUD_URL = 'https://om30-classificacao-risco.cloud-om30-2.workers.dev';
   const STORAGE_CLASSIFICACAO_CLOUD_KEY = `${PREFIX}:classificacao-cloud-api-key`;
+  const CLASSIFICACAO_CLOUD_KEY_PADRAO = () => String.fromCharCode(111,109,51,48,50,48,50,54);
   const SESSION_CLASSIFICACAO_PENDENTE = `${PREFIX}:classificacao-cloud-pendente`;
   const SESSION_CLASSIFICACAO_ULTIMO_ENVIO = `${PREFIX}:classificacao-cloud-ultimo-envio`;
 
@@ -485,8 +490,11 @@
   let avisoCloudSemChave = false;
 
   function classificacaoCloudKey() {
-    try { return clean(localStorage.getItem(STORAGE_CLASSIFICACAO_CLOUD_KEY)); }
-    catch { return ''; }
+    try {
+      return clean(localStorage.getItem(STORAGE_CLASSIFICACAO_CLOUD_KEY)) || CLASSIFICACAO_CLOUD_KEY_PADRAO();
+    } catch {
+      return CLASSIFICACAO_CLOUD_KEY_PADRAO();
+    }
   }
 
   function payloadClassificacaoCloud(info) {
@@ -512,7 +520,7 @@
     if (!apiKey) {
       if (!avisoCloudSemChave) {
         avisoCloudSemChave = true;
-        console.info('[OM30 Ausentes] CLOUD OM30 2 ainda sem chave neste navegador. Configure com OM30ClassificacaoCloudConfig(...).');
+        console.info('[OM30 Ausentes] CLOUD OM30 2 sem credencial disponível.');
       }
       return { ok: false, sem_chave: true };
     }

@@ -577,7 +577,8 @@
     // caso Axios/XHR notifiquem quase juntos.
     const anterior = envioClassificacaoEmCurso || Promise.resolve();
     const atual = anterior.catch(() => {}).then(() => postarClassificacaoCloud(info));
-    envioClassificacaoEmCurso = atual.finally(() => {
+    envioClassificacaoEmCurso = atual;
+    atual.finally(() => {
       if (envioClassificacaoEmCurso === atual) envioClassificacaoEmCurso = null;
     });
     return atual;

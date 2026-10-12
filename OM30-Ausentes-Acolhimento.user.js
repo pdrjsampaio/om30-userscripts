@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.3
+// @version      2.0.4
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,12 @@
 (() => {
   'use strict';
 
+  // v2.0.4:
+  // - Captura confirmada da classificação de risco enviada pelo Acolhimento ao Senha Simples:
+  //   PUT /api/v2/filas/{categoria}/{tipo}/{senha_id}/encaminhar, lendo grau_risco_id (1..4).
+  // - Não envia nada para Cloudflare ainda: guarda somente a última captura na sessão e dispara
+  //   o evento "om30:classificacao-risco", pronto para a ponte da CLOUD OM30 2.
+  //
   // v2.0.3:
   // - Mensagem ao devolver: deixa claro que é a MESMA senha do munícipe (não precisa informar
   //   número novo), só avisar que voltou para a fila.
@@ -289,6 +295,174 @@
       while (i < itens.length) { const k = i++; await fn(itens[k]); }
     }));
   }
+
+  // ---------------------------------------------------------------------------
+  // Classificação de risco enviada pelo Acolhimento
+  //   Captura confirmada do Senha Simples:
+  //   PUT /api/v2/filas/{categoria_origem}/{tipo_origem}/{senha_id}/encaminhar
+  //   body: grau_risco_id + tipo_atendimento_destino_id
+  //
+  //   Por enquanto NÃO envia ao Cloudflare. Guarda só a última captura da sessão e
+  //   dispara "om30:classificacao-risco". A ponte para a CLOUD OM30 2 pode ouvir esse
+  //   evento e fazer um único POST sem tocar no fluxo nativo do acolhimento.
+  // ---------------------------------------------------------------------------
+
+  const OM30_CLASSIFICACAO_RISCO_CAPTURE_V1 = true;
+  const STORAGE_ULTIMA_CLASSIFICACAO = `${PREFIX}:ultima-classificacao-risco`;
+  const RISCO_POR_ID = Object.freeze({
+    1: 'VERMELHO',
+    2: 'AMARELO',
+    3: 'VERDE',
+    4: 'AZUL'
+  });
+
+  function corpoComoObjeto(corpo) {
+    if (corpo == null) return {};
+    if (typeof FormData !== 'undefined' && corpo instanceof FormData) {
+      return Object.fromEntries([...corpo.entries()]);
+    }
+    if (typeof URLSearchParams !== 'undefined' && corpo instanceof URLSearchParams) {
+      return Object.fromEntries(corpo.entries());
+    }
+    if (typeof corpo === 'object') return corpo;
+    const txt = String(corpo || '').trim();
+    if (!txt) return {};
+    try {
+      const j = JSON.parse(txt);
+      if (j && typeof j === 'object') return j;
+    } catch {}
+    try {
+      return Object.fromEntries(new URLSearchParams(txt).entries());
+    } catch {}
+    return {};
+  }
+
+  function valorProfundo(obj, nomes, nivel = 0) {
+    if (!obj || typeof obj !== 'object' || nivel > 4) return null;
+    for (const nome of nomes) {
+      if (Object.prototype.hasOwnProperty.call(obj, nome) && obj[nome] != null) return obj[nome];
+    }
+    for (const valor of Object.values(obj)) {
+      if (!valor || typeof valor !== 'object') continue;
+      const achou = valorProfundo(valor, nomes, nivel + 1);
+      if (achou != null) return achou;
+    }
+    return null;
+  }
+
+  function lerEncaminhamentoClassificacao(url, metodo, corpo) {
+    if (!location.pathname.startsWith('/acolhimentos')) return null;
+    if (String(metodo || '').toUpperCase() !== 'PUT') return null;
+
+    let u;
+    try { u = new URL(String(url || ''), location.href); } catch { return null; }
+
+    const m = u.pathname.match(/\/api\/v2\/filas\/([^/]+)\/([^/]+)\/([^/]+)\/encaminhar\/?$/i);
+    if (!m) return null;
+
+    const dados = corpoComoObjeto(corpo);
+    const riscoBruto = valorProfundo(dados, ['grau_risco_id']);
+    const riscoId = Number(riscoBruto);
+    if (!Number.isInteger(riscoId) || !RISCO_POR_ID[riscoId]) return null;
+
+    return {
+      senha_id: decodeURIComponent(m[3]),
+      categoria_origem_id: decodeURIComponent(m[1]),
+      tipo_atendimento_origem_id: decodeURIComponent(m[2]),
+      tipo_atendimento_destino_id: String(
+        valorProfundo(dados, ['tipo_atendimento_destino_id']) ?? ''
+      ) || null,
+      grau_risco_id: riscoId,
+      classificacao: RISCO_POR_ID[riscoId],
+      capturado_em: new Date().toISOString()
+    };
+  }
+
+  let ultimaAssinaturaClassificacao = '';
+  let ultimaAssinaturaClassificacaoEm = 0;
+
+  function registrarClassificacaoCapturada(info) {
+    if (!info?.senha_id || !info?.grau_risco_id) return;
+
+    // Axios/fetch/XHR podem passar pela mesma camada em alguns ambientes.
+    // Evita registrar duas vezes a mesma operação.
+    const assinatura = `${info.senha_id}:${info.grau_risco_id}:${info.tipo_atendimento_destino_id || ''}`;
+    const agora = Date.now();
+    if (assinatura === ultimaAssinaturaClassificacao && agora - ultimaAssinaturaClassificacaoEm < 3000) return;
+    ultimaAssinaturaClassificacao = assinatura;
+    ultimaAssinaturaClassificacaoEm = agora;
+
+    gravar(STORAGE_ULTIMA_CLASSIFICACAO, info, sessionStorage);
+    console.info('[OM30 Ausentes] classificação capturada:', info);
+    try {
+      window.dispatchEvent(new CustomEvent('om30:classificacao-risco', { detail: info }));
+    } catch {}
+  }
+
+  // 1) Caminho principal: o Saúde Simples usa um proxy Axios para conversar com o Senha Simples.
+  //    Interceptamos somente respostas 2xx, ou seja, a classificação já foi aceita.
+  async function instalarCapturaClassificacaoAxios() {
+    try {
+      await esperar(() => {
+        const p = (typeof senhaSimplesProxy !== 'undefined') ? senhaSimplesProxy : null;
+        return !!p?.interceptors?.response?.use;
+      }, 30000);
+    } catch { return false; }
+
+    const p = (typeof senhaSimplesProxy !== 'undefined') ? senhaSimplesProxy : null;
+    if (!p?.interceptors?.response?.use) return false;
+    if (p.__om30ClassificacaoRiscoInterceptor) return true;
+
+    p.interceptors.response.use(resp => {
+      try {
+        const cfg = resp?.config || {};
+        const info = lerEncaminhamentoClassificacao(cfg.url, cfg.method, cfg.data);
+        if (info) registrarClassificacaoCapturada(info);
+      } catch (e) {
+        console.warn('[OM30 Ausentes] captura da classificação:', e);
+      }
+      return resp;
+    });
+
+    try { Object.defineProperty(p, '__om30ClassificacaoRiscoInterceptor', { value: true }); }
+    catch { p.__om30ClassificacaoRiscoInterceptor = true; }
+    return true;
+  }
+
+  // 2) Fallback de segurança para telas que façam o PUT diretamente por XMLHttpRequest.
+  function instalarCapturaClassificacaoXHR() {
+    const proto = window.XMLHttpRequest?.prototype;
+    if (!proto || proto.__om30ClassificacaoRiscoXHR) return;
+
+    const abrir = proto.open;
+    const enviar = proto.send;
+
+    proto.open = function(method, url, ...resto) {
+      this.__om30ClassificacaoMeta = { method, url };
+      return abrir.call(this, method, url, ...resto);
+    };
+
+    proto.send = function(body) {
+      const meta = this.__om30ClassificacaoMeta;
+      let candidato = null;
+      try { candidato = lerEncaminhamentoClassificacao(meta?.url, meta?.method, body); } catch {}
+      if (candidato) {
+        this.addEventListener('loadend', () => {
+          if (this.status >= 200 && this.status < 300) registrarClassificacaoCapturada(candidato);
+        }, { once: true });
+      }
+      return enviar.call(this, body);
+    };
+
+    try { Object.defineProperty(proto, '__om30ClassificacaoRiscoXHR', { value: true }); }
+    catch { proto.__om30ClassificacaoRiscoXHR = true; }
+  }
+
+  instalarCapturaClassificacaoXHR();
+  instalarCapturaClassificacaoAxios();
+
+  // Diagnóstico rápido no console. Retorna somente a última classificação desta aba.
+  window.OM30ClassificacaoRiscoUltima = () => lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
 
   // ---------------------------------------------------------------------------
   // Senha Simples (somente leitura)

@@ -1,0 +1,2308 @@
+// ==UserScript==
+// @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
+// @namespace    https://om30.com.br/
+// @version      2.0.3
+// @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
+// @author       Pedro Sampaio - Samp
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
+// @match        https://guaruja.saudesimples.net/acolhimentos*
+// @match        https://guarujahomolog.saudesimples.net/acolhimentos*
+// @match        https://guaruja.saudesimples.net/prontuarios*
+// @match        https://guarujahomolog.saudesimples.net/prontuarios*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+  'use strict';
+
+  // v2.0.3:
+  // - Mensagem ao devolver: deixa claro que é a MESMA senha do munícipe (não precisa informar
+  //   número novo), só avisar que voltou para a fila.
+  //
+  // v2.0.2:
+  // - Senha da ficha aparece igual às outras (sem etiqueta "ficha" nem borda tracejada).
+  //
+  // v2.0.1:
+  // - Senha da ficha: passando o mouse mostra por que o Senha Simples não deu o número.
+  //
+  // v2.0.0:
+  // - FICHA FUNCIONANDO: a leitura pulava o conteúdo da página porque confundia o dicionário
+  //   dele com o da imagem anterior (PDF iText). Agora lê "SENHA:PD0038 08/10/2026 15:14:19".
+  //
+  // v1.9.9:
+  // - Senha EM = Emergência sempre (venha do Senha Simples ou da ficha), com ou sem profissional.
+  // - Ficha: quando não acha a senha, o motivo aparece ao passar o mouse e o texto lido vai
+  //   para o console ([OM30 Ausentes] ficha sem senha), para ajustar a leitura.
+  //
+  // v1.9.8:
+  // - CORREÇÃO (regressão da 1.9.0): voltou a consulta pelo guichê de quem está com a senha.
+  //   Era isso que trazia o número da maioria quando o Senha Simples responde "em atendimento
+  //   por FULANO no guichê X". Vale para a fila médica, emergência, acolhimento e a volta pelo
+  //   acolhimento.
+  // - "sem nº": passando o mouse mostra o motivo (o que o Senha Simples e a ficha responderam).
+  //
+  // v1.9.7:
+  // - Senha vinda da ficha aparece marcada com "ficha" (só para visualizar; a devolução continua
+  //   pelo Senha Simples). Medidor de tempo escondido na versão normal.
+  //
+  // v1.9.6:
+  // - Não fica mais preso em "Conectando ao Senha Simples": a cada 5 s testa se o Senha Simples
+  //   já responde e, respondendo, volta a buscar os números (antes esperava um token novo que
+  //   podia nunca chegar, e aí ficava sem número para sempre).
+  // - Console: OM30AusentesDebug(id) mostra fila por fila o que o Senha Simples respondeu.
+  //
+  // v1.9.5:
+  // - Ficha (PDF iText/Jasper): lê também texto em hexadecimal, aceita a senha longe do rótulo
+  //   (único código tipo AA0000 da ficha) e, se não achar, tenta de novo em 10 min (não 12 h).
+  //
+  // v1.9.4:
+  // - CORREÇÃO: no 401 o script apagava o login (token) que a própria tela usa. Agora nunca
+  //   mexe no token da tela nem recarrega o login do Senha Simples.
+  //
+  // v1.9.3:
+  // - Clicar no tempo da barra copia o resultado (modo, tempos e quantos com número).
+  //
+  // v1.9.2:
+  // - MODO_NUMERO (AMBOS / SENHA / FICHA) e medição de tempo na barra, para comparar.
+  //
+  // v1.9.1:
+  // - Ausentes da fila médica voltaram a ter número: se a senha está com o profissional
+  //   (Senha Simples esconde o número), pega o número na fila do acolhimento, onde a mesma
+  //   senha já foi concluída. Só depois tenta a ficha.
+  // - Console: OM30AusentesFicha(id) mostra o que o script leu na ficha (para conferir).
+  //
+  // v1.9.0:
+  // - Origem pela coluna PROFISSIONAL da lista de ausentes da fila médica (mesma lista, mesmo
+  //   atendimento): sem profissional = ausentado no ACOLHIMENTO; com profissional = ausentado
+  //   na FILA MÉDICA (EM... = Emergência). É instantâneo e não depende do Senha Simples.
+  //   No acolhimento a coluna vem da lista da fila médica, lida junto com a lista.
+  // - O Senha Simples agora só completa a senha / quem chamou (1 consulta por paciente, só na
+  //   fila certa). Com 401 a lista continua separada normalmente.
+  //
+  // v1.8.5:
+  // - "sem nº" acabou: quando o Senha Simples não mostra o número (senha com outro profissional),
+  //   o script lê a SENHA impressa na ficha do atendimento (PDF da ficha, lido por trás, sem
+  //   abrir nada na tela). O número fica guardado, então cada ficha é lida uma vez só.
+  //
+  // v1.8.4:
+  // - Emergência separada da fila médica: card/filtro próprio "Emergência" (fila EMERGÊNCIA
+  //   do Senha Simples ou senha começando com EM). Na tela da fila médica pode ser removida
+  //   (devolve para a emergência); no acolhimento fica bloqueada.
+  //
+  // v1.8.3:
+  // - Ausente novo aparece sozinho em até ~30 s: a cada 30 s lê só a página 1 da lista (os mais
+  //   recentes vêm primeiro) e consulta no Senha Simples só quem é novo. A conferência completa
+  //   de hoje (quem saiu da lista em outro computador) roda a cada 5 min e no Atualizar.
+  //
+  // v1.8.2:
+  // - Lista: as páginas dos ausentes são buscadas 6 de uma vez (cada página do sistema leva ~2,5 s).
+  // - HTTP 401: não sobrescreve mais o token que a própria tela está usando; ao dar 401, recarrega
+  //   o login do Senha Simples da tela (iframe) e espera o token novo, sem ficar repetindo consultas.
+  // - Mais consultas simultâneas ao Senha Simples (8).
+  //
+  // v1.8.1:
+  // - Bem mais rápido: para cada ausente consulta primeiro a fila médica; só se não decidir
+  //   consulta o acolhimento, e só no fim as outras filas (antes eram TODAS as filas, sempre).
+  //   4 consultas ao mesmo tempo. O resultado fica guardado 30 min (vale entre recargas e
+  //   entre as telas), então a segunda abertura é quase imediata.
+  // - Emergência/urgência contam como fila médica. Fila reconhecida também pelo nome.
+  // - O histórico completo da senha é buscado só ao abrir os detalhes.
+  //
+  // v1.8.0:
+  // - Funciona também na aba AUSENTES da fila médica (/prontuarios e /prontuarios/urgencia_emergencia).
+  //   Lá só remove quem foi ausentado na fila médica (devolvendo a mesma senha para a fila médica);
+  //   quem foi ausentado no acolhimento fica só para consulta, com o botão bloqueado.
+  //
+  // v1.7.2:
+  // - HTTP 401 do Senha Simples (token vencido / login ainda não terminou): não mostra erro.
+  //   Espera o token novo que a própria tela recebe do Senha Simples e verifica sozinho.
+  //   Se o Senha Simples não estiver logado no navegador, avisa o que fazer.
+  //
+  // v1.7.1:
+  // - Muito mais rápido: a lista de ausentes do sistema tem o histórico inteiro (dezenas de páginas).
+  //   Agora carrega só as páginas de HOJE (várias ao mesmo tempo, mostrando conforme chegam).
+  //   As páginas antigas só são buscadas quando "Somente hoje" é desmarcado.
+  // - Usa a paginação certa da aba (#paginacaoAusentes, parâmetro page_ausentes).
+  //
+  // v1.7.0:
+  // - Lista completa numa página só: busca todas as páginas dos ausentes (sem o limite de 10)
+  //   e esconde a paginação. A cada revisita, entra quem foi ausentado e sai quem foi removido,
+  //   sem recarregar a tela.
+  //
+  // v1.6.3:
+  // - Não precisa clicar em Atualizar: se nada for encontrado, refaz sozinho do zero;
+  //   revisita a lista a cada 90 s e quando a aba volta ao foco. "Não encontrada" não fica em cache.
+  //
+  // v1.6.2:
+  // - Senha Simples logado em outra unidade: consulta direto as filas de acolhimento e médica
+  //   desta unidade (antes tudo virava "sem senha") e avisa na barra.
+  // - Remoção só liberada para ausentes confirmados no ACOLHIMENTO; o resto fica bloqueado.
+  //
+  // v1.6.0:
+  // - Visual: colunas "Senha" e "Ausente em" na lista de ausentes; janelas e avisos novos
+  //   (confirmação, sucesso, erro, bloqueio) no padrão OM30; detalhe da senha redesenhado.
+  //
+  // v1.5.0:
+  // - Senha presa: ao clicar em Chamar e o Senha Simples responder "já chamada / em atendimento
+  //   por FULANO", solta a senha (retornar + desvincular) e chama por este guichê.
+  //   Vale no acolhimento e na tela do médico.
+  // - Devolver da ausência já solta a senha (desvincular), para qualquer guichê chamar.
+  //
+  // v1.4.2:
+  // - 422 "em atendimento no guichê X": consulta de novo pelo guichê X (às vezes vem a senha completa).
+  // - "seu usuário" do Senha Simples não vira mais "você" (era texto genérico).
+  // - Quando a senha foi concluída sem ser chamada, mostra quem concluiu.
+  //
+  // v1.4.1:
+  // - Consulta com até 3 tentativas e 2 pacientes por vez (o Senha Simples recusava rajadas);
+  //   se ainda falhar, o código do erro aparece na etiqueta.
+  // - Etiqueta reorganizada: senha em destaque + "Ausente: Emergência"; nomes de setor curtos;
+  //   "Chamado por Bianca Jeniffer no Emergência".
+  //
+  // v1.4.0:
+  // - Botão "Senha" em cada ausente: mostra a senha, em qual fila foi ausentado, a hora em que a
+  //   senha foi concluída (= ausência) e o histórico por fila (gerada, chamada, concluída, por quem).
+  //
+  // v1.3.1:
+  // - Ausentes da fila médica / emergência / outros: botão de remover BLOQUEADO no acolhimento
+  //   (cinza, sem opção de forçar). Os grupos continuam visíveis para consulta.
+  //
+  // v1.3.0:
+  // - Mostra quem chamou a senha por último na fila de origem ("chamado por FULANO · GUICHÊ").
+  // - Remover ausência de quem foi ausentado NO ACOLHIMENTO: remove a ausência e devolve a
+  //   mesma senha para a fila do acolhimento (retornar_para_atendimento), mostrando o número.
+  //   Se a senha não voltar, avisa claramente.
+  //
+  // v1.2.1:
+  // - Salas não ausentam: quem passou por medicação/exames/raio-x/procedimento conta como FILA MÉDICA.
+  //
+  // v1.2.0:
+  // - Consulta a senha em TODAS as filas do Senha Simples da unidade.
+  // - 422 "já chamada" conta como senha existente naquela fila (antes virava "Erro").
+  // - Origem = fila mais adiantada no fluxo onde a senha existe
+  //   (recepção < acolhimento < médico/emergência/pediatria), desempate por created_at.
+  //   Salas (medicação, exames, raio-x, procedimento) NÃO ausentam: quem passou por sala
+  //   volta para a fila médica e conta como FILA MÉDICA.
+  //   Senha parada (nunca chamada nem concluída) só conta se não houver outra.
+  // - "Outros setores" mostra o nome da fila (ex.: EMERGÊNCIA, MEDICAÇÃO).
+  //
+  // v1.1.1:
+  // - Leitura das filas em sequência + nova tentativa; o aviso mostra o erro real.
+  //
+  // v1.1.0:
+  // - Locais das filas descobertos pela parametrização DA UNIDADE LOGADA
+  //   (/filas/parametrizacoes/{acolhimento|atendimento} -> categoria -> locais_atendimento).
+  //   Não depende mais do guichê salvo no computador (que podia ser de outra unidade).
+  //
+  // v1.0.0:
+  // - Origem da ausência pela senha do Senha Simples (recuperar_senha_saude_atendimento):
+  //     senha na fila médica          -> FILA MÉDICA
+  //     senha só na fila acolhimento  -> ACOLHIMENTO
+  //     senha nas duas                -> vale a mais recente (created_at)
+  //     nenhuma das duas              -> OUTROS (encaminhado p/ outro setor / sem senha)
+  // - Remover pelo acolhimento um ausente da FILA MÉDICA pede confirmação
+  //   (removendo pela tela errada o paciente some das duas filas).
+
+  if (window.__OM30_AUSENTES_ACOLHIMENTO_V203__) return;
+  window.__OM30_AUSENTES_ACOLHIMENTO_V203__ = true;
+
+  // De onde vem o NÚMERO da senha (a origem é sempre pelo profissional):
+  //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
+  const MODO_NUMERO = 'AMBOS';
+  let T0 = performance.now();
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.3';
+  const PREFIX = 'om30-ausentes-acolhimento';
+  // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
+  const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';
+  const STORAGE_FILTRO = TELA === 'MEDICO' ? `${PREFIX}:filtro-medico` : `${PREFIX}:filtro`;
+  const STORAGE_HOJE = `${PREFIX}:somente-hoje`;
+  const SESSION_LOCAIS = `${PREFIX}:locais-unidade-v17`;
+  const SESSION_CACHE = `${PREFIX}:origem-v22:`;   // guardado no localStorage
+  const BAR_ID = `${PREFIX}-barra`;
+  const MODAL_ID = `${PREFIX}-modal`;
+  const STYLE_ID = `${PREFIX}-css-v161`;
+  const CACHE_LOCAIS_MS = 30 * 60 * 1000;
+  const CACHE_ORIGEM_MS = 30 * 60 * 1000;
+  const REVERIFICAR_MS = 30 * 1000;            // leitura leve (página 1)
+  const CONFERENCIA_COMPLETA_MS = 5 * 60 * 1000;  // relê todas as páginas de hoje
+  const CONCORRENCIA = 6;
+  // /ausentes/{id} no acolhimento, /atendimento_ausentes/{id} na fila médica
+  const SEL_REMOVER = 'a[href*="ausentes/"][data-method="delete"]';
+
+  const FILTROS = [
+    { key: 'TODOS',       label: 'Todos',       sub: 'ausentes',              cor: '#6c757d' },
+    { key: 'ACOLHIMENTO', label: 'Acolhimento', sub: 'pode devolver aqui',    cor: '#198754' },
+    { key: 'MEDICO',      label: 'Fila médica', sub: 'só consulta aqui',      cor: '#6f42c1' },
+    { key: 'EMERGENCIA',  label: 'Emergência',  sub: '',                      cor: '#dc3545' },
+    { key: 'OUTROS',      label: 'Outros setores', sub: 'emergência · só consulta', cor: '#f9b000' }
+  ];
+  const FILTROS_VALIDOS = new Set(FILTROS.map(f => f.key));
+
+  const ROTULO_ORIGEM = {
+    ACOLHIMENTO: 'Acolhimento',
+    MEDICO: 'Fila médica',
+    EMERGENCIA: 'Emergência',
+    OUTROS: 'Outro setor',
+    SEM_SENHA: 'Sem senha no Senha Simples',
+    ERRO: 'Erro ao consultar',
+    INDEFINIDO: 'Fila não encontrada'
+  };
+
+  // ---------------------------------------------------------------------------
+  // Utilidades
+  // ---------------------------------------------------------------------------
+
+  const clean = valor => String(valor ?? '').replace(/\s+/g, ' ').trim();
+  const norm = valor => clean(valor).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+  const semEspaco = valor => norm(valor).replace(/\s/g, '');
+  const esc = v => String(v ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+  const hora = iso => {
+    const d = iso ? new Date(iso) : null;
+    return d && !isNaN(d) ? d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
+  };
+  const horarioCurtoAgora = () => new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  function lerJSON(chave, store = localStorage) {
+    try { return JSON.parse(store.getItem(chave) || 'null') || {}; } catch { return {}; }
+  }
+
+  function gravar(chave, valor, store = localStorage) {
+    try { store.setItem(chave, typeof valor === 'string' ? valor : JSON.stringify(valor)); } catch {}
+  }
+
+  function esperar(condicao, ms = 30000) {
+    return new Promise((resolve, reject) => {
+      const inicio = Date.now();
+      (function loop() {
+        try { if (condicao()) return resolve(); } catch {}
+        if (Date.now() - inicio > ms) return reject(new Error('timeout'));
+        setTimeout(loop, 300);
+      })();
+    });
+  }
+
+  async function emParalelo(itens, limite, fn) {
+    let i = 0;
+    await Promise.all(Array.from({ length: limite }, async () => {
+      while (i < itens.length) { const k = i++; await fn(itens[k]); }
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Senha Simples (somente leitura)
+  // ---------------------------------------------------------------------------
+
+  const fnRecuperar = () =>
+    (typeof senhaSimplesGetSenhaAtendimento === 'function') ? senhaSimplesGetSenhaAtendimento : null;
+  const proxySenha = () =>
+    (typeof senhaSimplesProxy !== 'undefined') ? senhaSimplesProxy : null;
+  const senhaSimplesPronto = () =>
+    !!fnRecuperar() && !!sessionStorage.getItem('senhaSimplesToken');
+
+  // Sempre usa o token mais novo que a tela recebeu do Senha Simples.
+  function garantirTokenSenha() {
+    const proxy = proxySenha();
+    const token = sessionStorage.getItem('senhaSimplesToken');
+    if (!proxy || !token) return;
+    const h = proxy.defaults.headers || {};
+    // Se a tela já tem um token no proxy, é ele que vale (pode ser mais novo que o guardado).
+    if (!h.Authorization && !(h.common && h.common.Authorization)) {
+      proxy.defaults.headers = { ...h, Authorization: `Bearer ${token}` };
+    }
+  }
+
+  // ---- Token do Senha Simples ----
+  // A tela recebe o token por mensagem do Senha Simples (iframe) a cada carga. O token que já
+  // estava guardado pode estar vencido (HTTP 401) até essa mensagem chegar.
+  let tokenRecebidoEm = 0;
+  let erroLoginSenha = '';
+  let aguardandoToken = false;
+  let aoChegarToken = null;
+  window.addEventListener('message', ev => {
+    const a = ev.data;
+    if (!a || a.source !== 'om30-senha-simples') return;
+    if (!/^https:\/\/senha[a-z]*\.saudesimples\.net$/.test(ev.origin)) return;
+    if (a.token) {
+      erroLoginSenha = '';
+      tokenRecebidoEm = Date.now();
+      setTimeout(() => {
+        if (aoChegarToken) aoChegarToken();
+      }, 300);
+    } else if (a.error) {
+      erroLoginSenha = clean(a.error);
+      if (aoChegarToken) aoChegarToken();
+    }
+  });
+
+  const eh401 = e => e?.response?.status === 401 || /HTTP 401/.test(String(e));
+
+  // Recarrega o iframe de login do Senha Simples que a própria tela usa: ele manda um token novo.
+  let renovadoEm = 0;
+  function renovarTokenSenha() {
+    if (Date.now() - renovadoEm < 60000) return false;
+    renovadoEm = Date.now();
+    const frames = [...document.querySelectorAll('iframe')].filter(f => /senha[a-z]*\.saudesimples\.net/i.test(f.src || ''));
+    frames.forEach(f => { try { const src = f.src; f.src = 'about:blank'; setTimeout(() => { f.src = src; }, 50); } catch {} });
+    console.info(`[OM30 Ausentes] 401 do Senha Simples: login da tela recarregado (${frames.length} iframe).`);
+    return frames.length > 0;
+  }
+
+  // Quando der 401: avisa sem cara de erro e refaz sozinho assim que o token mudar.
+  function esperarTokenNovo(refazer) {
+    if (aguardandoToken) return;
+    aguardandoToken = true;
+
+    const antigo = sessionStorage.getItem('senhaSimplesToken');
+    const inicio = Date.now();
+    const pronto = () => {
+      clearInterval(timer);
+      aguardandoToken = false;
+      aoChegarToken = null;
+      definirAviso('');
+      refazer();
+    };
+    aoChegarToken = () => {
+      if (erroLoginSenha) {
+        definirAviso(`Senha Simples não está logado neste navegador (${erroLoginSenha}). Faça login em senhaguaruja.saudesimples.net e recarregue esta página.`);
+      } else pronto();
+    };
+    definirAviso('Conectando ao Senha Simples… a lista será verificada sozinha.');
+    let testando = false, ultimoTeste = Date.now();
+    const timer = setInterval(async () => {
+      const t = sessionStorage.getItem('senhaSimplesToken');
+      if (t && t !== antigo) return pronto();
+      // O 401 pode ter sido passageiro: testa se o Senha Simples já responde.
+      if (!testando && Date.now() - ultimoTeste >= 5000) {
+        testando = true; ultimoTeste = Date.now();
+        try { garantirTokenSenha(); await senhaSimplesGetSenhaCategorias(); testando = false; return pronto(); }
+        catch { testando = false; }
+      }
+      if (Date.now() - inicio > 20000 && !erroLoginSenha) {
+        definirAviso('O Senha Simples não respondeu o login nesta tela. Abra senhaguaruja.saudesimples.net neste navegador, faça login e recarregue esta página.');
+      }
+    }, 1500);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filas da unidade logada (parametrização + categorias do Senha Simples)
+  // ---------------------------------------------------------------------------
+
+  async function lerParametrizacao(tipo) {
+    if (typeof saudeSimplesProxy !== 'undefined') {
+      return (await saudeSimplesProxy.get(`/filas/parametrizacoes/${tipo}`)).data;
+    }
+    const r = await fetch(`/filas/parametrizacoes/${tipo}`, {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  async function comRetentativa(fn, vezes = 2) {
+    let ultimo;
+    for (let i = 0; i < vezes; i++) {
+      try { return await fn(); } catch (e) { ultimo = e; await new Promise(r => setTimeout(r, 600)); }
+    }
+    throw ultimo;
+  }
+
+  const descricaoErro = e => e?.response?.status ? `HTTP ${e.response.status}` : String(e?.message || e);
+
+  // Ordem do fluxo do PA. Na dúvida entre duas filas onde a senha existe,
+  // a mais adiantada no fluxo é onde o paciente estava quando foi ausentado.
+  function classificarFila(cat, nome, acolhCat, medCat) {
+    const n = norm(nome);
+    const igual = (a, b) => a != null && b != null && String(a) === String(b);
+    if (igual(cat, acolhCat)) return { grupo: 'ACOLHIMENTO', ordem: 1 };
+    if (igual(cat, medCat)) return { grupo: 'MEDICO', ordem: 2 };
+    if (/EMERGENC|URGENC/.test(n)) return { grupo: 'EMERGENCIA', ordem: 2 };
+    if (/ACOLHIMENTO|CLASSIFICACAO DE RISCO|TRIAGEM/.test(n)) return { grupo: 'ACOLHIMENTO', ordem: 1 };
+    if (/ATENDIMENTO MEDICO|CLINICO|CONSULTORIO/.test(n)) return { grupo: 'MEDICO', ordem: 2 };
+    if (/RECEP/.test(n)) return { grupo: 'RECEPCAO', ordem: 0 };
+    // Salas (controle de salas) não ausentam: o paciente volta para a fila médica e é o médico que ausenta.
+    if (/MEDICACAO|EXAME|RADIO|RAIO|PROCEDIMENTO|GESSO|IMOBILIZ/.test(n)) return { grupo: 'SALA', ordem: -1 };
+    return { grupo: 'OUTROS', ordem: 2 }; // pediatria, emergência e demais filas de atendimento
+  }
+
+  const tituloCaso = v => clean(v).toLowerCase()
+    .replace(/(^|\s)(\S)/g, (m, e, c) => e + c.toUpperCase())
+    .replace(/\s(De|Da|Do|Das|Dos|E)(?=\s)/g, m => m.toLowerCase());
+
+  // "EMERGÊNCIA MATHEUS SANTAMARIA" -> "Emergência"; "MEDICAÇÃO (MATHEUS SANTAMARIA)" -> "Medicação"
+  const SETORES = [
+    [/EMERGENCIA/, 'Emergência'], [/PEDIATR/, 'Pediatria'], [/MEDICACAO/, 'Medicação'],
+    [/EXAME/, 'Exames'], [/RADIOGRAF|RAIO/, 'Raio-X'], [/SUTURA|CURATIVO/, 'Sutura/Curativo'],
+    [/PROCEDIMENTO/, 'Procedimento'], [/RECEP/, 'Recepção'], [/ACOLHIMENTO/, 'Acolhimento'],
+    [/ATENDIMENTO MEDICO/, 'Fila médica'], [/DENTISTA|ODONTO/, 'Dentista']
+  ];
+  const nomeCurto = nome => {
+    const n = norm(nome);
+    const achado = SETORES.find(([rx]) => rx.test(n));
+    return achado ? achado[1] : (tituloCaso(String(nome || '').replace(/\(.*?\)/g, '')) || 'Outro setor');
+  };
+  const guicheCurto = g => {
+    if (!g) return '';
+    const n = norm(g);
+    const achado = SETORES.find(([rx]) => rx.test(n));
+    return /\d/.test(g) || !achado ? tituloCaso(g) : achado[1];
+  };
+  // "BIANCA JENIFFER VIEIRA MARQUES" -> "Bianca Jeniffer"
+  const pessoaCurta = nome => {
+    if (!nome || nome === 'você') return nome || '';
+    const p = tituloCaso(nome).split(' ');
+    return p.slice(0, /^(de|da|do|das|dos|e)$/i.test(p[1] || '') ? 3 : 2).join(' ');
+  };
+
+  async function filasDaUnidade(forcar = false) {
+    const cache = lerJSON(SESSION_LOCAIS, sessionStorage);
+    if (!forcar && cache.t && Date.now() - cache.t < CACHE_LOCAIS_MS && cache.filas?.length) return cache;
+
+    const erros = {};
+    // Em sequência (não em paralelo): o proxy do Saúde Simples pode descartar chamadas simultâneas.
+    const acolhCat = await comRetentativa(() => lerParametrizacao('acolhimento'))
+      .then(p => p?.senha_simples_categoria?.id || null).catch(e => { erros.acolhimento = descricaoErro(e); return null; });
+    const medCat = await comRetentativa(() => lerParametrizacao('atendimento'))
+      .then(p => p?.senha_simples_categoria?.id || null).catch(e => { erros.atendimento = descricaoErro(e); return null; });
+
+    let categorias = [];
+    try {
+      const { data } = await comRetentativa(() => senhaSimplesGetSenhaCategorias());
+      categorias = Array.isArray(data) ? data : (Object.values(data || {}).find(Array.isArray) || []);
+    } catch (e) { erros.categorias = descricaoErro(e); }
+
+    const filas = [];
+    for (const c of categorias) {
+      let locais = c.locais_atendimento;
+      if (!locais) {
+        try { locais = (await proxySenha().get(`categorias/${c.id}`)).data?.locais_atendimento; } catch {}
+      }
+      const local = (locais || []).map(l => l.id).find(Boolean);
+      if (!local) continue;
+      const guiches = (locais || []).filter(l => l.id).map(l => ({ id: l.id, nome: norm(l.nome) }));
+      filas.push({ cat: c.id, nome: c.nome, local, guiches, ...classificarFila(c.id, c.nome, acolhCat, medCat) });
+    }
+
+    // Se o Senha Simples estiver logado em OUTRA unidade, a lista de categorias não traz as
+    // filas desta unidade. Garante pelo menos acolhimento e fila médica buscando direto.
+    let unidadeDiferente = false;
+    for (const cat of [acolhCat, medCat]) {
+      if (!cat || filas.some(f => f.cat === cat)) continue;
+      unidadeDiferente = true;
+      try {
+        const c = (await proxySenha().get(`categorias/${cat}`)).data;
+        const locais = (c?.locais_atendimento || []).filter(l => l.id);
+        if (locais.length) {
+          filas.push({ cat, nome: c.nome, local: locais[0].id,
+                       guiches: locais.map(l => ({ id: l.id, nome: norm(l.nome) })),
+                       ...classificarFila(cat, c.nome, acolhCat, medCat) });
+        }
+      } catch (e) { erros.categorias = descricaoErro(e); }
+    }
+
+    const r = { acolhCat, medCat, filas, erros, unidadeDiferente, t: Date.now() };
+    console.info('[OM30 Ausentes] Filas do Senha Simples:', filas.map(f => `${f.nome} → ${f.grupo}`).join(' | '));
+    if (filas.length && acolhCat && medCat) gravar(SESSION_LOCAIS, r, sessionStorage);
+    return r;
+  }
+
+  // 200 = senha existe (com datas); 422 ja_chamada = existe e já foi chamada; 404 = não existe.
+  async function consultarSenha(local, atendimentoId, tipo) {
+    let r;
+    for (let i = 0; i < 3; i++) {
+      r = await consultarSenhaUmaVez(local, atendimentoId, tipo);
+      if (!r?.erro || r.auth) return r;
+      await new Promise(ok => setTimeout(ok, 700 * (i + 1)));
+    }
+    return r;
+  }
+
+  // No máximo 8 consultas ao Senha Simples ao mesmo tempo.
+  const LIMITE_SIMULTANEAS = 8;
+  let emVoo = 0;
+  const filaEspera = [];
+  async function comLimite(fn) {
+    if (emVoo >= LIMITE_SIMULTANEAS) await new Promise(ok => filaEspera.push(ok));
+    emVoo++;
+    try { return await fn(); } finally { emVoo--; filaEspera.shift()?.(); }
+  }
+
+  function consultarSenhaUmaVez(local, atendimentoId, tipo) {
+    return comLimite(() => consultarSenhaUmaVezSemLimite(local, atendimentoId, tipo));
+  }
+
+  async function consultarSenhaUmaVezSemLimite(local, atendimentoId, tipo) {
+    try {
+      const { data: s } = await fnRecuperar()({
+        localAtendimentoAtualId: local,
+        params: { atendimento_id: atendimentoId, atendimento_type: tipo }
+      });
+      return {
+        existe: true, senha: s.senha, created_at: s.created_at, chamado_em: s.chamado_em, confirmado_em: s.confirmado_em,
+        chamadoPor: (s.chamado_em || s.confirmado_em) ? clean(s.usuario?.nome) || null : null,
+        guiche: (s.chamado_em || s.confirmado_em) ? clean(s.local_atendimento?.nome) || null : null
+      };
+    } catch (e) {
+      const st = e?.response?.status;
+      if (st === 404) return null;
+      if (st === 422 && e.response?.data?.ja_chamada) {
+        // "Senha já se encontra em atendimento por FULANO no guichê X"
+        const m = String(e.response.data.error || '').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i);
+        const quem = m ? clean(m[1]) : null;
+        return {
+          existe: true, chamada: true,
+          // "seu usuário" é texto genérico do Senha Simples, não quer dizer que foi este login.
+          chamadoPor: quem && /seu usu[aá]rio/i.test(quem) ? null : quem,
+          guiche: m ? clean(m[2]) : null
+        };
+      }
+      return { erro: st || 'falha', auth: st === 401 };
+    }
+  }
+
+  // Guarda de origens: apaga as vencidas uma vez por carga.
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(`${PREFIX}:origem-`)) continue;
+      const v = lerJSON(k);
+      if (!k.startsWith(SESSION_CACHE) || !v.t || Date.now() - v.t > CACHE_ORIGEM_MS) localStorage.removeItem(k);
+    }
+  } catch {}
+
+  const usada = a => !!(a.chamada || a.chamado_em || a.confirmado_em);
+
+  // Consulta por etapas, parando assim que der para decidir:
+  //   1) fila médica / emergência / outras de atendimento  -> se a senha foi usada lá, é de lá
+  //   2) acolhimento                                       -> se foi usada lá, é do acolhimento
+  //   3) recepção e salas (só se ainda não decidiu)
+  // completo=true consulta todas (para o histórico nos detalhes).
+  async function origemDoAusente(atendimentoId, tipo, unidade, { completo = false } = {}) {
+    const chave = SESSION_CACHE + atendimentoId;
+    const cache = lerJSON(chave);
+    if (!completo && cache.t && Date.now() - cache.t < CACHE_ORIGEM_MS) return cache;
+
+    const achados = [];
+    const errosHttp = [];
+    // Outras filas de atendimento (pediatria etc.) vêm antes do acolhimento: quem foi do
+    // acolhimento para lá e foi ausentado lá não pode ser tratado como ausente do acolhimento.
+    const etapas = [
+      unidade.filas.filter(f => f.grupo === 'MEDICO' || f.grupo === 'EMERGENCIA'),
+      unidade.filas.filter(f => f.grupo === 'OUTROS'),
+      unidade.filas.filter(f => f.grupo === 'ACOLHIMENTO'),
+      unidade.filas.filter(f => f.grupo === 'RECEPCAO' || f.grupo === 'SALA')
+    ];
+    const decidido = () => achados.some(a => a.grupo !== 'SALA' && a.grupo !== 'RECEPCAO' && usada(a));
+    let parcial = false;
+    for (let e = 0; e < etapas.length; e++) {
+      if (!completo && decidido()) { parcial = true; break; }
+      await consultarFilas(etapas[e]);
+    }
+    // Decidiu sem número (senha com outro profissional): tenta pegar o número no acolhimento.
+    // Se ainda não tiver o número, tenta nas filas que faltaram (acolhimento primeiro).
+    if (parcial && !achados.some(a => a.senha)) {
+      const naoConsultada = f => !achados.some(a => a.cat === f.cat);
+      const acolh = etapas[2].filter(naoConsultada);
+      if (acolh.length) await consultarFilas(acolh);
+    }
+
+    // As filas de uma etapa são consultadas ao mesmo tempo (o limite geral segura o excesso).
+    async function consultarFilas(filas) {
+    await Promise.all(filas.map(async f => {
+      let r = await consultarSenha(f.local, atendimentoId, tipo);
+      // 422 diz em qual guichê a senha está; consultando por esse guichê, às vezes vem completa.
+      if (r?.chamada && r.guiche) {
+        const g = (f.guiches || []).find(x => x.nome === norm(r.guiche));
+        if (g && g.id !== f.local) {
+          const r2 = await consultarSenha(g.id, atendimentoId, tipo);
+          if (r2?.existe && !r2.chamada) {
+            r = { ...r2, chamadoPor: r2.chamadoPor || r.chamadoPor,
+                  guiche: r2.guiche || r.guiche, jaChamadaEm: r.guiche };
+          }
+        }
+      }
+      if (!r) return;
+      if (r.erro) { errosHttp.push(r.erro); return; }
+      achados.push({ ...f, ...r });
+    }));
+    }
+
+    // Senha parada (nunca chamada nem concluída) é fila que ele ainda não usou;
+    // só vale se não houver outra. Recepção só vale se não houver mais nada.
+    // Salas não ausentam: se a senha passou por uma sala, o paciente voltou para a fila médica.
+    // Senha de sala parada (nunca chamada nem concluída) não conta como passagem pela sala.
+    const passouPorSala = achados.some(a => a.grupo === 'SALA' && (a.chamada || a.chamado_em || a.confirmado_em));
+    const filasQueAusentam = achados.filter(a => a.grupo !== 'SALA');
+    const usadas = filasQueAusentam.filter(a => !(a.created_at && !a.chamado_em && !a.confirmado_em));
+    let candidatas = usadas.length ? usadas : filasQueAusentam;
+    const semRecepcao = candidatas.filter(a => a.grupo !== 'RECEPCAO');
+    if (semRecepcao.length) candidatas = semRecepcao;
+
+    candidatas.sort((a, b) =>
+      (b.ordem - a.ordem) || ((Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)));
+    const escolhida = candidatas[0];
+
+    const senha = achados.find(a => a.senha)?.senha || null;
+    const historico = [...achados]
+      .sort((a, b) => (a.ordem - b.ordem) || ((Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0)))
+      .map(a => ({
+        fila: nomeCurto(a.nome), grupo: a.grupo, senha: a.senha || null,
+        gerada: a.created_at || null, chamada: a.chamado_em || null, concluida: a.confirmado_em || null,
+        jaChamada: !!a.chamada, por: a.chamadoPor || null, guiche: a.guiche || null
+      }));
+    let r;
+    if (passouPorSala && !['OUTROS', 'EMERGENCIA'].includes(escolhida?.grupo)) {
+      // Voltou da sala para a fila médica: foi lá que o médico ausentou.
+      const med = achados.find(a => a.grupo === 'MEDICO');
+      r = { origem: 'MEDICO', setor: null, senha, cat: unidade.medCat,
+            chamadoPor: med?.chamadoPor || null, guiche: med?.guiche || null,
+            acao: (med?.chamada || med?.chamado_em) ? 'Chamado' : 'Concluída' };
+    } else if (!escolhida) r = { origem: errosHttp.length ? 'ERRO' : 'SEM_SENHA', setor: null, senha: null, cat: null,
+             erroHttp: [...new Set(errosHttp)].join(', ') };
+    else r = {
+      origem: escolhida.grupo === 'RECEPCAO' ? 'OUTROS' : escolhida.grupo,
+      setor: nomeCurto(escolhida.nome),
+      senha,
+      cat: escolhida.cat,
+      chamadoPor: escolhida.chamadoPor || null,
+      guiche: escolhida.guiche || null,
+      acao: (escolhida.chamada || escolhida.chamado_em) ? 'Chamado' : 'Concluída'
+    };
+    // Senha EM é da emergência.
+    if (r.origem === 'MEDICO' && /^EM/i.test(r.senha || '')) {
+      const em = achados.find(a => a.grupo === 'EMERGENCIA');
+      r.origem = 'EMERGENCIA';
+      r.setor = 'Emergência';
+      if (em) r.cat = em.cat;
+    }
+    r.historico = historico;
+    r.parcial = parcial;
+    r.t = Date.now();
+    // Só guarda resultado confirmado; "não encontrada" e erro são consultados de novo na próxima vez.
+    if (r.origem !== 'ERRO' && r.origem !== 'SEM_SENHA') gravar(chave, r);
+    return r;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Origem rápida: o grupo vem do profissional; o Senha Simples só completa senha/quem chamou.
+  // ---------------------------------------------------------------------------
+  // Consulta uma fila; se a senha estiver com alguém ("em atendimento por X no guichê Y"),
+  // consulta de novo pelo guichê Y, que costuma devolver a senha completa.
+  async function consultarComGuiche(f, atendimentoId, tipo) {
+    let r = await consultarSenha(f.local, atendimentoId, tipo);
+    if (r?.chamada && r.guiche) {
+      const g = (f.guiches || []).find(x => x.nome === norm(r.guiche));
+      if (g && g.id !== f.local) {
+        const r2 = await consultarSenha(g.id, atendimentoId, tipo);
+        if (r2?.existe && !r2.chamada) {
+          r = { ...r2, chamadoPor: r2.chamadoPor || r.chamadoPor, guiche: r2.guiche || r.guiche, jaChamadaEm: r.guiche };
+        }
+      }
+    }
+    return r;
+  }
+
+  async function origemRapida(atendimentoId, tipo, unidade, grupo, prof, comSenhaSimples) {
+    const chave = SESSION_CACHE + atendimentoId;
+    const cache = lerJSON(chave);
+    if (cache.t && cache.base === grupo && Date.now() - cache.t < CACHE_ORIGEM_MS) return cache;
+
+    const achados = [];
+    const errosHttp = [];
+    if (comSenhaSimples) {
+      const filas = unidade.filas.filter(f => grupo === 'MEDICO'
+        ? (f.grupo === 'MEDICO' || f.grupo === 'EMERGENCIA') : f.grupo === 'ACOLHIMENTO');
+      await Promise.all(filas.map(async f => {
+        const x = await consultarComGuiche(f, atendimentoId, tipo);
+        if (!x) return;
+        if (x.erro) { errosHttp.push(x.erro); return; }
+        achados.push({ ...f, ...x });
+      }));
+    }
+    // Sem número na fila médica (senha com o profissional): a mesma senha passou pelo
+    // acolhimento e lá já está concluída, então o Senha Simples mostra o número.
+    // Ainda sem número: procura a mesma senha nas outras filas (acolhimento, salas de
+    // medicação/exames, recepção...). Onde ela já foi concluída, o Senha Simples mostra o número.
+    let numeroExtra = null;
+    if (comSenhaSimples && !achados.some(a => a.senha)) {
+      const jaVistas = new Set(achados.map(a => a.cat));
+      const resto = unidade.filas.filter(f => !jaVistas.has(f.cat) &&
+        !(grupo === 'MEDICO' ? (f.grupo === 'MEDICO' || f.grupo === 'EMERGENCIA') : f.grupo === 'ACOLHIMENTO'));
+      resto.sort((a, b) => (a.grupo === 'ACOLHIMENTO' ? 0 : a.grupo === 'SALA' ? 1 : 2) - (b.grupo === 'ACOLHIMENTO' ? 0 : b.grupo === 'SALA' ? 1 : 2));
+      const res = await Promise.all(resto.map(f => consultarComGuiche(f, atendimentoId, tipo).catch(() => null)));
+      numeroExtra = res.find(x => x?.senha)?.senha || null;
+    }
+    achados.sort((a, b) => Number(usada(b)) - Number(usada(a)) || ((Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)));
+    const ach = achados[0];
+    const senha = achados.find(a => a.senha)?.senha || numeroExtra || null;
+    let origem = grupo;
+    if (grupo === 'MEDICO' && (/^EM/i.test(senha || '') || (ach && ach.grupo === 'EMERGENCIA'))) origem = 'EMERGENCIA';
+    const r = {
+      origem, base: grupo,
+      setor: origem === 'EMERGENCIA' ? 'Emergência' : (ach ? nomeCurto(ach.nome) : null),
+      senha,
+      cat: ach?.cat || (grupo === 'ACOLHIMENTO' ? unidade.acolhCat : unidade.medCat) || null,
+      chamadoPor: ach?.chamadoPor || (grupo === 'MEDICO' ? prof : null) || null,
+      guiche: ach?.guiche || null,
+      acao: ach ? ((ach.chamada || ach.chamado_em) ? 'Chamado' : 'Concluída') : (prof ? 'Profissional' : 'Chamado'),
+      historico: achados.map(a => ({
+        fila: nomeCurto(a.nome), grupo: a.grupo, senha: a.senha || null,
+        gerada: a.created_at || null, chamada: a.chamado_em || null, concluida: a.confirmado_em || null,
+        jaChamada: !!a.chamada, por: a.chamadoPor || null, guiche: a.guiche || null
+      })),
+      parcial: true,
+      erroHttp: [...new Set(errosHttp)].join(', '),
+      motivoSemNumero: senha ? '' : !comSenhaSimples ? 'Senha Simples não consultado (conectando)'
+        : errosHttp.length ? `Senha Simples deu erro ${[...new Set(errosHttp)].join(', ')}`
+          : achados.length ? `Senha Simples não mostra o número (com ${achados.find(a => a.chamadoPor)?.chamadoPor || 'outro profissional'})`
+            : 'Senha Simples não achou a senha nas filas',
+      t: Date.now()
+    };
+    if (comSenhaSimples && !errosHttp.length) gravar(chave, r);
+    return r;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Senha pela ficha do atendimento (PDF "SENHA: PF0087 11/10/2026 15:17:30")
+  // ---------------------------------------------------------------------------
+
+  const CHAVE_FICHA = `${PREFIX}:ficha-v4:`;
+  const FICHA_MS = 12 * 60 * 60 * 1000;
+
+  // Junta o texto das strings do PDF: (texto) Tj, [(te) -20 (xto)] TJ.
+  function textoDoConteudoPdf(c) {
+    const partes = [];
+    const re = /\((?:[^()\\]|\\[\s\S])*\)|(?<!<)<[0-9A-Fa-f\s]+>(?!>)|\]\s*TJ|Tj|T\*|'|"|Td|TD|Tm|ET/g;
+    let m, linha = '';
+    while ((m = re.exec(c))) {
+      const t = m[0];
+      if (t[0] === '<') {
+        const hex = t.slice(1, -1).replace(/\s/g, '');
+        for (let k = 0; k + 1 < hex.length; k += 2) linha += String.fromCharCode(parseInt(hex.slice(k, k + 2), 16));
+      } else if (t[0] === '(') {
+        linha += t.slice(1, -1)
+          .replace(/\\([0-7]{1,3})/g, (x, o) => String.fromCharCode(parseInt(o, 8)))
+          .replace(/\\([nrtbf])/g, ' ')
+          .replace(/\\([\s\S])/g, '$1');
+      } else if (t === 'Td' || t === 'TD' || t === 'T*' || t === 'Tm' || t === 'ET') {
+        if (linha) { partes.push(linha); linha = ''; }
+      }
+    }
+    if (linha) partes.push(linha);
+    return partes.join('\n');
+  }
+
+  // Descompacta aproveitando o que der, mesmo com lixo no fim do stream.
+  async function inflar(bytes) {
+    const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate')).getReader();
+    const dec = new TextDecoder('latin1');
+    let out = '';
+    try {
+      for (;;) { const { done, value } = await reader.read(); if (done) break; out += dec.decode(value, { stream: true }); }
+    } catch {}
+    return out;
+  }
+
+  function ascii85(bytes) {
+    const txt = new TextDecoder('latin1').decode(bytes).replace(/\s/g, '').replace(/^<~/, '').replace(/~>.*$/, '');
+    const out = [];
+    let grupo = [];
+    for (const ch of txt) {
+      if (ch === 'z' && !grupo.length) { out.push(0, 0, 0, 0); continue; }
+      grupo.push(ch.charCodeAt(0) - 33);
+      if (grupo.length === 5) {
+        let v = 0; for (const d of grupo) v = v * 85 + d;
+        out.push((v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255);
+        grupo = [];
+      }
+    }
+    if (grupo.length) {
+      const n = grupo.length;
+      while (grupo.length < 5) grupo.push(84);
+      let v = 0; for (const d of grupo) v = v * 85 + d;
+      out.push(...[(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255].slice(0, n - 1));
+    }
+    return new Uint8Array(out);
+  }
+
+  async function lerTextoPdf(url) {
+    const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const bin = new TextDecoder('latin1').decode(buf);
+    const textos = [];
+    let i = 0, n = 0;
+    while ((i = bin.indexOf('stream', i)) >= 0 && n < 400) {
+      let ini = i + 6;
+      if (bin[ini] === '\r') ini++;
+      if (bin[ini] === '\n') ini++;
+      const fim = bin.indexOf('endstream', ini);
+      if (fim < 0) break;
+      // Dicionário do PRÓPRIO objeto (do "N 0 obj" até "stream"), não os 300 caracteres anteriores,
+      // que podiam pegar o "/Subtype/Image" da imagem de antes e pular o conteúdo da página.
+      const objIni = bin.lastIndexOf('obj', i);
+      const dic = bin.slice(objIni >= 0 && i - objIni < 4000 ? objIni : Math.max(0, i - 300), i);
+      if (!/\/Subtype\s*\/Image|\/FontFile/.test(dic)) {
+        let c = '';
+        try {
+          let bytes = buf.slice(ini, fim);
+          if (/ASCII85Decode/.test(dic)) bytes = ascii85(bytes);
+          c = /FlateDecode/.test(dic) ? await inflar(bytes) : new TextDecoder('latin1').decode(bytes);
+        } catch {}
+        if (c) textos.push(textoDoConteudoPdf(c), c);
+      }
+      i = fim + 9; n++;
+    }
+    return textos.join('\n');
+  }
+
+  let ultimoTextoFicha = '';
+  let fichaLogada = 0;
+  async function senhaPelaFicha(id, tipo) {
+    if (tipo !== 'AtendimentoPa') return null;
+    const cache = lerJSON(CHAVE_FICHA + id);
+    if (cache.t && Date.now() - cache.t < FICHA_MS) return cache.senha || null;
+    const texto = await lerTextoPdf(`/atendimentos_pas/${id}.pdf`);
+    ultimoTextoFicha = texto;
+    const m = texto.match(/SENHA\s*:?\s*([A-Z]{2}\s?\d{3,4})\b/);
+    let senha = m ? m[1].replace(/\s/g, '').toUpperCase() : null;
+    if (!senha) {
+      // Jasper desenha rótulo e valor separados: vale o único código tipo AA0000 da ficha.
+      const codigos = [...new Set(texto.match(/\b[A-Z]{2}\d{4}\b/g) || [])];
+      if (codigos.length === 1) senha = codigos[0];
+    }
+    // Sem senha: guarda só 10 min, para tentar de novo.
+    gravar(CHAVE_FICHA + id, { senha, t: senha ? Date.now() : Date.now() - FICHA_MS + 10 * 60 * 1000 });
+    return senha;
+  }
+
+  window.OM30AusentesDebug = async id => {
+    const u = unidadeAtual || await filasDaUnidade(true);
+    const out = { aguardandoToken, acolhCat: u.acolhCat, medCat: u.medCat, erros: u.erros, prof: mapaProf.get(String(id)) || null, filas: [] };
+    for (const f of u.filas || []) {
+      const r = await consultarSenhaUmaVezSemLimite(f.local, String(id), 'AtendimentoPa');
+      out.filas.push({ fila: f.nome, grupo: f.grupo, resposta: r ? (r.erro ? `erro ${r.erro}` : (r.senha || (r.chamada ? `com ${r.chamadoPor || '?'}` : 'existe sem nº'))) : 'não existe' });
+    }
+    console.log(JSON.stringify(out, null, 2));
+  };
+
+  window.OM30AusentesFicha = async id => {
+    const t = await lerTextoPdf(`/atendimentos_pas/${id}.pdf`);
+    const i = t.search(/SENHA/i);
+    console.log(JSON.stringify({ tamanho: t.length, codigos: [...new Set(t.match(/\b[A-Z]{2}\d{4}\b/g) || [])],
+                  trecho: i >= 0 ? t.slice(Math.max(0, i - 120), i + 200) : t.slice(0, 600) }, null, 2));
+  };
+
+  // Fila de leitura das fichas (3 por vez), só para quem ficou sem número.
+  const filaFicha = [];
+  let fichasLendo = 0;
+  function pedirSenhaFicha(tr) {
+    const inf = infoLinha(tr);
+    if (!inf?.id || tr.dataset.om30FichaPedida === inf.id) return;
+    tr.dataset.om30FichaPedida = inf.id;
+    filaFicha.push(tr);
+    rodarFilaFicha();
+  }
+  function rodarFilaFicha() {
+    while (fichasLendo < 3 && filaFicha.length) {
+      const tr = filaFicha.shift();
+      fichasLendo++;
+      (async () => {
+        try {
+          const inf = infoLinha(tr);
+          const senha = await senhaPelaFicha(inf.id, inf.tipo);
+          const r = detalhes.get(inf.id);
+          if (!senha) {
+            tr.dataset.om30FichaFalhou = '1';
+            const t = ultimoTextoFicha || '';
+            tr.dataset.om30FichaMotivo = inf.tipo !== 'AtendimentoPa' ? `Ficha: tipo ${inf.tipo} sem ficha PA.`
+              : t.length < 20 ? 'Ficha: não consegui ler o texto do PDF.' : 'Ficha: lida, mas não achei o código da senha.';
+            if (fichaLogada < 3 && inf.tipo === 'AtendimentoPa') {
+              fichaLogada++;
+              const i = t.search(/SENHA/i);
+              console.info('[OM30 Ausentes] ficha sem senha', inf.id, JSON.stringify(i >= 0 ? t.slice(Math.max(0, i - 150), i + 250) : t.slice(0, 600)));
+            }
+            const b = tr.querySelector('.om30a-senha-btn.sem-numero');
+            if (b) { b.textContent = 'sem nº'; b.title = `${b.title.split(' · Ficha')[0]} · ${tr.dataset.om30FichaMotivo}`; }
+          }
+          if (senha && r && !r.senha && tr.isConnected) {
+            r.senha = senha;
+            r.senhaDaFicha = true;
+            marcarLinha(tr, r);
+            aplicarFiltros();
+          }
+        } catch (e) {
+          console.warn('[OM30 Ausentes] ficha:', e);
+          tr.dataset.om30FichaFalhou = '1';
+          tr.dataset.om30FichaMotivo = `Ficha: não abriu (${e?.message || e}).`;
+          const b = tr.querySelector('.om30a-senha-btn.sem-numero');
+          if (b) { b.textContent = 'sem nº'; b.title = `${b.title.split(' · Ficha')[0]} · ${tr.dataset.om30FichaMotivo}`; }
+        } finally {
+          fichasLendo--;
+          rodarFilaFicha();
+          verificarConclusao();
+        }
+      })();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Senha presa em outro profissional
+  //   Ao clicar em Chamar, se o Senha Simples responder "senha já chamada / em atendimento
+  //   por FULANO", solta a senha (retornar -> desvincular) e chama de novo por este guichê.
+  // ---------------------------------------------------------------------------
+
+  async function desvincularSenha(s, localPadrao) {
+    const local = s.local_atendimento?.id || localPadrao;
+    if (!s?.id || !s?.tipo_atendimento?.id || !local) throw new Error('senha sem id/tipo/guichê');
+    return (await senhaSimplesPutFilas(`${local}/${s.tipo_atendimento.id}/${s.id}/desvincular`)).data;
+  }
+
+  async function instalarLiberacaoSenhaPresa() {
+    try { await esperar(() => typeof senhaSimplesChamarSenhaAtendimento === 'function'); } catch { return; }
+    const original = window.senhaSimplesChamarSenhaAtendimento;
+    if (!original || original.__om30Liberacao) return;
+    const tipoTela = location.pathname.startsWith('/prontuarios') ? 'atendimento' : 'acolhimento';
+
+    const embrulho = async function (args) {
+      try {
+        return await original(args);
+      } catch (e) {
+        const dados = e?.response?.data || {};
+        if (!(e?.response?.status === 422 && dados.ja_chamada)) throw e;
+        try {
+          const param = await lerParametrizacao(tipoTela);
+          const cat = param?.senha_simples_categoria?.id;
+          if (!cat) throw e;
+          const { data: s } = await senhaSimplesPutFilas(`${cat}/retornar_para_atendimento`, {
+            atendimento_id: args?.params?.atendimento_id,
+            atendimento_type: args?.params?.atendimento_type,
+            categoria_id: cat
+          });
+          await desvincularSenha(s, args?.localAtendimentoAtualId);
+          const resultado = await original(args);
+          const m = String(dados.error || '').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i) || [];
+          const de = m[1] && !/seu usu[aá]rio/i.test(m[1]) ? pessoaCurta(m[1]) : null;
+          toast({
+            tipo: 'sucesso',
+            titulo: `Senha ${s.senha || ''} liberada e chamada`,
+            texto: `Estava presa${de ? ` com ${de}` : ''}${m[2] ? ` (${guicheCurto(clean(m[2]))})` : ''}. Agora está vinculada a este guichê.`
+          });
+          return resultado;
+        } catch (falha) {
+          console.warn('[OM30] Não foi possível liberar a senha presa:', falha);
+          throw e; // mostra o aviso original do sistema
+        }
+      }
+    };
+    embrulho.__om30Liberacao = true;
+    window.senhaSimplesChamarSenhaAtendimento = embrulho;
+  }
+
+  instalarLiberacaoSenhaPresa();
+
+  // ---------------------------------------------------------------------------
+  // Tabela nativa de ausentes
+  // ---------------------------------------------------------------------------
+
+  function acharTabelaAusentes(raiz = document) {
+    return [...raiz.querySelectorAll('table')].find(t => {
+      if (t.querySelector(SEL_REMOVER)) return true;
+      const ths = [...t.querySelectorAll('th')].map(th => norm(th.textContent));
+      return ths.includes('DATA DO ATENDIMENTO') && ths.includes('TELEFONE');
+    });
+  }
+
+  function infoLinha(tr) {
+    const a = tr.querySelector(SEL_REMOVER);
+    if (!a) return null;
+    const u = new URL(a.href, location.origin);
+    return {
+      id: u.pathname.match(/(\d+)$/)?.[1],
+      tipo: u.searchParams.get('type') || 'AtendimentoPa'
+    };
+  }
+
+  function linhaEhDeHoje(tr) {
+    const m = (tr.cells[0]?.textContent || '').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (!m) return true;
+    const d = new Date();
+    return +m[1] === d.getDate() && +m[2] === d.getMonth() + 1 && +m[3] === d.getFullYear();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lista completa (sem paginação)
+  //   Lê a página 1, 2, 3... da própria lista de ausentes até não vir ninguém novo,
+  //   junta tudo na tabela da tela e esconde a paginação nativa.
+  // ---------------------------------------------------------------------------
+
+  const MAX_PAGINAS = 50;
+  const SEL_PAGINACAO = '.pagination, ul.pagination, nav.pagination, .pagy-nav, .pagy, [class*="paginat"]';
+  let fonteLista = null;      // { url: URL, param: 'page' }
+  let sincronizando = null;
+
+  // Paginação que pertence à tabela de ausentes (sobe até a aba, sem invadir outras abas).
+  function paginacaoDa(tabela) {
+    let el = tabela;
+    for (let i = 0; i < 10 && el?.parentElement; i++) {
+      el = el.parentElement;
+      const pags = [...el.querySelectorAll(SEL_PAGINACAO)]
+        .filter(p => !p.contains(tabela) && !p.closest('table'))
+        .filter(p => !(p.parentElement && p.parentElement.closest(SEL_PAGINACAO)));
+      if (pags.length) {
+        const nativa = pags.find(p => p.id === 'paginacaoAusentes');
+        return nativa ? [nativa] : pags;
+      }
+      if (el.matches('.tab-pane, [role="tabpanel"], body')) break;
+    }
+    return [];
+  }
+
+  function fonteDaPaginacao(pags, base) {
+    for (const p of pags) {
+      for (const a of p.querySelectorAll('a[href]')) {
+        const h = a.getAttribute('href') || '';
+        if (!h || h.startsWith('#') || /^javascript:/i.test(h)) continue;
+        let u;
+        try { u = new URL(h, base); } catch { continue; }
+        for (const [k, v] of u.searchParams) {
+          if (/page/i.test(k) && !/per_?page/i.test(k) && /^\d+$/.test(v)) return { url: u, param: k };
+        }
+      }
+    }
+    return null;
+  }
+
+  function urlDaPagina(fonte, n) {
+    const u = new URL(fonte.url.href);
+    u.searchParams.set(fonte.param, String(n));
+    u.hash = '';
+    return u.href;
+  }
+
+  async function lerPaginaLista(url) {
+    const r = await fetch(url, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'text/html,application/xhtml+xml' }
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+    const t = acharTabelaAusentes(doc);
+    return { doc, t, linhas: t ? [...(t.tBodies[0]?.rows || [])].filter(tr => infoLinha(tr)?.id) : [] };
+  }
+
+  // Candidatas a "endereço da lista", na ordem: link da paginação, a carga da aba
+  // (se a aba vier por ajax) e a própria URL da tela.
+  function candidatasFonte(tabela) {
+    const lista = [];
+    const nativa = document.getElementById('paginacaoAusentes');
+    const daNativa = nativa && fonteDaPaginacao([nativa], location.href);
+    if (daNativa) lista.push(daNativa);
+    const daPag = fonteDaPaginacao(paginacaoDa(tabela), location.href);
+    if (daPag) lista.push(daPag);
+    try {
+      for (const e of performance.getEntriesByType('resource')) {
+        if (!/ausent/i.test(e.name) || /\/ausentes\/\d+|paciente_ausente|reverter_situacao/i.test(e.name)) continue;
+        if (!['xmlhttprequest', 'fetch'].includes(e.initiatorType)) continue;
+        const u = new URL(e.name);
+        const k = [...u.searchParams.keys()].find(x => /page/i.test(x) && !/per_?page/i.test(x)) || 'page';
+        lista.push({ url: u, param: k });
+      }
+    } catch {}
+    lista.push({ url: new URL(location.href), param: 'page' });
+    return lista;
+  }
+
+  // Maior número de página que aparece nos links da paginação.
+  function ultimaPagina(raiz, param) {
+    let max = 0;
+    for (const a of raiz.querySelectorAll(`a[href*="${param}="]`)) {
+      try {
+        const v = +new URL(a.getAttribute('href'), location.origin).searchParams.get(param);
+        if (v > max) max = v;
+      } catch {}
+    }
+    return max;
+  }
+
+  function idNum(tr) { return +(infoLinha(tr)?.id || 0); }
+
+  function esconderPaginacao(tabela) {
+    document.getElementById('paginacaoAusentes')?.classList.add('om30a-pag-oculta');
+    for (const p of paginacaoDa(tabela)) p.classList.add('om30a-pag-oculta');
+  }
+
+  let todasCarregadas = false;
+
+  // Junta na tabela da tela as linhas buscadas: acrescenta quem falta e (se pedido)
+  // tira quem saiu. Ordena do mais recente para o mais antigo, como a lista nativa.
+  function mesclarLinhas(tabela, mapa, remover) {
+    const tbody = tabela.tBodies[0];
+    const atuais = new Map();
+    for (const tr of [...tbody.rows]) {
+      const id = infoLinha(tr)?.id;
+      if (id) atuais.set(id, tr);
+    }
+    let novos = 0, saiu = 0;
+    if (remover) {
+      for (const [id, tr] of atuais) {
+        if (mapa.has(id) || !remover(tr)) continue;
+        tr.remove(); atuais.delete(id); detalhes.delete(id); saiu++;
+      }
+    }
+    for (const [id, trRemota] of mapa) {
+      if (!trRemota || atuais.has(id)) continue;
+      const tr = document.importNode(trRemota, true);
+      if (tabela.querySelector('.om30a-th')) prepararLinha(tr);
+      atuais.set(id, tr);
+      novos++;
+    }
+    if (novos || saiu) {
+      const ordem = [...atuais.values()].sort((x, y) => idNum(y) - idNum(x));
+      for (const tr of ordem) tbody.appendChild(tr);
+    }
+    for (const tr of [...tbody.rows]) {
+      if (!infoLinha(tr) && tr.cells.length === 1) tr.style.display = atuais.size ? 'none' : '';
+    }
+    return { novos, saiu };
+  }
+
+  // Busca a lista no sistema.
+  //   completa=false: só as páginas de hoje (a lista vem do mais recente para o mais antigo,
+  //                   então para na primeira página que já tem gente de outro dia).
+  //   completa=true : todas as páginas, 4 por vez, mostrando conforme chegam.
+  //   inicial=true  : a página 1 é a própria tela, não precisa buscar de novo.
+  // Leitura leve: só a página 1 (e as seguintes enquanto vierem só pessoas novas).
+  // ---- Profissional de cada ausente (coluna "Profissional" da lista da fila médica) ----
+  const mapaProf = new Map();   // id -> { prof, esp }
+  function registrarProfissionais(t) {
+    const cab = t.tHead?.rows[0] || t.rows[0];
+    if (!cab) return 0;
+    const ths = [...cab.cells].map(c => norm(c.textContent));
+    const ip = ths.indexOf('PROFISSIONAL');
+    if (ip < 0) return 0;
+    const ie = ths.indexOf('ESPECIALIDADE');
+    let n = 0;
+    for (const tr of t.tBodies[0]?.rows || []) {
+      const inf = infoLinha(tr);
+      if (!inf?.id) continue;
+      const prof = clean(tr.cells[ip]?.textContent).replace(/^[—–-]+$/, '');
+      mapaProf.set(inf.id, { prof, esp: ie >= 0 ? clean(tr.cells[ie]?.textContent) : '' });
+      n++;
+    }
+    return n;
+  }
+  const fonteProf = { url: new URL('/prontuarios', location.origin), param: 'page_ausentes' };
+  function lerProfPagina(n) {
+    if (TELA !== 'ACOLHIMENTO') return Promise.resolve();
+    return comRetentativa(() => lerPaginaLista(urlDaPagina(fonteProf, n)), 2)
+      .then(pg => { if (pg.t) registrarProfissionais(pg.t); })
+      .catch(() => {});
+  }
+
+  async function buscarNovos(tabela) {
+    if (sincronizando) return { novos: 0 };
+    const fonte = fonteLista || candidatasFonte(tabela)[0];
+    if (!fonte) return { novos: 0 };
+    fonteLista = fonte;
+    const conhecidos = new Set([...tabela.tBodies[0].rows].map(tr => infoLinha(tr)?.id).filter(Boolean));
+    const mapa = new Map();
+    const prof1 = lerProfPagina(1);
+    for (let n = 1; n <= 5; n++) {
+      let pg;
+      try { pg = await lerPaginaLista(urlDaPagina(fonte, n)); } catch { break; }
+      if (!pg.t || !pg.linhas.length) break;
+      let algumConhecido = false;
+      for (const tr of pg.linhas) {
+        const id = infoLinha(tr).id;
+        if (conhecidos.has(id)) algumConhecido = true; else mapa.set(id, tr);
+      }
+      if (algumConhecido) break;
+    }
+    await prof1;
+    if (!mapa.size) return { novos: 0 };
+    const r = mesclarLinhas(tabela, mapa, null);
+    if (TELA === 'MEDICO') registrarProfissionais(tabela);
+    if (r.novos) console.info(`[OM30 Ausentes] ${r.novos} ausente(s) novo(s).`);
+    return r;
+  }
+
+  async function sincronizarLista(tabela, { completa = false, inicial = false } = {}) {
+    if (sincronizando) return sincronizando;
+    sincronizando = (async () => {
+      esconderPaginacao(tabela);
+      const fonte = fonteLista || candidatasFonte(tabela)[0];
+      if (!fonte) return { ok: false };
+      fonteLista = fonte;
+
+      const mapa = new Map();
+      let maxPag = Math.max(ultimaPagina(document, fonte.param), 1);
+      let n = 1, fim = false, falhou = false, totalNovos = 0;
+      const profs = [];
+      if (inicial) profs.push(lerProfPagina(1));
+
+      if (inicial) {
+        const vivas = [...tabela.tBodies[0].rows].filter(tr => infoLinha(tr)?.id);
+        vivas.forEach(tr => mapa.set(infoLinha(tr).id, null));
+        n = 2;
+        const ultima = vivas[vivas.length - 1];
+        if (!vivas.length || (!completa && ultima && !linhaEhDeHoje(ultima))) fim = true;
+      }
+
+      const LOTE = 6;
+      while (!fim && n <= Math.min(maxPag, MAX_PAGINAS)) {
+        const nums = [];
+        while (nums.length < LOTE && n <= Math.min(maxPag, MAX_PAGINAS)) nums.push(n++);
+        nums.forEach(k => profs.push(lerProfPagina(k)));
+        const pgs = await Promise.all(nums.map(k =>
+          comRetentativa(() => lerPaginaLista(urlDaPagina(fonte, k)), 2).catch(() => null)));
+        for (const pg of pgs) {
+          if (!pg || !pg.t) { falhou = !pg; fim = true; break; }
+          maxPag = Math.max(maxPag, ultimaPagina(pg.doc, fonte.param));
+          let novos = 0;
+          for (const tr of pg.linhas) {
+            const id = infoLinha(tr).id;
+            if (!mapa.has(id)) { mapa.set(id, tr); novos++; }
+          }
+          if (!novos) { fim = true; break; }
+          const ultima = pg.linhas[pg.linhas.length - 1];
+          if (!completa && ultima && !linhaEhDeHoje(ultima)) { fim = true; break; }
+        }
+        // mostra o que já chegou
+        totalNovos += mesclarLinhas(tabela, mapa, null).novos;
+        if (completa) definirStatus(`Carregando ausentes… ${Math.min(n - 1, maxPag)}/${maxPag}`);
+        aplicarFiltros();
+      }
+
+      await Promise.all(profs);
+      if (TELA === 'MEDICO') registrarProfissionais(tabela);
+
+      // Tira quem não está mais na lista (ausência removida em outro computador),
+      // só dentro do trecho que foi lido e só se a leitura deu certo.
+      let saiu = 0;
+      if (!falhou) {
+        saiu = mesclarLinhas(tabela, mapa, completa ? () => true : tr => linhaEhDeHoje(tr)).saiu;
+        if (completa) todasCarregadas = true;
+      }
+      if (totalNovos || saiu) console.info(`[OM30 Ausentes] Lista: +${totalNovos} / -${saiu} (páginas lidas até ${Math.min(n - 1, maxPag)} de ${maxPag}).`);
+      return { ok: !falhou, novos: totalNovos, saiu };
+    })();
+    try { return await sincronizando; } finally { sincronizando = null; }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Estado
+  // ---------------------------------------------------------------------------
+
+  let filtroSelecionado = localStorage.getItem(STORAGE_FILTRO) || TELA;
+  if (!FILTROS_VALIDOS.has(filtroSelecionado)) filtroSelecionado = TELA;
+  let somenteHoje = localStorage.getItem(STORAGE_HOJE) !== '0';
+  let busca = '';
+  let tabelaRef = null;
+  let verificando = false;
+  const detalhes = new Map();
+
+  // ---------------------------------------------------------------------------
+  // Visual (mesmo padrão da Fila Médica / Controle de Salas)
+  // ---------------------------------------------------------------------------
+
+  function garantirCSS() {
+    if (document.getElementById(STYLE_ID)) return;
+    const st = document.createElement('style');
+    st.id = STYLE_ID;
+    st.textContent = `
+      :root {
+        --om30a-azul:#123f68; --om30a-verde:#198754; --om30a-roxo:#6f42c1; --om30a-ambar:#e0a000;
+        --om30a-vermelho:#c0392b; --om30a-texto:#263942; --om30a-suave:#6b7a85; --om30a-borda:#dde3e8;
+      }
+
+      /* ---------- barra de filtros ---------- */
+      #${BAR_ID} {
+        display:flex;flex-wrap:wrap;gap:7px;align-items:stretch;
+        margin:6px 0 8px;padding:7px 8px;border:1px solid #d9dfe4;border-radius:7px;
+        background:#f8fafb;font-family:Arial,Helvetica,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.035);
+      }
+      #${BAR_ID} .om30a-filtro {
+        --c:#6c757d;display:grid;grid-template-columns:7px 1fr auto;
+        column-gap:8px;align-items:center;min-width:132px;min-height:43px;padding:5px 10px;
+        border:1px solid #d6dce1;border-left:4px solid var(--c);border-radius:6px;background:#fff;
+        color:#35404a;cursor:pointer;text-align:left;line-height:1.1;
+      }
+      #${BAR_ID} .om30a-filtro:hover { background:#f7f9fb; }
+      #${BAR_ID} .om30a-filtro.ativo { box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 20%,transparent);background:#f7f9fb; }
+      #${BAR_ID} .om30a-dot { width:7px;height:7px;border-radius:50%;background:var(--c); }
+      #${BAR_ID} .om30a-label { font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.25px;color:#68737c; }
+      #${BAR_ID} .om30a-qtd { justify-self:end;font-size:18px;font-weight:800;color:#252d34; }
+      #${BAR_ID} .om30a-sub { grid-column:2/4;font-size:9px;color:#7b858e;white-space:nowrap; }
+      #${BAR_ID} .om30a-ferramentas {
+        display:flex;align-items:center;gap:8px;padding:5px 8px;
+        border:1px solid #d6dce1;border-radius:6px;background:#fff;
+      }
+      #${BAR_ID} .om30a-busca {
+        width:230px;max-width:100%;border:1px solid #d6dce1;border-radius:999px;
+        padding:6px 11px;font-size:11px;color:#35404a;outline:none;background:#f8fafb;
+      }
+      #${BAR_ID} .om30a-busca:focus { background:#fff;border-color:#b9c2cc;box-shadow:0 0 0 3px rgba(18,63,104,.07); }
+      #${BAR_ID} .om30a-hoje { display:flex;align-items:center;gap:5px;margin:0;font-size:10px;font-weight:700;color:#68737c;cursor:pointer;white-space:nowrap; }
+      #${BAR_ID} .om30a-atualizar {
+        border:1px solid #b9c2cc;border-radius:5px;background:#fff;color:#24313f;
+        font-size:10px;font-weight:700;padding:5px 9px;cursor:pointer;white-space:nowrap;
+      }
+      #${BAR_ID} .om30a-atualizar:hover { background:#eaf4f8; }
+      #${BAR_ID} .om30a-atualizado {
+        margin-left:auto;align-self:center;display:inline-flex;align-items:center;gap:8px;min-width:108px;
+        padding:7px 12px;border:1px solid #d8dfe5;border-radius:8px;background:#fff;
+        box-shadow:0 1px 2px rgba(15,23,42,.04);white-space:nowrap;
+      }
+      #${BAR_ID} .om30a-atualizado-label { font-size:11px;font-weight:700;color:#7a8590;letter-spacing:.3px;text-transform:uppercase; }
+      #${BAR_ID} .om30a-atualizado-hora { font-size:18px;font-weight:800;color:#3f4a54;line-height:1;letter-spacing:.4px;font-variant-numeric:tabular-nums; }
+      #${BAR_ID} .om30a-aviso {
+        flex-basis:100%;display:flex;gap:8px;align-items:flex-start;padding:7px 10px;border-radius:6px;
+        border:1px solid #f1d39a;border-left:4px solid var(--om30a-ambar);background:#fffaf0;
+        font-size:11px;color:#6b4e00;line-height:1.35;
+      }
+      #${BAR_ID} .om30a-aviso:empty { display:none; }
+      #${BAR_ID} .om30a-vazio {
+        flex-basis:100%;padding:10px;text-align:center;font-size:11px;color:#7b858e;
+        border:1px dashed #d6dce1;border-radius:6px;background:#fff;
+      }
+      #${BAR_ID} .om30a-vazio[hidden] { display:none; }
+
+      /* ---------- colunas Senha e Ausente em ---------- */
+      th.om30a-th { white-space:nowrap; }
+      .om30a-pag-oculta { display:none !important; }
+      #${BAR_ID} .om30a-tempo { font:600 11px Arial,Helvetica,sans-serif;color:#4a5560;white-space:nowrap;
+        border:1px solid #d6dde3;background:#fff;border-radius:6px;padding:5px 8px;cursor:pointer; }
+      #${BAR_ID} .om30a-tempo:empty { display:none; }
+      ${MODO_NUMERO === 'AMBOS' ? `#${BAR_ID} .om30a-tempo { display:none !important; }` : ''}
+      #${BAR_ID} .om30a-tempo:hover { background:#f2f5f7; }
+      td.om30a-td-senha { white-space:nowrap;vertical-align:middle !important; }
+      td.om30a-td-origem { vertical-align:middle !important;min-width:170px; }
+      .om30a-senha-btn.da-ficha { border-style:dashed !important; }
+      .om30a-tag-ficha { margin-left:6px;padding:1px 5px;border-radius:4px;background:#eef1f3;color:#6b7680;
+        font:700 9px Arial,Helvetica,sans-serif;letter-spacing:.3px;text-transform:uppercase;vertical-align:middle; }
+      .om30a-senha-btn {
+        display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:6px;
+        border:1px solid #c9d1d8;background:#fff;cursor:pointer;
+        font:800 12px Consolas,'Courier New',monospace;letter-spacing:.6px;color:#1f2d37;
+      }
+      .om30a-senha-btn:hover { border-color:var(--om30a-azul);background:#f2f7fb; }
+      .om30a-senha-btn .om30a-lupa { font:700 10px Arial,sans-serif;color:#8a98a3; }
+      .om30a-senha-btn.sem-numero { font:700 10px Arial,Helvetica,sans-serif;letter-spacing:0;color:#8a96a0;border-style:dashed; }
+      .om30a-senha-btn.carregando { color:#a0aab2;border-style:dashed;cursor:default; }
+      .om30a-origem {
+        display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;
+        font:700 10.5px Arial,Helvetica,sans-serif;white-space:nowrap;background:#eef1f3;color:#5c6770;
+      }
+      .om30a-origem::before { content:'';width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.85; }
+      .om30a-origem[data-o="ACOLHIMENTO"] { background:#e8f5ee;color:#1d6b40; }
+      .om30a-origem[data-o="MEDICO"] { background:#f0e9fb;color:#5a3399; }
+      .om30a-origem[data-o="EMERGENCIA"] { background:#fde8ea;color:#b02a37; }
+      .om30a-origem[data-o="OUTROS"], .om30a-origem[data-o="SEM_SENHA"] { background:#fff3d6;color:#8a5a00; }
+      .om30a-origem[data-o="ERRO"], .om30a-origem[data-o="INDEFINIDO"] { background:#fde8e6;color:#a8332a; }
+      .om30a-origem[data-o="PENDENTE"] { background:#f1f3f5;color:#9aa4ac; }
+      .om30a-origem-hora { font-weight:600;opacity:.75; }
+      .om30a-quem { margin-top:4px;font:11px Arial,Helvetica,sans-serif;color:#7b858e;line-height:1.3; }
+      .om30a-quem b { color:#4a5560;font-weight:700; }
+      a.om30a-bloqueado { opacity:.28 !important;filter:grayscale(1) !important;cursor:not-allowed !important; }
+      tr.om30a-linha > td:first-child { position:relative !important;padding-left:14px !important; }
+      tr.om30a-linha > td:first-child::before {
+        content:'';position:absolute;left:2px;top:4px;bottom:4px;width:4px;border-radius:4px;background:transparent;
+      }
+      tr.om30a-linha[data-om30-origem="ACOLHIMENTO"] > td:first-child::before { background:var(--om30a-verde); }
+      tr.om30a-linha[data-om30-origem="MEDICO"] > td:first-child::before { background:var(--om30a-roxo); }
+      tr.om30a-linha[data-om30-origem="EMERGENCIA"] > td:first-child::before { background:#dc3545; }
+      tr.om30a-linha[data-om30-origem="OUTROS"] > td:first-child::before { background:var(--om30a-ambar); }
+
+      /* ---------- janelas ---------- */
+      #${MODAL_ID} {
+        position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;
+        background:rgba(15,23,42,.42);font-family:Arial,Helvetica,sans-serif;animation:om30aFade .12s ease-out;
+      }
+      #${MODAL_ID} .om30a-caixa {
+        --c:var(--om30a-azul);position:relative;width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 40px);overflow:auto;
+        background:#fff;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.28);border-top:5px solid var(--c);
+        padding:22px 24px 18px;color:var(--om30a-texto);animation:om30aSobe .14s ease-out;
+      }
+      #${MODAL_ID} .om30a-caixa.largo { width:min(760px,calc(100vw - 32px)); }
+      #${MODAL_ID} .om30a-caixa[data-tipo="sucesso"] { --c:var(--om30a-verde); }
+      #${MODAL_ID} .om30a-caixa[data-tipo="erro"] { --c:var(--om30a-vermelho); }
+      #${MODAL_ID} .om30a-caixa[data-tipo="aviso"] { --c:var(--om30a-ambar); }
+      #${MODAL_ID} .om30a-topo { display:flex;align-items:center;gap:12px;margin-bottom:10px; }
+      #${MODAL_ID} .om30a-icone {
+        flex:none;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
+        background:color-mix(in srgb,var(--c) 14%,#fff);color:var(--c);font-size:19px;font-weight:900;
+      }
+      #${MODAL_ID} .om30a-titulo { font-size:15px;font-weight:800;line-height:1.25; }
+      #${MODAL_ID} .om30a-subtitulo { font-size:11px;color:var(--om30a-suave);margin-top:2px; }
+      #${MODAL_ID} .om30a-senha-box {
+        margin:12px 0;padding:12px;border-radius:10px;text-align:center;
+        background:color-mix(in srgb,var(--c) 7%,#fff);border:1px solid color-mix(in srgb,var(--c) 30%,#fff);
+      }
+      #${MODAL_ID} .om30a-senha-rot { font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--om30a-suave); }
+      #${MODAL_ID} .om30a-senha-num {
+        margin-top:2px;font:900 40px Consolas,'Courier New',monospace;letter-spacing:3px;color:var(--c);
+      }
+      #${MODAL_ID} .om30a-senha-num.pequena { font:800 16px Arial,Helvetica,sans-serif;letter-spacing:0; }
+      #${MODAL_ID} .om30a-texto { font-size:12.5px;line-height:1.5;color:#4b5963; }
+      #${MODAL_ID} .om30a-texto p { margin:0 0 6px; }
+      #${MODAL_ID} .om30a-acoes { display:flex;justify-content:flex-end;gap:8px;margin-top:16px; }
+      #${MODAL_ID} .om30a-btn {
+        border:1px solid #c5ced5;border-radius:7px;background:#fff;color:#2b3a44;
+        font:700 12px Arial,Helvetica,sans-serif;padding:9px 16px;cursor:pointer;
+      }
+      #${MODAL_ID} .om30a-btn:hover { background:#f3f6f8; }
+      #${MODAL_ID} .om30a-btn.primario { border-color:var(--c);background:var(--c);color:#fff; }
+      #${MODAL_ID} .om30a-btn.primario:hover { filter:brightness(.94); }
+      #${MODAL_ID} .om30a-resumo { display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 10px; }
+      #${MODAL_ID} .om30a-hist { width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;text-align:left;border:1px solid var(--om30a-borda);border-radius:8px;overflow:hidden; }
+      #${MODAL_ID} .om30a-hist th { background:#f5f7f9;color:#6b7680;font-size:10px;text-transform:uppercase;letter-spacing:.3px;padding:7px 8px;border-bottom:1px solid var(--om30a-borda); }
+      #${MODAL_ID} .om30a-hist td { padding:7px 8px;border-bottom:1px solid #eef1f3;color:#35404a; }
+      #${MODAL_ID} .om30a-hist tr:last-child td { border-bottom:0; }
+      #${MODAL_ID} .om30a-hist tr.aqui td { background:#fff8e6; }
+      #${MODAL_ID} .om30a-hist .marca { display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:#ffe4a3;color:#7a5200;font-size:9.5px;font-weight:800; }
+      #${MODAL_ID} .om30a-hist .mono { font-family:Consolas,'Courier New',monospace;font-weight:800; }
+      #${MODAL_ID} .om30a-hist .vazio { color:#b0b8bf; }
+      #${MODAL_ID} .om30a-nota { margin-top:8px;font-size:10.5px;color:#8a949c;line-height:1.4; }
+
+      /* ---------- avisos rápidos ---------- */
+      #om30a-toasts { position:fixed;top:16px;right:16px;z-index:2147483001;display:flex;flex-direction:column;gap:8px;font-family:Arial,Helvetica,sans-serif; }
+      .om30a-toast {
+        --c:var(--om30a-azul);display:flex;gap:10px;align-items:flex-start;width:min(360px,calc(100vw - 32px));
+        padding:11px 12px;border-radius:10px;background:#fff;border:1px solid var(--om30a-borda);border-left:5px solid var(--c);
+        box-shadow:0 10px 28px rgba(15,23,42,.18);animation:om30aEntra .16s ease-out;
+      }
+      .om30a-toast[data-tipo="sucesso"] { --c:var(--om30a-verde); }
+      .om30a-toast[data-tipo="erro"] { --c:var(--om30a-vermelho); }
+      .om30a-toast[data-tipo="aviso"] { --c:var(--om30a-ambar); }
+      .om30a-toast .ico { flex:none;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 14%,#fff);color:var(--c);font-weight:900;font-size:13px; }
+      .om30a-toast .tt { font-size:12.5px;font-weight:800;color:var(--om30a-texto); }
+      .om30a-toast .tx { margin-top:2px;font-size:11.5px;color:#5b6670;line-height:1.4; }
+      .om30a-toast .x { margin-left:auto;border:0;background:transparent;color:#9aa4ac;font-size:16px;line-height:1;cursor:pointer;padding:0 2px; }
+
+      @keyframes om30aFade { from { opacity:0 } to { opacity:1 } }
+      @keyframes om30aSobe { from { transform:translateY(8px);opacity:.6 } to { transform:none;opacity:1 } }
+      @keyframes om30aEntra { from { transform:translateX(12px);opacity:0 } to { transform:none;opacity:1 } }
+
+      @media (max-width:1100px) {
+        #${BAR_ID} .om30a-filtro { min-width:112px; }
+        #${BAR_ID} .om30a-busca { width:180px; }
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  const ICONES = { sucesso: '✓', erro: '✕', aviso: '!', info: 'i', pergunta: '?' };
+
+  // Janela padrão OM30. botoes: [{ rotulo, valor, primario }]. Resolve com o valor do botão.
+  function dialogo({ tipo = 'info', titulo, subtitulo, senha, senhaRotulo = 'Senha', senhaPequena = false,
+                     texto, html, botoes = [{ rotulo: 'OK', valor: true, primario: true }], largo = false }) {
+    garantirCSS();
+    return new Promise(resolve => {
+      document.getElementById(MODAL_ID)?.remove();
+      const m = document.createElement('div');
+      m.id = MODAL_ID;
+      const caixa = document.createElement('div');
+      caixa.className = 'om30a-caixa' + (largo ? ' largo' : '');
+      caixa.dataset.tipo = tipo;
+      caixa.innerHTML = `
+        <div class="om30a-topo">
+          <div class="om30a-icone">${ICONES[tipo] || 'i'}</div>
+          <div><div class="om30a-titulo"></div>${subtitulo ? '<div class="om30a-subtitulo"></div>' : ''}</div>
+        </div>
+        ${senha ? `<div class="om30a-senha-box"><div class="om30a-senha-rot"></div><div class="om30a-senha-num${senhaPequena ? ' pequena' : ''}"></div></div>` : ''}
+        ${texto ? '<div class="om30a-texto"></div>' : ''}
+        ${html ? `<div class="om30a-html">${html}</div>` : ''}
+        <div class="om30a-acoes"></div>`;
+      caixa.querySelector('.om30a-titulo').textContent = titulo || '';
+      if (subtitulo) caixa.querySelector('.om30a-subtitulo').textContent = subtitulo;
+      if (senha) {
+        caixa.querySelector('.om30a-senha-rot').textContent = senhaRotulo;
+        caixa.querySelector('.om30a-senha-num').textContent = senha;
+      }
+      if (texto) {
+        const alvo = caixa.querySelector('.om30a-texto');
+        for (const par of [].concat(texto)) { const p = document.createElement('p'); p.textContent = par; alvo.appendChild(p); }
+      }
+
+      const fechar = valor => { document.removeEventListener('keydown', teclas, true); m.remove(); resolve(valor); };
+      const temCancelar = botoes.some(b => b.valor === false || b.valor === null);
+      const teclas = ev => {
+        if (ev.key === 'Escape') { ev.preventDefault(); fechar(temCancelar ? false : (botoes[0]?.valor ?? true)); }
+      };
+      const acoes = caixa.querySelector('.om30a-acoes');
+      let principal = null;
+      for (const b of botoes) {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'om30a-btn' + (b.primario ? ' primario' : '');
+        el.textContent = b.rotulo;
+        el.addEventListener('click', () => fechar(b.valor));
+        acoes.appendChild(el);
+        if (b.primario) principal = el;
+      }
+      m.addEventListener('click', ev => { if (ev.target === m && temCancelar) fechar(false); });
+      document.addEventListener('keydown', teclas, true);
+      m.appendChild(caixa);
+      document.body.appendChild(m);
+      (principal || acoes.lastChild)?.focus();
+    });
+  }
+
+  function toast({ tipo = 'info', titulo, texto, ms = 7000 }) {
+    garantirCSS();
+    let pilha = document.getElementById('om30a-toasts');
+    if (!pilha) { pilha = document.createElement('div'); pilha.id = 'om30a-toasts'; document.body.appendChild(pilha); }
+    const t = document.createElement('div');
+    t.className = 'om30a-toast';
+    t.dataset.tipo = tipo;
+    t.innerHTML = `<div class="ico">${ICONES[tipo] || 'i'}</div><div><div class="tt"></div><div class="tx"></div></div><button type="button" class="x" title="Fechar">×</button>`;
+    t.querySelector('.tt').textContent = titulo || '';
+    t.querySelector('.tx').textContent = texto || '';
+    if (!texto) t.querySelector('.tx').remove();
+    t.querySelector('.x').addEventListener('click', () => t.remove());
+    pilha.appendChild(t);
+    setTimeout(() => t.remove(), ms);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Barra de filtros
+  // ---------------------------------------------------------------------------
+
+  function montarBarra(tabela) {
+    garantirCSS();
+    let bar = document.getElementById(BAR_ID);
+    if (bar) return bar;
+
+    bar = document.createElement('div');
+    bar.id = BAR_ID;
+
+    for (const filtro of FILTROS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'om30a-filtro';
+      b.dataset.filtro = filtro.key;
+      b.style.setProperty('--c', filtro.cor);
+      b.innerHTML = `<span class="om30a-dot"></span><span class="om30a-label">${filtro.label}</span><span class="om30a-qtd">0</span>`;
+      b.addEventListener('click', ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        filtroSelecionado = filtro.key;
+        gravar(STORAGE_FILTRO, filtroSelecionado);
+        aplicarFiltros();
+      });
+      bar.appendChild(b);
+    }
+
+    const ferramentas = document.createElement('div');
+    ferramentas.className = 'om30a-ferramentas';
+    ferramentas.innerHTML = `
+      <input type="search" class="om30a-busca" placeholder="Buscar nome ou senha (ex: CN0003)">
+      <label class="om30a-hoje"><input type="checkbox"${somenteHoje ? ' checked' : ''}> Somente hoje</label>
+      <button type="button" class="om30a-atualizar" title="Consulta de novo o Senha Simples">↻ Atualizar</button>
+      <button type="button" class="om30a-tempo" title="Tempo de carga (clique para copiar)"></button>
+    `;
+    bar.appendChild(ferramentas);
+    ferramentas.querySelector('.om30a-tempo').addEventListener('click', async ev => {
+      const t = ev.currentTarget.dataset.copiar;
+      if (!t) return;
+      try { await navigator.clipboard.writeText(t); }
+      catch {
+        const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta);
+        ta.select(); try { document.execCommand('copy'); } catch {} ta.remove();
+      }
+      toast({ tipo: 'sucesso', titulo: 'Tempo copiado', texto: 'Cole aqui no chat para comparar.' });
+    });
+
+    const at = document.createElement('span');
+    at.className = 'om30a-atualizado';
+    bar.appendChild(at);
+
+    const aviso = document.createElement('div');
+    aviso.className = 'om30a-aviso';
+    bar.appendChild(aviso);
+
+    const vazio = document.createElement('div');
+    vazio.className = 'om30a-vazio';
+    vazio.hidden = true;
+    vazio.textContent = 'Nenhum ausente neste grupo com os filtros atuais.';
+    bar.appendChild(vazio);
+
+    const inputBusca = ferramentas.querySelector('.om30a-busca');
+    inputBusca.addEventListener('input', () => { busca = inputBusca.value; aplicarFiltros(); });
+    inputBusca.addEventListener('keydown', ev => { if (ev.key === 'Enter') ev.preventDefault(); });
+
+    ferramentas.querySelector('input[type=checkbox]').addEventListener('change', ev => {
+      somenteHoje = ev.target.checked;
+      gravar(STORAGE_HOJE, somenteHoje ? '1' : '0');
+      aplicarFiltros();
+      if (!somenteHoje && tabelaRef) {
+        (async () => {
+          if (!todasCarregadas) {
+            definirStatus('Carregando ausentes antigos…');
+            try { await sincronizarLista(tabelaRef, { completa: true }); } catch {}
+            aplicarFiltros();
+          }
+          classificarTodos(false);
+        })();
+      }
+    });
+
+    ferramentas.querySelector('.om30a-atualizar').addEventListener('click', async () => {
+      if (verificando || !tabelaRef) return;
+      definirStatus('Carregando ausentes…');
+      T0 = performance.now(); tLista = 0; tFim = 0; classificou = false;
+      const el = document.querySelector(`#${BAR_ID} .om30a-tempo`); if (el) el.textContent = '';
+      try { await sincronizarLista(tabelaRef, { completa: !somenteHoje }); } catch {}
+      marcarTempoLista();
+      aplicarFiltros();
+      classificarTodos(true);
+    });
+
+    tabela.parentElement.insertBefore(bar, tabela);
+    definirStatus('');
+    return bar;
+  }
+
+  function definirStatus(texto) {
+    const el = document.querySelector(`#${BAR_ID} .om30a-atualizado`);
+    if (!el) return;
+    el.innerHTML = texto
+      ? `<span class="om30a-atualizado-label">${esc(texto)}</span>`
+      : `<span class="om30a-atualizado-label">Horário</span><span class="om30a-atualizado-hora">${horarioCurtoAgora()}</span>`;
+  }
+
+  function definirAviso(texto) {
+    const el = document.querySelector(`#${BAR_ID} .om30a-aviso`);
+    if (el) el.innerHTML = texto ? `<b>⚠</b><span>${esc(texto)}</span>` : '';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Colunas "Senha" e "Ausente em" na tabela nativa
+  // ---------------------------------------------------------------------------
+
+  const COL_SENHA = 2;   // logo depois de "Nome"
+  const COL_ORIGEM = 3;
+
+  function prepararColunas(tabela) {
+    const cab = tabela.tHead?.rows[0] || tabela.rows[0];
+    if (cab && !cab.querySelector('.om30a-th')) {
+      const ref = cab.cells[COL_SENHA] || null;
+      for (const nome of ['Senha', 'Ausente em']) {
+        const th = document.createElement('th');
+        th.className = 'om30a-th';
+        th.textContent = nome;
+        cab.insertBefore(th, ref);
+      }
+    }
+    for (const tr of tabela.tBodies[0]?.rows || []) prepararLinha(tr);
+  }
+
+  function prepararLinha(tr) {
+    if (tr.querySelector('.om30a-td-senha')) return;
+    if (!tr.querySelector(SEL_REMOVER)) {
+      // linha "nenhum registro": só alarga o colspan
+      const td = tr.cells[0];
+      if (td?.colSpan > 1) td.colSpan += 2;
+      return;
+    }
+    const ref = tr.cells[COL_SENHA] || null;
+    const tdSenha = document.createElement('td');
+    tdSenha.className = 'om30a-td-senha';
+    tdSenha.innerHTML = '<span class="om30a-senha-btn carregando">…</span>';
+    const tdOrigem = document.createElement('td');
+    tdOrigem.className = 'om30a-td-origem';
+    tdOrigem.innerHTML = '<span class="om30a-origem" data-o="PENDENTE">Verificando…</span>';
+    tr.insertBefore(tdSenha, ref);
+    tr.insertBefore(tdOrigem, ref);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filtros
+  // ---------------------------------------------------------------------------
+
+  function grupoDaLinha(tr) {
+    const o = tr.dataset.om30Origem;
+    if (o === 'ACOLHIMENTO' || o === 'MEDICO' || o === 'EMERGENCIA') return o;
+    return o ? 'OUTROS' : 'PENDENTE';
+  }
+
+  function passaFiltros(tr) {
+    if (somenteHoje && !linhaEhDeHoje(tr)) return false;
+    const q = semEspaco(busca);
+    if (!q) return true;
+    const nome = tr.dataset.om30Nome || '';
+    const senha = semEspaco(tr.dataset.om30Senha);
+    return nome.includes(q) || (!!senha && senha.includes(q));
+  }
+
+  function aplicarFiltros() {
+    if (!tabelaRef) return;
+    const contagem = { TODOS: 0, ACOLHIMENTO: 0, MEDICO: 0, EMERGENCIA: 0, OUTROS: 0 };
+    let visiveis = 0;
+
+    for (const tr of tabelaRef.tBodies[0].rows) {
+      if (!tr.querySelector(SEL_REMOVER)) continue;
+      if (!tr.dataset.om30Nome) tr.dataset.om30Nome = semEspaco(tr.cells[1]?.textContent);
+      tr.classList.add('om30a-linha');
+
+      const ok = passaFiltros(tr);
+      const grupo = grupoDaLinha(tr);
+      if (ok) {
+        contagem.TODOS++;
+        if (contagem[grupo] !== undefined) contagem[grupo]++;
+      }
+      const mostrar = ok && (filtroSelecionado === 'TODOS' || grupo === filtroSelecionado);
+      tr.style.display = mostrar ? '' : 'none';
+      if (mostrar) visiveis++;
+    }
+
+    const bar = document.getElementById(BAR_ID);
+    if (!bar) return;
+    for (const f of FILTROS) {
+      const b = bar.querySelector(`[data-filtro="${f.key}"]`);
+      if (!b) continue;
+      b.classList.toggle('ativo', f.key === filtroSelecionado);
+      b.querySelector('.om30a-qtd').textContent = String(contagem[f.key] || 0);
+    }
+    const vazio = bar.querySelector('.om30a-vazio');
+    if (vazio) vazio.hidden = visiveis > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Linha: senha, origem, quem chamou, bloqueio
+  // ---------------------------------------------------------------------------
+
+  const nomeDaLinha = tr => clean(String(tr.cells[1]?.innerText || '').split('\n').map(clean).find(Boolean)) || 'o paciente';
+  const rotuloOrigem = r => r.origem === 'OUTROS' && r.setor ? r.setor : (ROTULO_ORIGEM[r.origem] || r.origem);
+
+  function historicoDaOrigem(r) {
+    return (r.historico || []).find(h =>
+      r.origem === 'MEDICO' ? h.grupo === 'MEDICO'
+        : r.origem === 'EMERGENCIA' ? (h.grupo === 'EMERGENCIA' || h.grupo === 'MEDICO')
+        : r.origem === 'ACOLHIMENTO' ? h.grupo === 'ACOLHIMENTO'
+          : h.fila === r.setor);
+  }
+
+  // Na tela do acolhimento só remove ausente do acolhimento; na fila médica, ausente da
+  // fila médica (ou de outra fila de atendimento, ex.: emergência). Recepção/acolhimento não.
+  function podeRemoverAqui(origem, setor) {
+    if (TELA === 'ACOLHIMENTO') return origem === 'ACOLHIMENTO';
+    return origem === 'MEDICO' || origem === 'EMERGENCIA' || (origem === 'OUTROS' && setor !== 'Recepção');
+  }
+  const nomeTela = () => TELA === 'MEDICO' ? 'fila médica' : 'acolhimento';
+  const nomeFilaDestino = (origem, setor) =>
+    TELA === 'ACOLHIMENTO' ? 'acolhimento'
+      : origem === 'EMERGENCIA' ? 'emergência'
+        : (origem === 'OUTROS' && setor ? setor : 'fila médica');
+
+  function textoBloqueio(origem, setor) {
+    if (origem === 'ACOLHIMENTO' || (TELA === 'MEDICO' && setor === 'Recepção')) {
+      const onde = origem === 'ACOLHIMENTO' ? 'acolhimento' : 'recepção';
+      return {
+        titulo: `Ausente no ${onde}`.replace('no recepção', 'na recepção'),
+        paragrafos: [
+          `Este paciente foi ausentado ${origem === 'ACOLHIMENTO' ? 'no acolhimento' : 'na recepção'}, não na fila médica.`,
+          origem === 'ACOLHIMENTO' ? 'Para tirar da ausência, use a aba AUSENTES da tela do acolhimento.' : 'Para tirar da ausência, use a tela da recepção.',
+          'Removendo por aqui, ele sai da lista mas não volta para nenhuma fila.'
+        ]
+      };
+    }
+    const onde = origem === 'MEDICO' ? 'fila médica' : origem === 'EMERGENCIA' ? 'emergência' : (setor || 'outra fila');
+    const comoRemover = origem === 'MEDICO' || origem === 'EMERGENCIA'
+      ? 'Para tirar da ausência, use a aba AUSENTES da tela do médico (Prontuários).'
+      : `Para tirar da ausência, use a tela da fila ${onde}.`;
+    return {
+      titulo: `Ausente na ${onde}`,
+      paragrafos: [
+        `Este paciente foi ausentado na ${onde}, não no acolhimento.`,
+        comoRemover,
+        'Removendo por aqui, ele sai da lista mas não volta para nenhuma fila.'
+      ]
+    };
+  }
+
+  function marcarLinha(tr, r) {
+    prepararLinha(tr);
+    const inf = infoLinha(tr);
+    if (inf?.id) { tr.dataset.om30Id = inf.id; detalhes.set(inf.id, r); }
+    if (!tr.dataset.om30Nome) tr.dataset.om30Nome = semEspaco(tr.cells[1]?.textContent);
+    if (!r.senha && inf?.id) {
+      const f = lerJSON(CHAVE_FICHA + inf.id);
+      if (MODO_NUMERO !== 'SENHA' && f.senha && Date.now() - f.t < FICHA_MS) { r.senha = f.senha; r.senhaDaFicha = true; }
+      else if (MODO_NUMERO !== 'SENHA' && !['ERRO', 'INDEFINIDO', 'PENDENTE'].includes(r.origem)) pedirSenhaFicha(tr);
+    }
+    // Senha EM é da emergência, sempre.
+    if (/^EM/i.test(r.senha || '') && ['MEDICO', 'ACOLHIMENTO', 'OUTROS'].includes(r.origem)) {
+      r.origem = 'EMERGENCIA';
+      r.setor = 'Emergência';
+      const em = (unidadeAtual?.filas || []).find(f => f.grupo === 'EMERGENCIA');
+      if (em) r.cat = em.cat;
+    }
+    tr.dataset.om30Origem = r.origem;
+    tr.dataset.om30Erro = r.erroHttp || '';
+    if (r.senha) tr.dataset.om30Senha = r.senha; else delete tr.dataset.om30Senha;
+    if (r.setor) tr.dataset.om30Setor = r.setor;
+    if (r.cat) tr.dataset.om30Cat = r.cat;
+
+    // Coluna Senha
+    const tdSenha = tr.querySelector('.om30a-td-senha');
+    const bSenha = document.createElement('button');
+    bSenha.type = 'button';
+    if (r.senha) {
+      bSenha.className = 'om30a-senha-btn';
+      bSenha.innerHTML = `${esc(r.senha)}<span class="om30a-lupa">▸</span>`;
+      bSenha.title = 'Ver detalhes da senha';
+    } else {
+      bSenha.className = 'om30a-senha-btn sem-numero';
+      bSenha.textContent = tr.dataset.om30FichaPedida && !tr.dataset.om30FichaFalhou ? 'lendo ficha…' : 'sem nº';
+      bSenha.title = `${r.motivoSemNumero || 'O Senha Simples não mostra o número enquanto a senha está com outro profissional.'}` +
+                     `${tr.dataset.om30FichaFalhou ? ` · ${tr.dataset.om30FichaMotivo || 'Ficha: não achei a senha.'}` : ''} O número aparece ao devolver o paciente.`;
+    }
+    bSenha.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); abrirDetalheSenha(tr); });
+    tdSenha.replaceChildren(bSenha);
+
+    // Coluna Ausente em
+    const tdOrigem = tr.querySelector('.om30a-td-origem');
+    const aqui = historicoDaOrigem(r);
+    let rotulo = rotuloOrigem(r);
+    if (r.origem === 'ERRO' && r.erroHttp) rotulo += ` (${r.erroHttp})`;
+    if (r.origem === 'SEM_SENHA') rotulo = 'Senha não encontrada';
+    const horaAusencia = hora(aqui?.concluida);
+    let quemHtml = '';
+    if (r.chamadoPor || r.guiche) {
+      const verbo = r.acao === 'Concluída' ? 'Concluída por' : r.acao === 'Profissional' ? 'Profissional' : 'Chamado por';
+      const g = guicheCurto(r.guiche);
+      quemHtml = `<div class="om30a-quem" title="${esc(`${r.chamadoPor || ''}${r.guiche ? ` · ${r.guiche}` : ''}`)}">` +
+        (r.chamadoPor ? `${verbo} <b>${esc(pessoaCurta(r.chamadoPor))}</b>${g ? ` · ${esc(g)}` : ''}` : `Guichê ${esc(g)}`) +
+        '</div>';
+    }
+    tdOrigem.innerHTML =
+      `<span class="om30a-origem" data-o="${esc(r.origem)}">${esc(rotulo)}` +
+      `${horaAusencia ? ` <span class="om30a-origem-hora">· ${esc(horaAusencia)}</span>` : ''}</span>${quemHtml}`;
+
+    // Botão remover: bloqueado se a ausência é de outra fila
+    const btn = tr.querySelector(SEL_REMOVER);
+    if (btn) {
+      const bloquear = !podeRemoverAqui(r.origem, r.setor);
+      btn.classList.toggle('om30a-bloqueado', bloquear);
+      if (bloquear) {
+        if (btn.dataset.om30TituloOriginal === undefined) btn.dataset.om30TituloOriginal = btn.getAttribute('title') || '';
+        btn.setAttribute('title', ['ACOLHIMENTO', 'MEDICO', 'EMERGENCIA', 'OUTROS'].includes(r.origem)
+          ? `Bloqueado: ${textoBloqueio(r.origem, r.setor).paragrafos.slice(0, 2).join(' ')}`
+          : 'Bloqueado: origem da ausência não confirmada. Clique em Atualizar.');
+      } else if (btn.dataset.om30TituloOriginal !== undefined) {
+        btn.setAttribute('title', 'Remover ausência e devolver a senha');
+      }
+    }
+  }
+
+  async function abrirDetalheSenha(tr) {
+    let r = detalhes.get(tr.dataset.om30Id);
+    if (!r) return;
+    // A classificação para cedo; o histórico de todas as filas só é buscado aqui.
+    if (r.parcial && unidadeAtual) {
+      const inf = infoLinha(tr);
+      const bt = tr.querySelector('.om30a-senha-btn');
+      bt?.classList.add('carregando');
+      try {
+        const completo = await origemDoAusente(inf.id, inf.tipo, unidadeAtual, { completo: true });
+        if (completo.origem === r.origem) { r = { ...r, historico: completo.historico, senha: r.senha || completo.senha, parcial: false }; detalhes.set(inf.id, r); }
+      } catch {}
+      bt?.classList.remove('carregando');
+    }
+    const aqui = historicoDaOrigem(r);
+    const linhas = (r.historico || []).map(h => {
+      const chamada = hora(h.chamada) || (h.jaChamada ? 'chamada' : '');
+      const quem = [pessoaCurta(h.por), guicheCurto(h.guiche)].filter(Boolean).join(' · ');
+      const cel = v => v ? esc(v) : '<span class="vazio">—</span>';
+      return `<tr${h === aqui ? ' class="aqui"' : ''}>
+        <td>${esc(h.fila)}${h === aqui ? '<span class="marca">ausente aqui</span>' : ''}</td>
+        <td class="mono">${cel(h.senha)}</td>
+        <td>${cel(hora(h.gerada))}</td>
+        <td>${cel(chamada)}</td>
+        <td>${cel(hora(h.concluida))}</td>
+        <td>${cel(quem)}</td>
+      </tr>`;
+    }).join('');
+
+    const temSemNumero = (r.historico || []).some(h => h.jaChamada && !h.senha);
+    const html = `
+      <div class="om30a-resumo">
+        <span class="om30a-origem" data-o="${esc(r.origem)}">Ausente em: ${esc(rotuloOrigem(r))}</span>
+        ${aqui?.concluida ? `<span class="om30a-origem" data-o="PENDENTE">Ausência às ${esc(hora(aqui.concluida))}</span>` : ''}
+      </div>
+      ${linhas ? `<table class="om30a-hist">
+        <thead><tr><th>Fila</th><th>Senha</th><th>Gerada</th><th>Chamada</th><th>Concluída</th><th>Quem</th></tr></thead>
+        <tbody>${linhas}</tbody></table>` : ''}
+      ${temSemNumero ? '<div class="om30a-nota">"chamada" sem horário: a senha está com outro profissional, e o Senha Simples não informa os detalhes. O número aparece ao devolver o paciente.</div>' : ''}
+      ${!linhas ? '<div class="om30a-nota">Nenhuma senha deste atendimento foi encontrada no Senha Simples.</div>' : ''}`;
+
+    dialogo({
+      tipo: 'info',
+      titulo: nomeDaLinha(tr),
+      subtitulo: 'Senha e caminho pelas filas',
+      senha: r.senha || 'Número não informado',
+      senhaPequena: !r.senha,
+      html,
+      largo: true,
+      botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Classificação de todos os ausentes
+  // ---------------------------------------------------------------------------
+
+  let unidadeLite = null;
+  async function unidadeSoParametrizacao() {
+    if (unidadeLite) return unidadeLite;
+    const acolhCat = await comRetentativa(() => lerParametrizacao('acolhimento')).then(p => p?.senha_simples_categoria?.id || null).catch(() => null);
+    const medCat = await comRetentativa(() => lerParametrizacao('atendimento')).then(p => p?.senha_simples_categoria?.id || null).catch(() => null);
+    unidadeLite = { acolhCat, medCat, filas: [], erros: {} };
+    return unidadeLite;
+  }
+
+  // ---- Medição de tempo (para comparar os modos) ----
+  let tLista = 0, tFim = 0, classificou = false;
+  function marcarTempoLista() { if (!tLista) tLista = performance.now() - T0; }
+  function verificarConclusao() {
+    if (tFim || !classificou || fichasLendo || filaFicha.length) return;
+    tFim = performance.now() - T0;
+    const linhas = [...(tabelaRef?.tBodies[0]?.rows || [])].filter(tr => infoLinha(tr) && (!somenteHoje || linhaEhDeHoje(tr)));
+    const comNumero = linhas.filter(tr => tr.dataset.om30Senha).length;
+    const s = v => (v / 1000).toFixed(1).replace('.', ',') + ' s';
+    const nome = { AMBOS: 'Senha Simples + ficha', SENHA: 'só Senha Simples', FICHA: 'só ficha' }[MODO_NUMERO];
+    const texto = `Lista ${s(tLista)} · tudo ${s(tFim)} · ${comNumero}/${linhas.length} com número`;
+    console.info(`[OM30 Ausentes] (${nome}) ${texto}`);
+    const el = document.querySelector(`#${BAR_ID} .om30a-tempo`);
+    if (el) {
+      el.textContent = `⏱ ${texto}`;
+      el.dataset.copiar = `OM30 Ausentes v${VERSAO} | modo: ${nome} | tela: ${nomeTela()} | ${texto} | ${new Date().toLocaleString('pt-BR')}`;
+      el.title = `Modo do número: ${nome}. Medido desde que a página abriu. Clique para copiar.`;
+    }
+  }
+
+  async function classificarTodos(forcar = false) {
+    if (verificando || !tabelaRef) return;
+    verificando = true;
+    try {
+      definirStatus('Lendo filas…');
+      garantirTokenSenha();
+      // Esperando o login do Senha Simples: não insiste nele, separa só pelo profissional.
+      const unidade = MODO_NUMERO === 'FICHA' ? await unidadeSoParametrizacao()
+        : aguardandoToken
+          ? { ...(unidadeAtual || {}), filas: [], erros: { categorias: 'HTTP 401' } }
+          : await filasDaUnidade(forcar);
+      if (!aguardandoToken && MODO_NUMERO !== 'FICHA') unidadeAtual = unidade;
+      const deu401 = Object.values(unidade.erros || {}).some(e => /401/.test(e));
+      if (deu401) esperarTokenNovo(() => classificarTodos(false));   // segue separando pelo profissional
+      const configurado = !deu401 && !!(unidade.acolhCat && unidade.medCat && unidade.filas.length);
+
+      if (!deu401 && MODO_NUMERO !== 'FICHA') definirAviso(configurado ? (unidade.unidadeDiferente
+        ? 'O Senha Simples deste computador está em outra unidade. Consultei só o acolhimento e a fila médica desta unidade. Para ver emergência e salas, troque a unidade no site do Senha Simples.'
+        : '') :
+        !unidade.medCat
+          ? `Não encontrei a fila médica na parametrização desta unidade (${unidade.erros?.atendimento || 'sem detalhe'}).`
+          : !unidade.acolhCat
+            ? `Não encontrei a fila de acolhimento na parametrização desta unidade (${unidade.erros?.acolhimento || 'sem detalhe'}).`
+            : `Não consegui ler as filas do Senha Simples (${unidade.erros?.categorias || 'sem detalhe'}).`);
+
+      const linhas = [...tabelaRef.tBodies[0].rows]
+        .map(tr => ({ tr, inf: infoLinha(tr) }))
+        .filter(x => x.inf?.id)
+        .filter(x => !somenteHoje || linhaEhDeHoje(x.tr))   // antigos só quando "Somente hoje" estiver desmarcado
+        .sort((a, b) => Number(linhaEhDeHoje(b.tr)) - Number(linhaEhDeHoje(a.tr)));
+
+      if (forcar) linhas.forEach(x => { try { localStorage.removeItem(SESSION_CACHE + x.inf.id); localStorage.removeItem(CHAVE_FICHA + x.inf.id); } catch {} });
+      if (forcar) { tFim = 0; classificou = false; }
+
+      let feitos = 0;
+      definirStatus(`Verificando 0/${linhas.length}`);
+      await emParalelo(linhas, CONCORRENCIA, async ({ tr, inf }) => {
+        const p = mapaProf.get(inf.id);
+        const r = p
+          ? await origemRapida(inf.id, inf.tipo, unidade, p.prof ? 'MEDICO' : 'ACOLHIMENTO', p.prof, configurado)
+          : configurado ? await origemDoAusente(inf.id, inf.tipo, unidade) : { origem: 'INDEFINIDO' };
+        marcarLinha(tr, r);
+        feitos++;
+        definirStatus(`Verificando ${feitos}/${linhas.length}`);
+        aplicarFiltros();
+      });
+      definirStatus('');
+      ultimaVerificacao = Date.now();
+      classificou = true;
+      if (!tLista) tLista = performance.now() - T0;
+      verificarConclusao();
+
+      // Token venceu no meio: espera o novo e refaz, sem mostrar "Erro".
+      if (!deu401 && linhas.some(x => /401/.test(x.tr.dataset.om30Erro || ''))) {
+        esperarTokenNovo(() => classificarTodos(false));
+        return;
+      }
+
+      // Se NENHUM ausente teve a senha encontrada, a leitura das filas veio errada
+      // (ex.: Senha Simples ainda trocando de unidade). Refaz sozinho uma vez, do zero.
+      const total = linhas.length;
+      const semNada = linhas.filter(x => ['SEM_SENHA', 'ERRO', 'INDEFINIDO'].includes(x.tr.dataset.om30Origem)).length;
+      if (total && semNada === total && !refezAutomatico) {
+        refezAutomatico = true;
+        setTimeout(() => classificarTodos(true), 2000);
+      } else if (semNada < total) {
+        refezAutomatico = false;
+      }
+    } finally {
+      verificando = false;
+    }
+  }
+
+  let ultimaVerificacao = 0;
+  let unidadeAtual = null;
+  let refezAutomatico = false;
+
+  // Mantém a lista atualizada sozinha: revisita de tempos em tempos e quando a aba volta ao foco.
+  function agendarReverificacao() {
+    let ultimaCompleta = Date.now();
+    let revisitando = false;
+    const revisitar = async () => {
+      if (revisitando || verificando || !tabelaRef) return;
+      revisitando = true;
+      ultimaVerificacao = Date.now();
+      try {
+        if (Date.now() - ultimaCompleta >= CONFERENCIA_COMPLETA_MS) {
+          ultimaCompleta = Date.now();
+          await sincronizarLista(tabelaRef, { completa: false });
+        } else {
+          await buscarNovos(tabelaRef);
+        }
+      } catch {}
+      aplicarFiltros();
+      // Quem já foi conferido vem da memória (30 min); só os novos vão ao Senha Simples.
+      try { await classificarTodos(false); } finally { revisitando = false; }
+    };
+    setInterval(() => {
+      if (!document.hidden && Date.now() - ultimaVerificacao >= REVERIFICAR_MS) revisitar();
+    }, 5000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && Date.now() - ultimaVerificacao >= 10000) revisitar();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Remover ausência
+  //   - Ausente do ACOLHIMENTO: remove a ausência, devolve a MESMA senha para a fila do
+  //     acolhimento (retornar + desvincular) e mostra o número ao profissional.
+  //   - Ausente de outra fila: bloqueado nesta tela.
+  // ---------------------------------------------------------------------------
+
+  async function removerAusenciaNativa(href) {
+    const csrfParam = document.querySelector('meta[name="csrf-param"]')?.content || 'authenticity_token';
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const corpo = new URLSearchParams({ _method: 'delete', [csrfParam]: csrfToken });
+    const r = await fetch(href, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: corpo.toString(),
+      redirect: 'follow'
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  }
+
+  async function devolverSenha(cat, atendimentoId, tipo) {
+    let ultimoErro;
+    for (let i = 0; i < 2; i++) {
+      try {
+        const { data } = await senhaSimplesPutFilas(`${cat}/retornar_para_atendimento`, {
+          atendimento_id: Number(atendimentoId), atendimento_type: tipo, categoria_id: cat
+        });
+        if (data && !data.confirmado_em) {
+          // Solta a senha de quem chamou antes da ausência, para qualquer guichê poder chamar.
+          try { await desvincularSenha(data, null); } catch (e) { console.warn('[OM30] desvincular após devolver:', e); }
+          return data;
+        }
+        ultimoErro = new Error('a senha continuou concluída');
+      } catch (e) {
+        ultimoErro = e;
+      }
+      await new Promise(r => setTimeout(r, 800));
+    }
+    throw ultimoErro;
+  }
+
+  let removendo = false;
+
+  document.addEventListener('click', async ev => {
+    const a = ev.target.closest && ev.target.closest(SEL_REMOVER);
+    if (!a) return;
+    const tr = a.closest('tr');
+    const origem = tr?.dataset.om30Origem;
+
+    if (origem && !['ACOLHIMENTO', 'MEDICO', 'EMERGENCIA', 'OUTROS'].includes(origem)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      dialogo({
+        tipo: 'aviso',
+        titulo: 'Remoção bloqueada',
+        subtitulo: 'Origem da ausência não confirmada',
+        texto: [
+          'Não consegui confirmar no Senha Simples onde este paciente foi ausentado.',
+          'Clique em "Atualizar" na barra acima e tente de novo. Se continuar assim, remova pela tela da fila onde ele foi ausentado.'
+        ],
+        botoes: [{ rotulo: 'Entendi', valor: true, primario: true }]
+      });
+      return;
+    }
+    if (!origem) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      toast({ tipo: 'aviso', titulo: 'Aguarde a verificação', texto: 'Ainda estou conferindo onde este paciente foi ausentado.' });
+      return;
+    }
+
+    const setor = tr.dataset.om30Setor || '';
+    if (!podeRemoverAqui(origem, setor)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      const b = textoBloqueio(origem, setor);
+      dialogo({
+        tipo: 'aviso',
+        titulo: `Remoção bloqueada na ${nomeTela()}`.replace('na acolhimento', 'no acolhimento'),
+        subtitulo: b.titulo,
+        texto: b.paragrafos,
+        botoes: [{ rotulo: 'Entendi', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    if (!tr.dataset.om30Cat) return; // sem classificação: fluxo nativo
+    if (aguardandoToken) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      toast({ tipo: 'aviso', titulo: 'Aguarde o Senha Simples', texto: 'Ainda conectando ao Senha Simples. Sem ele a senha não volta para a fila; tente em alguns segundos.' });
+      return;
+    }
+    const destino = nomeFilaDestino(origem, setor);
+    const ao = destino === 'acolhimento' ? 'ao acolhimento' : `à ${destino}`;
+    const doDestino = destino === 'acolhimento' ? 'do acolhimento' : `da ${destino}`;
+
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    if (removendo) return;
+
+    const inf = infoLinha(tr);
+    const nome = nomeDaLinha(tr);
+    const ok = await dialogo({
+      tipo: 'pergunta',
+      titulo: `Devolver ${ao}?`,
+      subtitulo: nome,
+      senha: tr.dataset.om30Senha || '',
+      senhaRotulo: 'Senha atual',
+      texto: [`O paciente sai da lista de ausentes e volta para ${destino === 'acolhimento' ? 'a fila do acolhimento' : `a ${destino}`} com a mesma senha, livre para qualquer guichê chamar.`],
+      botoes: [
+        { rotulo: 'Cancelar', valor: false },
+        { rotulo: 'Remover e devolver', valor: true, primario: true }
+      ]
+    });
+    if (!ok) return;
+
+    removendo = true;
+    definirStatus('Removendo ausência…');
+    try {
+      try {
+        await removerAusenciaNativa(a.href);
+      } catch (e) {
+        await dialogo({
+          tipo: 'erro',
+          titulo: 'Não foi possível remover a ausência',
+          subtitulo: nome,
+          texto: ['Nada foi alterado. Tente de novo em alguns segundos.', `Detalhe: ${descricaoErro(e)}`]
+        });
+        return;
+      }
+
+      definirStatus('Devolvendo senha…');
+      try {
+        const senha = await devolverSenha(tr.dataset.om30Cat, inf.id, inf.tipo);
+        try { localStorage.removeItem(SESSION_CACHE + inf.id); } catch {}
+        await dialogo({
+          tipo: 'sucesso',
+          titulo: `Paciente devolvido ${ao}`,
+          subtitulo: nome,
+          senha: senha.senha || tr.dataset.om30Senha || '—',
+          senhaRotulo: 'Mesma senha do munícipe',
+          texto: [
+            `A senha do munícipe voltou para a fila ${doDestino} e já pode ser chamada em qualquer guichê.`,
+            'Ele continua com a mesma senha que já tem; é só avisar que voltou para a fila e aguardar a chamada.'
+          ]
+        });
+      } catch (e) {
+        await dialogo({
+          tipo: 'erro',
+          titulo: 'A senha não voltou para a fila',
+          subtitulo: nome,
+          texto: [
+            'A ausência foi removida, mas o Senha Simples não reativou a senha.',
+            'O paciente não vai aparecer no "chamar próximo". Avise o suporte antes de chamá-lo.',
+            `Detalhe: ${descricaoErro(e)}`
+          ]
+        });
+      }
+      location.reload();
+    } finally {
+      removendo = false;
+      definirStatus('');
+    }
+  }, true);
+
+  // ---------------------------------------------------------------------------
+  // Inicialização
+  // ---------------------------------------------------------------------------
+
+  async function iniciar(tabela) {
+    tabela.dataset.om30Ausentes = '1';
+    if (!tabela.tBodies[0]) tabela.appendChild(document.createElement('tbody'));
+    tabelaRef = tabela;
+
+    montarBarra(tabela);
+    definirStatus('Carregando ausentes de hoje…');
+    esconderPaginacao(tabela);
+    await sincronizarLista(tabela, { inicial: true, completa: !somenteHoje }).catch(e => console.warn('[OM30 Ausentes]', e));
+    prepararColunas(tabela);
+    aplicarFiltros();
+    marcarTempoLista();
+
+    if (MODO_NUMERO === 'FICHA') {   // não precisa do Senha Simples para mostrar a lista
+      await classificarTodos();
+      agendarReverificacao();
+      return;
+    }
+
+    definirStatus('Aguardando Senha Simples…');
+    try {
+      await esperar(senhaSimplesPronto);
+      garantirTokenSenha();
+    } catch {
+      definirStatus('');
+      definirAviso('Senha Simples não autenticado nesta tela. Recarregue a página e tente de novo.');
+      return;
+    }
+    await classificarTodos();
+    agendarReverificacao();
+  }
+
+  function tentarIniciar() {
+    if (!/^\/(acolhimentos|prontuarios)(\/urgencia_emergencia)?\/?$/.test(location.pathname)) return true;
+    const tabela = acharTabelaAusentes();
+    if (tabela && !tabela.dataset.om30Ausentes) { iniciar(tabela); return true; }
+    return false;
+  }
+
+  if (!tentarIniciar()) {
+    const obs = new MutationObserver(() => { if (tentarIniciar()) obs.disconnect(); });
+    obs.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => obs.disconnect(), 20000);
+  }
+})();

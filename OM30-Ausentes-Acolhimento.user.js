@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.12
+// @version      2.0.13
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,11 @@
 (() => {
   'use strict';
 
+  // v2.0.13:
+  // - Chamar NÃO desvincula mais senha automaticamente quando recebe 422 ja_chamada.
+  // - Mostra aviso orientando a usar a engrenagem (*) > "Desvincular senha de outro profissional".
+  // - A desvinculação continua exclusivamente manual, com confirmação.
+  //
   // v2.0.12:
   // - Fila principal do acolhimento passa a usar a mesma estratégia da Fila Médica/Controle de Salas.
   // - Primeira carga prepara customPerPage antes do fetch nativo e mostra a lista completa de uma vez.
@@ -256,7 +261,7 @@
   //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
   const MODO_NUMERO = 'AMBOS';
   let T0 = performance.now();
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.12';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.13';
   const PREFIX = 'om30-ausentes-acolhimento';
   // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
   const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';
@@ -1340,8 +1345,9 @@
 
   // ---------------------------------------------------------------------------
   // Senha presa em outro profissional
-  //   Ao clicar em Chamar, se o Senha Simples responder "senha já chamada / em atendimento
-  //   por FULANO", solta a senha (retornar -> desvincular) e chama de novo por este guichê.
+  //   Ao clicar em Chamar, se o Senha Simples responder 422 ja_chamada,
+  //   NÃO altera a senha automaticamente. Apenas orienta o profissional a abrir
+  //   a engrenagem (*) e usar "Desvincular senha de outro profissional".
   // ---------------------------------------------------------------------------
 
   async function desvincularSenha(s, localPadrao) {
@@ -1354,7 +1360,6 @@
     try { await esperar(() => typeof senhaSimplesChamarSenhaAtendimento === 'function'); } catch { return; }
     const original = window.senhaSimplesChamarSenhaAtendimento;
     if (!original || original.__om30Liberacao) return;
-    const tipoTela = location.pathname.startsWith('/prontuarios') ? 'atendimento' : 'acolhimento';
 
     const embrulho = async function (args) {
       try {
@@ -1362,35 +1367,31 @@
       } catch (e) {
         const dados = e?.response?.data || {};
         if (!(e?.response?.status === 422 && dados.ja_chamada)) throw e;
-        try {
-          const param = await lerParametrizacao(tipoTela);
-          const cat = param?.senha_simples_categoria?.id;
-          if (!cat) throw e;
-          const { data: s } = await senhaSimplesPutFilas(`${cat}/retornar_para_atendimento`, {
-            atendimento_id: args?.params?.atendimento_id,
-            atendimento_type: args?.params?.atendimento_type,
-            categoria_id: cat
-          });
-          await desvincularSenha(s, args?.localAtendimentoAtualId);
-          const resultado = await original(args);
-          const m = String(dados.error || '').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i) || [];
-          const de = m[1] && !/seu usu[aá]rio/i.test(m[1]) ? pessoaCurta(m[1]) : null;
-          toast({
-            tipo: 'sucesso',
-            titulo: `Senha ${s.senha || ''} liberada e chamada`,
-            texto: `Estava presa${de ? ` com ${de}` : ''}${m[2] ? ` (${guicheCurto(clean(m[2]))})` : ''}. Agora está vinculada a este guichê.`
-          });
-          return resultado;
-        } catch (falha) {
-          console.warn('[OM30] Não foi possível liberar a senha presa:', falha);
-          throw e; // mostra o aviso original do sistema
-        }
+
+        const m = String(dados.error || '').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i) || [];
+        const profissional = m[1] && !/seu usu[aá]rio/i.test(m[1]) ? pessoaCurta(m[1]) : '';
+        const guiche = m[2] ? guicheCurto(clean(m[2])) : '';
+        const onde = [profissional, guiche].filter(Boolean).join(' · ');
+
+        toast({
+          tipo: 'aviso',
+          titulo: 'Senha vinculada a outro profissional',
+          texto: [
+            onde
+              ? `Esta senha está vinculada a ${onde}.`
+              : 'O Senha Simples informou que esta senha já está vinculada a outro profissional/guichê.',
+            'Nenhuma alteração foi feita.',
+            'Para liberar a senha, abra a engrenagem (*) desta linha e escolha "Desvincular senha de outro profissional".'
+          ].join(' ')
+        });
+
+        // Mantém a chamada como FALHA. Não retorna a senha, não desvincula e não chama novamente.
+        throw e;
       }
     };
     embrulho.__om30Liberacao = true;
     window.senhaSimplesChamarSenhaAtendimento = embrulho;
   }
-
 
   instalarLiberacaoSenhaPresa();
 

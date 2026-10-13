@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.10
+// @version      2.0.11
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,11 @@
 (() => {
   'use strict';
 
+  // v2.0.11:
+  // - O visual da fila principal do acolhimento entra imediatamente ao a tabela aparecer no DOM.
+  // - Cabeçalho, idade, espera e resumo não aguardam mais a conexão completa com o Vue.
+  // - Depois o Vue apenas assume/sincroniza os dados, sem refazer o visual.
+  //
   // v2.0.10:
   // - Preserva a pesquisa nativa por nome na fila principal do acolhimento.
   // - Enquanto houver texto pesquisado, o refresh silencioso de 20s não substitui o resultado.
@@ -249,7 +254,7 @@
   //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
   const MODO_NUMERO = 'AMBOS';
   let T0 = performance.now();
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.10';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.11';
   const PREFIX = 'om30-ausentes-acolhimento';
   // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
   const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';
@@ -3350,6 +3355,173 @@
       .replace(/\bmeses?\b/gi, m => m.toLowerCase());
   }
 
+
+  function tabelaFilaPrincipalAcolhimentoDOM() {
+    const candidatas = [
+      ...document.querySelectorAll(
+        '#classificacao .collection-with-search-atendimento table,' +
+        '#classificacao table.b-table,' +
+        '.listagem-fila .collection-with-search-atendimento table'
+      )
+    ];
+
+    return candidatas.find(t => {
+      const ths = [...t.querySelectorAll('thead th')].map(th => norm(th.textContent));
+      return ths.length >= 7 &&
+        (ths.some(x => /DATA.*HORA|CHEGADA/.test(x)) || ths[0]?.includes('DATA')) &&
+        ths.some(x => x === 'IDADE') &&
+        ths.some(x => x === 'SENHA');
+    }) || candidatas[0] || null;
+  }
+
+  function timestampTextoChegadaAcolhimento(texto) {
+    const txt = clean(texto);
+    if (!txt) return 0;
+
+    let m = txt.match(/(\d{2})\/(\d{2})\/(\d{4})[^\d]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0), 0).getTime();
+
+    m = txt.match(/(\d{4})-(\d{2})-(\d{2})[^\d]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), 0).getTime();
+
+    const soHora = txt.match(/\b(\d{1,2}):(\d{2})\b/);
+    if (soHora) {
+      const d = new Date();
+      d.setHours(+soHora[1], +soHora[2], 0, 0);
+      // Se por alguma razão a hora ficou no futuro, considera o dia anterior.
+      if (d.getTime() > Date.now() + 5 * 60000) d.setDate(d.getDate() - 1);
+      return d.getTime();
+    }
+
+    return 0;
+  }
+
+  function decorarLinhaFilaAcolhimentoDOM(tr) {
+    if (!tr?.cells || tr.cells.length < 7) return;
+
+    const chegada = tr.cells[0];
+    if (chegada) {
+      if (!chegada.dataset.om30ChegadaOriginal) {
+        chegada.dataset.om30ChegadaOriginal = clean(chegada.innerText || chegada.textContent);
+      }
+      const ts = timestampTextoChegadaAcolhimento(chegada.dataset.om30ChegadaOriginal);
+
+      let espera = chegada.querySelector('.om30-acolh-espera');
+      if (!espera) {
+        espera = document.createElement('div');
+        espera.className = 'om30-acolh-espera';
+        chegada.appendChild(espera);
+      }
+      espera.innerHTML =
+        '<span class="om30-acolh-clock">🕒</span><span>Espera</span> <strong>' +
+        formatarEsperaAcolhimento(ts ? Math.max(0, Date.now() - ts) : 0) + '</strong>';
+    }
+
+    const idade = tr.cells[5];
+    if (idade) {
+      if (!idade.dataset.om30IdadeOriginal) {
+        idade.dataset.om30IdadeOriginal = clean(idade.innerText || idade.textContent);
+      }
+      let pill = idade.querySelector('.om30-acolh-idade');
+      if (!pill) {
+        idade.textContent = '';
+        pill = document.createElement('span');
+        pill.className = 'om30-acolh-idade';
+        idade.appendChild(pill);
+      }
+      pill.textContent = idadeVisualAcolhimento({}, { textContent: idade.dataset.om30IdadeOriginal || '' });
+    }
+  }
+
+  function atualizarResumoFilaAcolhimentoDOM(tabela = tabelaFilaPrincipalAcolhimentoDOM()) {
+    if (!tabela) return;
+
+    const linhas = [...tabela.querySelectorAll('tbody tr.collection-row, tbody tr')]
+      .filter(tr => tr.cells?.length >= 7);
+
+    const agora = Date.now();
+    const esperas = linhas.map(tr => {
+      const texto = tr.cells?.[0]?.dataset?.om30ChegadaOriginal ||
+        clean(tr.cells?.[0]?.innerText || tr.cells?.[0]?.textContent);
+      const ts = timestampTextoChegadaAcolhimento(texto);
+      return ts ? Math.max(0, agora - ts) : null;
+    }).filter(x => x != null);
+
+    const media = esperas.length ? esperas.reduce((a,b) => a + b, 0) / esperas.length : 0;
+
+    let bar = document.getElementById('om30-acolh-resumo');
+    if (!bar) {
+      const host = tabela.closest('.collection-with-search-atendimento')?.parentNode ||
+        tabela.parentNode;
+      const ref = tabela.closest('.collection-with-search-atendimento') || tabela;
+      if (!host || !ref) return;
+
+      bar = document.createElement('div');
+      bar.id = 'om30-acolh-resumo';
+      bar.innerHTML =
+        '<div class="om30-acolh-card"><span>Na fila</span><strong class="om30-acolh-total">0</strong></div>' +
+        '<div class="om30-acolh-card"><span>Tempo médio</span><strong class="om30-acolh-media">0 min</strong></div>' +
+        '<div class="om30-acolh-card om30-acolh-horario"><span>Horário</span><strong class="om30-acolh-agora">--:--</strong></div>';
+      host.insertBefore(bar, ref);
+    }
+
+    bar.querySelector('.om30-acolh-total').textContent = String(linhas.length);
+    bar.querySelector('.om30-acolh-media').textContent = formatarEsperaAcolhimento(media);
+    bar.querySelector('.om30-acolh-agora').textContent = horarioCurtoAgora();
+  }
+
+  function aplicarVisualAcolhimentoImediato() {
+    if (!ehTelaPrincipalAcolhimento()) return false;
+
+    esconderPaginacaoFilaAcolhimento();
+
+    const tabela = tabelaFilaPrincipalAcolhimentoDOM();
+    if (!tabela) return false;
+
+    const ths = tabela.querySelectorAll('thead th');
+    if (ths[0] && !ths[0].dataset.om30AcolhCabecalho) {
+      ths[0].dataset.om30AcolhCabecalho = '1';
+      ths[0].innerHTML = 'Data/Hora da<br>chegada <span class="om30-acolh-th-espera">+ espera</span>';
+    }
+    if (ths[5]) ths[5].textContent = 'Idade';
+
+    for (const tr of tabela.querySelectorAll('tbody tr.collection-row, tbody tr')) {
+      decorarLinhaFilaAcolhimentoDOM(tr);
+    }
+    atualizarResumoFilaAcolhimentoDOM(tabela);
+    return true;
+  }
+
+  function iniciarVisualAcolhimentoImediato() {
+    if (!ehTelaPrincipalAcolhimento()) return;
+
+    // CSS entra já, mesmo antes da tabela.
+    esconderPaginacaoFilaAcolhimento();
+
+    if (aplicarVisualAcolhimentoImediato()) return;
+
+    // A tabela normalmente nasce poucos ms depois do userscript.
+    let concluido = false;
+    const obs = new MutationObserver(() => {
+      if (concluido) return;
+      if (aplicarVisualAcolhimentoImediato()) {
+        concluido = true;
+        obs.disconnect();
+      }
+    });
+    obs.observe(document.body, { childList:true, subtree:true });
+
+    let tentativas = 0;
+    const rapido = setInterval(() => {
+      tentativas++;
+      if (aplicarVisualAcolhimentoImediato() || tentativas >= 80) {
+        clearInterval(rapido);
+        concluido = true;
+        obs.disconnect();
+      }
+    }, 25);
+  }
+
   function linhasFilaPrincipalAcolhimento(collection = acolhEstavelCollectionVm) {
     const raiz = collection?.$el || acolhEstavelListVm?.$el || document;
     return [...raiz.querySelectorAll('tbody tr.collection-row, tbody tr')]
@@ -3428,7 +3600,7 @@
   }
 
   function decorarFilaPrincipalAcolhimento(collection = acolhEstavelCollectionVm) {
-    if (!collection) return;
+    if (!collection) return aplicarVisualAcolhimentoImediato();
     atualizarCabecalhosFilaAcolhimento(collection);
     for (const tr of linhasFilaPrincipalAcolhimento(collection)) {
       const item = itemFilaAcolhimentoDaLinha(tr);
@@ -3439,7 +3611,10 @@
 
   function atualizarRelogiosFilaAcolhimento() {
     const collection = acolhEstavelCollectionVm;
-    if (!collection) return;
+    if (!collection) {
+      aplicarVisualAcolhimentoImediato();
+      return;
+    }
     for (const tr of linhasFilaPrincipalAcolhimento(collection)) {
       const item = itemFilaAcolhimentoDaLinha(tr);
       const forte = tr.querySelector('.om30-acolh-espera strong');
@@ -3552,6 +3727,7 @@
     pararRefreshNativoFilaAcolhimento(listVm);
     prepararCollectionFilaAcolhimento(collection);
     esconderPaginacaoFilaAcolhimento();
+    aplicarVisualAcolhimentoImediato();
     decorarFilaPrincipalAcolhimento(collection);
 
     if (mudouComponente || !acolhEstavelAssinatura) {
@@ -3565,6 +3741,8 @@
 
   function iniciarFilaAcolhimentoEstavel() {
     if (!ehTelaPrincipalAcolhimento()) return;
+
+    iniciarVisualAcolhimentoImediato();
 
     if (!window.__OM30_ACOLH_PESQUISA_PROTEGIDA__) {
       window.__OM30_ACOLH_PESQUISA_PROTEGIDA__ = true;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.10.6
+// @version      2.10.7
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,10 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.10.7:
+  // - Corrige a detecção do campo de pesquisa nativo que fica fora de #classificacao.
+  // - Listener delegado acompanha recriações do input pelo Vue.
+  //
   // v2.10.6:
   // - Corrige a pesquisa da fila médica: nome, nome social, senha e CNS passam a
   //   filtrar a fonte completa mantida pelo script, sem o refresh restaurar todos.
@@ -33,8 +37,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2106__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2106__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2107__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2107__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5081,30 +5085,51 @@
   }
 
   function campoPesquisaMedica(vm = medVm) {
-    const raizes = [...new Set([vm?.$el, document.querySelector('#classificacao')].filter(Boolean))];
-    if (!raizes.length) return null;
-
-    const inputs = [...new Set(raizes.flatMap(raiz => [...raiz.querySelectorAll('input')]))]
+    const classificacao = document.querySelector('#classificacao');
+    const inputs = [...document.querySelectorAll('input')]
       .filter(el => !el.disabled && !el.readOnly)
       .filter(el => ['text','search',''].includes(String(el.type || '').toLowerCase()))
-      .filter(el => !el.closest('td[aria-colindex="9"], .dropdown-menu'));
+      .filter(el => !el.closest('td[aria-colindex="9"], .dropdown-menu, table'))
+      .filter(el => {
+        const r = el.getBoundingClientRect?.();
+        return !r || (r.width >= 120 && r.height > 0);
+      });
+
+    const rectClassificacao = classificacao?.getBoundingClientRect?.() || null;
 
     const pontuar = el => {
-      const s = norm([
+      const meta = norm([
         el.placeholder, el.name, el.id, el.className,
         el.getAttribute('aria-label'), el.getAttribute('data-original-title')
       ].filter(Boolean).join(' '));
+
       let p = 0;
-      if (/PESQUIS|BUSC|SEARCH/.test(s)) p += 20;
-      if (/NOME|SENHA|PACIENTE|MUNICIPE|CNS/.test(s)) p += 8;
-      if (el.type === 'search') p += 5;
+      if (/PESQUIS|BUSC|SEARCH/.test(meta)) p += 60;
+      if (/NOME|SENHA|PACIENTE|MUNICIPE|CNS/.test(meta)) p += 25;
+      if (String(el.type || '').toLowerCase() === 'search') p += 15;
+      if (clean(el.value)) p += 8;
+
+      const r = el.getBoundingClientRect?.();
+      if (r && rectClassificacao) {
+        const distancia = rectClassificacao.top - r.bottom;
+        // O campo nativo da fila fica imediatamente acima de #classificacao.
+        if (distancia >= -40 && distancia <= 450) p += 45;
+        if (r.width >= 300) p += 8;
+      }
+
+      const bloco = el.closest('form,.card,.panel,.box,.form-group,.row,div');
+      const contexto = norm(bloco?.innerText || bloco?.textContent || '');
+      if (/LIMPAR/.test(contexto)) p += 25;
+      if (/ADICIONAR FILTRO/.test(contexto)) p += 25;
+
       return p;
     };
 
-    const ordenados = inputs.sort((a,b) => pontuar(b) - pontuar(a));
-    if (!ordenados.length) return null;
-    if (pontuar(ordenados[0]) > 0) return ordenados[0];
-    return ordenados.length === 1 ? ordenados[0] : null;
+    const ordenados = inputs
+      .map(el => ({ el, p:pontuar(el) }))
+      .sort((a,b) => b.p - a.p);
+
+    return ordenados[0]?.p > 0 ? ordenados[0].el : null;
   }
 
   function lerPesquisaMedica(vm = medVm) {
@@ -5133,21 +5158,35 @@
 
   function instalarPesquisaMedica(vm = medVm) {
     const input = campoPesquisaMedica(vm);
-    if (!input) return false;
-    medPesquisaInput = input;
-    medPesquisaTermo = clean(input.value);
-    if (input.dataset.om30PesquisaMedica === '1') return true;
-    input.dataset.om30PesquisaMedica = '1';
-
-    const reaplicar = () => {
+    if (input) {
+      medPesquisaInput = input;
       medPesquisaTermo = clean(input.value);
-      medAssinaturaAplicada = '';
-      Promise.resolve().then(() => aplicarMedFonte(vm, true));
-    };
-    input.addEventListener('input', reaplicar, true);
-    input.addEventListener('search', reaplicar, true);
-    input.addEventListener('change', reaplicar, true);
-    return true;
+      input.dataset.om30PesquisaMedica = '1';
+    }
+
+    // Delegado no document porque o Saúde Simples pode recriar o campo de pesquisa.
+    // Assim não perdemos o filtro quando o input é substituído pelo Vue.
+    if (document.documentElement.dataset.om30PesquisaMedicaDelegada !== '1') {
+      document.documentElement.dataset.om30PesquisaMedicaDelegada = '1';
+
+      const reaplicar = ev => {
+        const alvo = ev?.target;
+        if (!(alvo instanceof HTMLInputElement)) return;
+        const campoAtual = campoPesquisaMedica(medVm);
+        if (!campoAtual || alvo !== campoAtual) return;
+
+        medPesquisaInput = campoAtual;
+        medPesquisaTermo = clean(campoAtual.value);
+        medAssinaturaAplicada = '';
+        Promise.resolve().then(() => aplicarMedFonte(medVm, true));
+      };
+
+      document.addEventListener('input', reaplicar, true);
+      document.addEventListener('search', reaplicar, true);
+      document.addEventListener('change', reaplicar, true);
+    }
+
+    return !!input;
   }
 
   function assinaturaMedFonte(lista) {
@@ -5742,5 +5781,5 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.10.6 carregado. Pesquisa por nome/senha/CNS corrigida + RT/36h + Profissional do Retorno + fila estável. Filtro inicial:', filtroSelecionado);
+  log('v2.10.7 carregado. Pesquisa externa da fila corrigida + RT/36h + Profissional do Retorno + fila estável. Filtro inicial:', filtroSelecionado);
 })();

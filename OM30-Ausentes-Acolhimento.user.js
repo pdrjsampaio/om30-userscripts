@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.9
+// @version      2.0.10
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,11 @@
 (() => {
   'use strict';
 
+  // v2.0.10:
+  // - Preserva a pesquisa nativa por nome na fila principal do acolhimento.
+  // - Enquanto houver texto pesquisado, o refresh silencioso de 20s não substitui o resultado.
+  // - Ao limpar a pesquisa, a atualização automática volta normalmente.
+  //
   // v2.0.9:
   // - Fila principal do acolhimento: visual reorganizado no padrão da fila médica.
   // - Data/Hora passa a mostrar tempo de espera atualizado sem redesenhar a tabela.
@@ -244,7 +249,7 @@
   //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
   const MODO_NUMERO = 'AMBOS';
   let T0 = performance.now();
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.9';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.10';
   const PREFIX = 'om30-ausentes-acolhimento';
   // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
   const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';
@@ -3034,6 +3039,89 @@
     }) || null;
   }
 
+
+  function campoPesquisaFilaAcolhimento(listVm = acolhEstavelListVm, collection = acolhEstavelCollectionVm) {
+    const candidatos = [];
+
+    // Caminho mais confiável: o próprio componente do acolhimento expõe o filtro
+    // do munícipe por ref. Procuramos primeiro dentro dele.
+    const filtro = listVm?.$refs?.filtroMunicipe;
+    const raizFiltro = filtro?.$el || (filtro instanceof Element ? filtro : null);
+    if (raizFiltro?.querySelectorAll) {
+      candidatos.push(...raizFiltro.querySelectorAll('input[type="search"],input[type="text"],input:not([type])'));
+    }
+
+    // Fallback visual, para instalações em que o ref não está exposto.
+    if (!candidatos.length) {
+      const raizFila = collection?.$el || listVm?.$el || document.querySelector('#classificacao');
+      const rectFila = raizFila?.getBoundingClientRect?.() || null;
+
+      for (const input of document.querySelectorAll('input[type="search"],input[type="text"],input:not([type])')) {
+        if (input.disabled || input.readOnly) continue;
+        if (input.closest('#' + BAR_ID + ', .dropdown-menu, table, #' + MODAL_ID)) continue;
+
+        const meta = norm([
+          input.placeholder,
+          input.name,
+          input.id,
+          input.className,
+          input.getAttribute('aria-label'),
+          input.getAttribute('data-original-title')
+        ].filter(Boolean).join(' '));
+
+        let pontos = 0;
+        if (/PESQUIS|BUSC|SEARCH/.test(meta)) pontos += 60;
+        if (/NOME|PACIENTE|MUNICIPE|CNS/.test(meta)) pontos += 35;
+        if (String(input.type || '').toLowerCase() === 'search') pontos += 15;
+
+        const bloco = input.closest('form,.form-group,.row,.card,.panel,div');
+        const contexto = norm(bloco?.innerText || bloco?.textContent || '');
+        if (/PESQUIS|BUSC|NOME|PACIENTE|MUNICIPE/.test(contexto)) pontos += 20;
+        if (/LIMPAR/.test(contexto)) pontos += 15;
+
+        const r = input.getBoundingClientRect?.();
+        if (r && rectFila) {
+          const distancia = rectFila.top - r.bottom;
+          if (distancia >= -80 && distancia <= 500) pontos += 35;
+        }
+
+        if (pontos >= 45) candidatos.push({ input, pontos });
+      }
+
+      if (candidatos.length && candidatos[0]?.input) {
+        candidatos.sort((a,b) => b.pontos - a.pontos);
+        return candidatos[0].input;
+      }
+    }
+
+    const simples = candidatos
+      .filter(el => el instanceof HTMLInputElement && !el.disabled && !el.readOnly)
+      .filter(el => !el.closest('#' + BAR_ID));
+
+    if (!simples.length) return null;
+
+    // Se houver mais de um campo no filtro do munícipe, prefere o que menciona nome/pesquisa
+    // e, em seguida, o que estiver preenchido.
+    simples.sort((a,b) => {
+      const score = el => {
+        const meta = norm([el.placeholder, el.name, el.id, el.className, el.getAttribute('aria-label')].filter(Boolean).join(' '));
+        let p = 0;
+        if (/NOME|PACIENTE|MUNICIPE/.test(meta)) p += 30;
+        if (/PESQUIS|BUSC|SEARCH/.test(meta)) p += 30;
+        if (clean(el.value)) p += 20;
+        return p;
+      };
+      return score(b) - score(a);
+    });
+
+    return simples[0] || null;
+  }
+
+  function pesquisaFilaAcolhimentoAtiva(listVm = acolhEstavelListVm, collection = acolhEstavelCollectionVm) {
+    const campo = campoPesquisaFilaAcolhimento(listVm, collection);
+    return !!clean(campo?.value);
+  }
+
   function pontuarUrlFilaAcolhimento(urlOriginal) {
     try {
       const u = new URL(urlOriginal, location.origin);
@@ -3394,6 +3482,14 @@
     const collection = collectionPrincipalAcolhimento(listVm);
     if (!listVm || !collection) return false;
 
+    // Enquanto a pesquisa nativa estiver preenchida, NÃO substitui a coleção.
+    // Isso vale inclusive para refresh forçado por pageshow/volta de aba.
+    if (pesquisaFilaAcolhimentoAtiva(listVm, collection)) {
+      pararRefreshNativoFilaAcolhimento(listVm);
+      decorarFilaPrincipalAcolhimento(collection);
+      return false;
+    }
+
     acolhEstavelListVm = listVm;
     acolhEstavelCollectionVm = collection;
     prepararCollectionFilaAcolhimento(collection);
@@ -3460,13 +3556,32 @@
 
     if (mudouComponente || !acolhEstavelAssinatura) {
       acolhEstavelAssinatura = assinaturaFilaAcolhimento(collection.$data.items || []);
-      setTimeout(() => atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {}), 100);
+      if (!pesquisaFilaAcolhimentoAtiva(listVm, collection)) {
+        setTimeout(() => atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {}), 100);
+      }
     }
     return true;
   }
 
   function iniciarFilaAcolhimentoEstavel() {
     if (!ehTelaPrincipalAcolhimento()) return;
+
+    if (!window.__OM30_ACOLH_PESQUISA_PROTEGIDA__) {
+      window.__OM30_ACOLH_PESQUISA_PROTEGIDA__ = true;
+      const tratarPesquisa = ev => {
+        const campo = campoPesquisaFilaAcolhimento();
+        if (!campo || ev?.target !== campo) return;
+
+        // Campo preenchido: o refresh automático permanece suspenso.
+        // Campo limpo: espera o Saúde Simples restaurar a lista e sincroniza por baixo.
+        if (!clean(campo.value)) {
+          setTimeout(() => atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {}), 250);
+        }
+      };
+      document.addEventListener('input', tratarPesquisa, true);
+      document.addEventListener('search', tratarPesquisa, true);
+      document.addEventListener('change', tratarPesquisa, true);
+    }
 
     const tentar = () => conectarFilaAcolhimentoEstavel();
     if (!tentar()) {

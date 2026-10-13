@@ -5286,10 +5286,10 @@
   }
 
   function campoPesquisaMedica(vm = medVm) {
-    const raiz = vm?.$el || document.querySelector('#classificacao');
-    if (!raiz) return null;
+    const raizes = [...new Set([vm?.$el, document.querySelector('#classificacao')].filter(Boolean))];
+    if (!raizes.length) return null;
 
-    const inputs = [...raiz.querySelectorAll('input')]
+    const inputs = [...new Set(raizes.flatMap(raiz => [...raiz.querySelectorAll('input')]))]
       .filter(el => !el.disabled && !el.readOnly)
       .filter(el => ['text','search',''].includes(String(el.type || '').toLowerCase()))
       .filter(el => !el.closest('td[aria-colindex="9"], .dropdown-menu'));

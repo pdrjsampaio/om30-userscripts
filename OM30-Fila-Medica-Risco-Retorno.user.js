@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.4
+// @version      2.11.5
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,10 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.11.5:
+  // - Corrige definitivamente a sobreposição do menu (*) com a coluna sticky Ação das outras linhas.
+  // - Enquanto o menu está aberto, somente a célula Ação da linha atual fica acima do dropdown.
+  //
   // v2.11.4:
   // - Restaura o texto completo da opção: "Desvincular senha de outro profissional".
   // - Mantém a correção de z-index/largura do dropdown.
@@ -64,8 +68,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2114__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2114__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2115__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2115__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5012,6 +5016,28 @@
         z-index:99999 !important;
       }
 
+      /*
+       * Chrome pinta células position:sticky de linhas posteriores sobre o dropdown,
+       * mesmo quando o filho da linha atual tem z-index alto. Enquanto houver menu
+       * aberto, retiramos temporariamente o stacking sticky SOMENTE das outras linhas.
+       */
+      #classificacao.om30-menu-acoes-aberto table.b-table tbody tr:not(.om30-menu-aberto) > td:nth-child(9),
+      #classificacao.om30-menu-acoes-aberto table.b-table tbody tr:not(.om30-menu-aberto) > td[aria-colindex="9"] {
+        position:relative !important;
+        right:auto !important;
+        z-index:0 !important;
+      }
+      #classificacao.om30-menu-acoes-aberto table.b-table tbody tr.om30-menu-aberto > td:nth-child(9),
+      #classificacao.om30-menu-acoes-aberto table.b-table tbody tr.om30-menu-aberto > td[aria-colindex="9"] {
+        position:sticky !important;
+        right:0 !important;
+        z-index:2147483000 !important;
+        overflow:visible !important;
+      }
+      #classificacao.om30-menu-acoes-aberto tr.om30-menu-aberto .dropdown-menu.show {
+        z-index:2147483001 !important;
+      }
+
       /* Padrão: menu abre para a esquerda da engrenagem, alinhado no topo do bloco. */
       #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento .dropdown-menu.show {
         left:auto !important;
@@ -5794,12 +5820,16 @@
 
       const ultima = row?.classList.contains('om30-ultima-linha');
       const raiz = document.querySelector('#classificacao');
-      if (raiz) raiz.classList.toggle('om30-dropdown-ultima-aberto', !!ultima);
+      if (raiz) {
+        raiz.classList.add('om30-menu-acoes-aberto');
+        raiz.classList.toggle('om30-dropdown-ultima-aberto', !!ultima);
+      }
     }, true);
 
     document.addEventListener('click', ev => {
       if (ev.target?.closest?.('#classificacao .dropdown-opcoes-atendimento')) return;
-      document.querySelector('#classificacao')?.classList.remove('om30-dropdown-ultima-aberto');
+      const raiz = document.querySelector('#classificacao');
+      raiz?.classList.remove('om30-dropdown-ultima-aberto', 'om30-menu-acoes-aberto');
       document.querySelectorAll('#classificacao tr.om30-menu-aberto').forEach(r => r.classList.remove('om30-menu-aberto'));
     }, true);
 
@@ -5812,6 +5842,9 @@
 
       for (const row of raiz.querySelectorAll('tr.om30-menu-aberto')) {
         if (!row.querySelector('.dropdown-menu.show')) row.classList.remove('om30-menu-aberto');
+      }
+      if (!raiz.querySelector('tr.om30-menu-aberto .dropdown-menu.show')) {
+        raiz.classList.remove('om30-menu-acoes-aberto');
       }
     });
     obs.observe(document.documentElement, { subtree:true, attributes:true, attributeFilter:['class'] });
@@ -5891,7 +5924,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.11.4 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.11.5 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====

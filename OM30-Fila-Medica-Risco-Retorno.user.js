@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.2
+// @version      2.11.3
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,11 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.11.3:
+  // - Corrige o menu (*) da fila médica sendo cortado pela coluna sticky da linha seguinte.
+  // - Enquanto o dropdown está aberto, a linha/célula atual sobe de z-index.
+  // - Rótulo manual encurtado para "Desvincular senha".
+  //
   // v2.11.2:
   // - Fila médica: adiciona no menu (*) a opção "Desvincular senha de outro profissional".
   // - Só executa após confirmação do Senha Simples de que a senha está presa (422 ja_chamada).
@@ -55,8 +60,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2112__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2112__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2113__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2113__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -4976,11 +4981,31 @@
 
       #classificacao td[aria-colindex="9"] .dropdown-menu {
         z-index:3000 !important;
-        min-width:176px !important;
+        min-width:220px !important;
+        max-width:280px !important;
         border:1px solid #d9e0e7 !important;
         border-radius:6px !important;
         box-shadow:0 8px 22px rgba(15,23,42,.14) !important;
         background:#fff !important;
+        overflow:visible !important;
+      }
+      #classificacao td[aria-colindex="9"] .dropdown-menu .dropdown-item {
+        box-sizing:border-box !important;
+        width:100% !important;
+      }
+      #classificacao td[aria-colindex="9"] .dropdown-menu .om30-med-desvincular-outro-profissional {
+        white-space:nowrap !important;
+      }
+
+      /* A coluna Ação é sticky. Sem elevar a linha atual, a célula sticky da linha
+         seguinte pinta por cima do dropdown quando ele ocupa mais de uma linha. */
+      #classificacao tr.om30-menu-aberto {
+        position:relative !important;
+        z-index:99990 !important;
+      }
+      #classificacao tr.om30-menu-aberto > td:nth-child(9),
+      #classificacao tr.om30-menu-aberto > td[aria-colindex="9"] {
+        z-index:99999 !important;
       }
 
       /* Padrão: menu abre para a esquerda da engrenagem, alinhado no topo do bloco. */
@@ -5756,7 +5781,13 @@
       const botao = ev.target?.closest?.('#classificacao tr.collection-row .dropdown-opcoes-atendimento > button.dropdown-toggle');
       if (!botao) return;
       marcarUltima();
+
       const row = botao.closest('tr.collection-row');
+      document.querySelectorAll('#classificacao tr.om30-menu-aberto').forEach(r => {
+        if (r !== row) r.classList.remove('om30-menu-aberto');
+      });
+      row?.classList.add('om30-menu-aberto');
+
       const ultima = row?.classList.contains('om30-ultima-linha');
       const raiz = document.querySelector('#classificacao');
       if (raiz) raiz.classList.toggle('om30-dropdown-ultima-aberto', !!ultima);
@@ -5765,6 +5796,7 @@
     document.addEventListener('click', ev => {
       if (ev.target?.closest?.('#classificacao .dropdown-opcoes-atendimento')) return;
       document.querySelector('#classificacao')?.classList.remove('om30-dropdown-ultima-aberto');
+      document.querySelectorAll('#classificacao tr.om30-menu-aberto').forEach(r => r.classList.remove('om30-menu-aberto'));
     }, true);
 
     // Bootstrap/Vue remove .show ao fechar; limpa o espaço logo depois.
@@ -5773,6 +5805,10 @@
       if (!raiz?.classList.contains('om30-dropdown-ultima-aberto')) return;
       const aberta = raiz.querySelector('tr.om30-ultima-linha .dropdown-menu.show');
       if (!aberta) raiz.classList.remove('om30-dropdown-ultima-aberto');
+
+      for (const row of raiz.querySelectorAll('tr.om30-menu-aberto')) {
+        if (!row.querySelector('.dropdown-menu.show')) row.classList.remove('om30-menu-aberto');
+      }
     });
     obs.observe(document.documentElement, { subtree:true, attributes:true, attributeFilter:['class'] });
     marcarUltima();
@@ -5851,7 +5887,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.11.2 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.11.3 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====
@@ -7123,7 +7159,7 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     opcao.href = 'javascript:void(0)';
     opcao.className = 'dropdown-item ' + OM30_MED_DESVINCULAR_CLASS;
     opcao.setAttribute('role', 'menuitem');
-    opcao.textContent = 'Desvincular senha de outro profissional';
+    opcao.textContent = 'Desvincular senha';
     opcao.title = 'Libera a mesma senha se ela estiver presa em outro profissional/guichê';
 
     opcao.addEventListener('click', ev => {

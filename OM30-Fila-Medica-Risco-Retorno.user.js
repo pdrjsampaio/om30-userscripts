@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.12.1
+// @version      2.11.1
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,16 +22,6 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
-  // v2.12.1:
-  // - Acolhimento: desliga somente o refresh nativo automático de 20s.
-  // - Atualização automática passa a consultar a URL real de /acolhimentos.json por trás.
-  // - Filtros/cliques manuais nativos continuam intactos.
-  //
-  // v2.12.0:
-  // - /acolhimentos: fila principal passa a atualizar silenciosamente.
-  // - Mantém o refresh nativo de 20s, mas sem reconstruir a tabela inteira.
-  // - Reutiliza a própria collection Vue e só insere/remove/move linhas quando necessário.
-  //
   // v2.11.1:
   // - Mantém a funcionalidade de Ausentes embutida somente em /prontuarios.
   // - Remove deste script toda captura/salvamento da classificação e toda CLOUD OM30 2.
@@ -60,8 +50,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2121__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2121__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5840,336 +5830,6 @@
     return iniciarFilaControleMedico();
   }
 
-
-
-  // ---------------------------------------------------------------------------
-  // FILA DO ACOLHIMENTO ESTÁVEL
-  // ---------------------------------------------------------------------------
-  // O componente nativo urgencia-emergencia-listagem-fila-acolhimento possui
-  // um setInterval de 20 s que chama atualizarListagemFila() e força a collection
-  // inteira a recarregar. Aqui desligamos SOMENTE esse intervalo automático e
-  // fazemos a mesma leitura por trás usada na fila médica estável.
-
-  const ACOLH_PER_PAGE = 5000;
-  const ACOLH_REFRESH_MS = 20000;
-  let acolhListVm = null;
-  let acolhCollectionVm = null;
-  let acolhAtualizando = false;
-  let acolhTimer = null;
-  let acolhAssinaturaFonte = '';
-
-  function ehPaginaAcolhimento() {
-    return /^\/acolhimentos\/?$/i.test(location.pathname);
-  }
-
-  function acharComponenteListaAcolhimento() {
-    const vms = [...document.querySelectorAll('*')]
-      .map(el => el.__vue__)
-      .filter(Boolean);
-
-    return vms.find(vm =>
-      norm(vm?.$options?.name) === 'URGENCIA-EMERGENCIA-LISTAGEM-FILA-ACOLHIMENTO' &&
-      vm?.$refs?.collectionWithSearch
-    ) || null;
-  }
-
-  function colecaoAcolhimento(listVm = acolhListVm) {
-    const vm = listVm?.$refs?.collectionWithSearch || null;
-    return vm && Array.isArray(vm?.$data?.items) ? vm : null;
-  }
-
-  function pontuarUrlAcolhimento(urlOriginal) {
-    try {
-      const url = new URL(urlOriginal, location.origin);
-      if (!/\/acolhimentos\.json$/i.test(url.pathname)) return -1;
-
-      let pontos = 1;
-      if (url.searchParams.toString()) pontos += 2;
-      if (url.searchParams.has('ocupacoes_ids[]') || url.searchParams.has('ocupacoes_ids')) pontos += 4;
-      if (url.searchParams.has('status')) pontos += 2;
-      if (url.searchParams.has('sortable')) pontos += 1;
-      return pontos;
-    } catch (_) {
-      return -1;
-    }
-  }
-
-  function descobrirUrlAcolhimento(listVm = acolhListVm, collection = acolhCollectionVm) {
-    const candidatos = [];
-
-    // Em empate, o último resource é o mais recente. Isso faz o refresh silencioso
-    // acompanhar também qualquer filtro/pesquisa que o usuário tenha aplicado nativamente.
-    for (const entrada of performance.getEntriesByType('resource')) {
-      if (/\/acolhimentos\.json(?:\?|$)/i.test(entrada.name)) candidatos.push(entrada.name);
-    }
-
-    candidatos.push(
-      collection?.$props?.propsTable?.pathUrl,
-      collection?.propsTable?.pathUrl,
-      listVm?.sourceDataUrl,
-      listVm?.$props?.sourceDataUrl
-    );
-
-    let melhor = null;
-    let melhorPontos = -1;
-    for (const candidato of candidatos.filter(Boolean)) {
-      const pontos = pontuarUrlAcolhimento(candidato);
-      if (pontos < 0) continue;
-      if (pontos >= melhorPontos) {
-        try {
-          melhor = new URL(candidato, location.origin).href;
-          melhorPontos = pontos;
-        } catch (_) {}
-      }
-    }
-    return melhor;
-  }
-
-  function normalizarUrlAcolhimento(urlOriginal) {
-    const url = new URL(urlOriginal, location.origin);
-    url.searchParams.delete('page');
-    url.searchParams.delete('per_page');
-    return url;
-  }
-
-  async function buscarPaginaAcolhimento(urlBase, pagina) {
-    const url = new URL(urlBase.href);
-    url.searchParams.set('page', String(pagina));
-    url.searchParams.set('per_page', '100');
-
-    const resp = await fetch(url.href, {
-      credentials:'same-origin',
-      headers:{ Accept:'application/json, text/plain, */*' },
-      cache:'no-store'
-    });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ao atualizar acolhimento');
-
-    const dados = await resp.json();
-    if (!Array.isArray(dados)) throw new Error('Resposta de /acolhimentos.json não é uma lista.');
-    return dados;
-  }
-
-  async function carregarAcolhimentoSilencioso(listVm = acolhListVm, collection = acolhCollectionVm) {
-    const descoberta = descobrirUrlAcolhimento(listVm, collection);
-    if (!descoberta) throw new Error('Fonte nativa /acolhimentos.json ainda não identificada.');
-
-    const urlBase = normalizarUrlAcolhimento(descoberta);
-    const todos = [];
-    const vistos = new Set();
-
-    for (let pagina = 1; pagina <= 50; pagina++) {
-      const lote = await buscarPaginaAcolhimento(urlBase, pagina);
-      if (!lote.length) break;
-
-      let novos = 0;
-      for (const item of lote) {
-        const chave = chaveItem(item);
-        if (!chave || vistos.has(chave)) continue;
-        vistos.add(chave);
-        todos.push(item);
-        novos++;
-      }
-
-      if (!novos) break;
-      // Mesmo comportamento da fila médica: backend que limita em 10 continua
-      // page=2,3...; se aceitou 100 e veio menos, chegou ao fim.
-      if (lote.length > 10 && lote.length < 100) break;
-    }
-
-    return todos;
-  }
-
-  function assinaturaAcolhimento(lista) {
-    return (Array.isArray(lista) ? lista : []).map(item => [
-      chaveItem(item),
-      clean(item?.senha),
-      clean(item?.chamada_em),
-      clean(item?.retirada_em),
-      clean(item?.data_senha_timestamp || item?.data_senha_formatada)
-    ].join('~')).join('||');
-  }
-
-  function reconciliarItensAcolhimento(vm, desejados) {
-    const atual = vm?.$data?.items;
-    if (!Array.isArray(atual) || !Array.isArray(desejados)) return false;
-
-    let mudouEstrutura = false;
-    const desejadas = new Set(desejados.map(chaveItem));
-
-    // Remove somente quem realmente saiu.
-    for (let i = atual.length - 1; i >= 0; i--) {
-      if (!desejadas.has(chaveItem(atual[i]))) {
-        atual.splice(i, 1);
-        mudouEstrutura = true;
-      }
-    }
-
-    // Mantém o MESMO objeto Vue de quem continua na fila.
-    for (let alvo = 0; alvo < desejados.length; alvo++) {
-      const novo = desejados[alvo];
-      const chave = chaveItem(novo);
-
-      if (chaveItem(atual[alvo]) === chave) {
-        atualizarObjetoMedico(atual[alvo], novo);
-        continue;
-      }
-
-      const existente = atual.findIndex((it, idx) => idx > alvo && chaveItem(it) === chave);
-      if (existente >= 0) {
-        const mesmoObjeto = atual.splice(existente, 1)[0];
-        atualizarObjetoMedico(mesmoObjeto, novo);
-        atual.splice(alvo, 0, mesmoObjeto);
-      } else {
-        atual.splice(alvo, 0, novo);
-      }
-      mudouEstrutura = true;
-    }
-
-    if (atual.length > desejados.length) {
-      atual.splice(desejados.length, atual.length - desejados.length);
-      mudouEstrutura = true;
-    }
-
-    return mudouEstrutura;
-  }
-
-  function aplicarAcolhimentoSilencioso(lista, collection = acolhCollectionVm) {
-    if (!collection || !Array.isArray(collection?.$data?.items) || !Array.isArray(lista)) return false;
-
-    aplicandoItensVue = true;
-    try {
-      collection.customPerPage = ACOLH_PER_PAGE;
-      collection.currentPage = 1;
-      if (collection.$data) {
-        if ('customPerPage' in collection.$data) collection.$data.customPerPage = ACOLH_PER_PAGE;
-        if ('currentPage' in collection.$data) collection.$data.currentPage = 1;
-      }
-
-      reconciliarItensAcolhimento(collection, lista);
-      collection.totalRows = lista.length;
-
-      // Não emite definedItems e não chama fetchCollection: nada de reconstruir
-      // a tabela inteira quando só uma pessoa entrou/saiu.
-      try { collection.isLoading = false; } catch (_) {}
-      if (collection.errorRequest == null) {
-        try { collection.errorRequest = {}; } catch (_) {}
-      }
-    } finally {
-      Promise.resolve().then(() => { aplicandoItensVue = false; });
-    }
-    return true;
-  }
-
-  async function atualizarAcolhimentoSilencioso({ forcar = false } = {}) {
-    if (acolhAtualizando || !ehPaginaAcolhimento() || document.hidden) return false;
-
-    const listVm = acolhListVm || acharComponenteListaAcolhimento();
-    const collection = colecaoAcolhimento(listVm);
-    if (!listVm || !collection) return false;
-
-    acolhListVm = listVm;
-    acolhCollectionVm = collection;
-    acolhAtualizando = true;
-
-    try {
-      const todos = await carregarAcolhimentoSilencioso(listVm, collection);
-      const ass = assinaturaAcolhimento(todos);
-
-      if (!forcar && ass === acolhAssinaturaFonte) {
-        // Sem entrada/saída/ordenação nova: só sincroniza propriedades dos mesmos objetos.
-        const atualPorChave = new Map((collection.$data.items || []).map(x => [chaveItem(x), x]));
-        for (const novo of todos) {
-          const existente = atualPorChave.get(chaveItem(novo));
-          if (existente) atualizarObjetoMedico(existente, novo);
-        }
-        try { collection.isLoading = false; } catch (_) {}
-        return true;
-      }
-
-      acolhAssinaturaFonte = ass;
-      return aplicarAcolhimentoSilencioso(todos, collection);
-    } catch (e) {
-      warn('Fila do acolhimento estável:', e);
-      try { collection.isLoading = false; } catch (_) {}
-      return false;
-    } finally {
-      acolhAtualizando = false;
-    }
-  }
-
-  function pararRefreshNativoAcolhimento(listVm) {
-    // Esse intervalId é criado pelo próprio componente em mounted() e executa
-    // atualizarListagemFila() a cada 20 segundos.
-    if (listVm?.intervalId) {
-      try { clearInterval(listVm.intervalId); } catch (_) {}
-      try { listVm.intervalId = null; } catch (_) {}
-    }
-  }
-
-  function iniciarRefreshSilenciosoAcolhimento() {
-    clearInterval(acolhTimer);
-    acolhTimer = setInterval(() => {
-      atualizarAcolhimentoSilencioso({ forcar:false }).catch(() => {});
-    }, ACOLH_REFRESH_MS);
-  }
-
-  function injetarCSSAcolhimentoEstavel() {
-    if (document.getElementById('om30-acolhimento-estavel-css')) return;
-    const st = document.createElement('style');
-    st.id = 'om30-acolhimento-estavel-css';
-    st.textContent = '#classificacao .collection-with-search-atendimento ul.pagination{display:none!important;}';
-    document.head.appendChild(st);
-  }
-
-  async function iniciarFilaAcolhimentoEstavel() {
-    if (!ehPaginaAcolhimento()) return false;
-    injetarCSSAcolhimentoEstavel();
-
-    const limite = Date.now() + 5000;
-    let listVm = null;
-    while (Date.now() < limite && !listVm) {
-      listVm = acharComponenteListaAcolhimento();
-      if (!listVm) await esperar(50);
-    }
-
-    if (!listVm) {
-      warn('Componente da fila do acolhimento não apareceu em 5s.');
-      return false;
-    }
-
-    const collection = colecaoAcolhimento(listVm);
-    if (!collection) {
-      warn('Collection da fila do acolhimento não encontrada.');
-      return false;
-    }
-
-    acolhListVm = listVm;
-    acolhCollectionVm = collection;
-    acolhAssinaturaFonte = assinaturaAcolhimento(collection.$data.items || []);
-
-    // Não substitui atualizarListagemFila: clique manual/filtros nativos continuam
-    // exatamente como o Saúde Simples implementou. Só retiramos o refresh automático.
-    pararRefreshNativoAcolhimento(listVm);
-    iniciarRefreshSilenciosoAcolhimento();
-
-    // A primeira carga já foi feita pelo sistema. Só completa a lista por trás.
-    await atualizarAcolhimentoSilencioso({ forcar:true });
-
-    window.addEventListener('pageshow', () => {
-      setTimeout(() => atualizarAcolhimentoSilencioso({ forcar:true }).catch(() => {}), 100);
-    });
-
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        pararRefreshNativoAcolhimento(acolhListVm);
-        atualizarAcolhimentoSilencioso({ forcar:true }).catch(() => {});
-      }
-    });
-
-    log('Fila do acolhimento estável: refresh automático nativo de 20s substituído por atualização silenciosa.');
-    return true;
-  }
-
   // ---------------------------------------------------------------------------
   // Bootstrap
   // ---------------------------------------------------------------------------
@@ -6177,8 +5837,6 @@
   if (ehPaginaFila()) {
     // Fila exclusiva da Urgência e Emergência.
     iniciarFila();
-  } else if (ehPaginaAcolhimento()) {
-    iniciarFilaAcolhimentoEstavel();
   } else {
     const contexto = lerContextoRetorno();
     if (ehPaginaAtendimentoUrgenciaEmergencia(contexto)) {
@@ -6188,7 +5846,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.12.1 carregado. Fila Médica/Risco/Retorno + Acolhimento estável + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.11.1 carregado. Fila/Risco/Retorno + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====

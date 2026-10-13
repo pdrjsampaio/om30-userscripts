@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.7
+// @version      2.0.8
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,12 @@
 (() => {
   'use strict';
 
+  // v2.0.8:
+  // - Fila principal do acolhimento: adiciona no menu de ações (*) a opção
+  //   "Desvincular senha de outro profissional".
+  // - A ação só é liberada após confirmar no Senha Simples que a senha está presa em outro guichê/profissional.
+  // - Mantém a mesma senha: retornar_para_atendimento -> desvincular, sem chamar automaticamente.
+  //
   // v2.0.7:
   // - /acolhimentos: fila principal estável, sem o refresh nativo que reconstrói a tabela.
   // - Atualização silenciosa a cada 20s, preservando as linhas Vue existentes e carregando todas as páginas.
@@ -1367,7 +1373,295 @@
     window.senhaSimplesChamarSenhaAtendimento = embrulho;
   }
 
+
   instalarLiberacaoSenhaPresa();
+
+  // ---------------------------------------------------------------------------
+  // Menu (*) da fila principal do acolhimento — desvincular senha manualmente
+  // ---------------------------------------------------------------------------
+
+  const OM30_DESVINCULAR_MENU_CLASS = 'om30-desvincular-outro-profissional';
+  let observerMenuDesvincular = null;
+
+  function localAtualAcolhimentoId() {
+    const listVm = acolhEstavelListVm || acharListagemPrincipalAcolhimento?.();
+    const direto = clean(listVm?.localAtendimentoId);
+    if (direto) return direto;
+
+    try {
+      const tipo = clean(listVm?.tipoParametrizacao || 'acolhimento');
+      const local = listVm?.$store?.getters?.localAtendimentoAtual?.[tipo] ||
+                    listVm?.$store?.getters?.localAtendimentoAtual?.acolhimento ||
+                    null;
+      return clean(local?.id);
+    } catch {
+      return '';
+    }
+  }
+
+  function itensVisiveisFilaAcolhimento() {
+    const collection = acolhEstavelCollectionVm || collectionPrincipalAcolhimento?.();
+    if (Array.isArray(collection?.items)) return collection.items;
+    if (Array.isArray(collection?.$data?.items)) return collection.$data.items;
+    return [];
+  }
+
+  function itemFilaAcolhimentoDaLinha(tr) {
+    if (!tr) return null;
+    const itens = itensVisiveisFilaAcolhimento();
+    if (!itens.length) return null;
+
+    // A tabela nativa do acolhimento: Data | CNS | Nome | Mãe | Nascimento | Idade | Senha | Ações
+    const senha = clean(tr.cells?.[6]?.innerText || tr.cells?.[6]?.textContent);
+    const cns = clean(tr.cells?.[1]?.innerText || tr.cells?.[1]?.textContent);
+    const nome = clean(tr.cells?.[2]?.innerText || tr.cells?.[2]?.textContent);
+
+    if (senha && senha !== '—') {
+      const achou = itens.find(item => norm(item?.senha) === norm(senha));
+      if (achou) return achou;
+    }
+
+    if (cns && cns !== '—') {
+      const porCns = itens.filter(item => clean(item?.codigo_cns) === cns);
+      if (porCns.length === 1) return porCns[0];
+      if (porCns.length > 1 && nome) {
+        const achou = porCns.find(item => norm(item?.nome_municipe) === norm(nome));
+        if (achou) return achou;
+      }
+    }
+
+    if (nome) {
+      const porNome = itens.filter(item => norm(item?.nome_municipe) === norm(nome));
+      if (porNome.length === 1) return porNome[0];
+    }
+
+    return null;
+  }
+
+  function atendimentoFilaAcolhimento(item) {
+    if (!item || typeof item !== 'object') return null;
+
+    let id =
+      item.atendimento_id ??
+      item.saude_atendimento_id ??
+      item.atendimento?.id ??
+      item.saude_atendimento?.id ??
+      null;
+
+    let tipo = clean(
+      item.atendimento_type ??
+      item.saude_atendimento_type ??
+      item.atendimento?.type ??
+      item.atendimento?.tipo ??
+      item.saude_atendimento?.type ??
+      ''
+    );
+
+    const str = clean(item.atendimento_str || item.saude_atendimento_str || '');
+    const m = str.match(/^([^#]+)#(\d+)$/);
+    if (m) {
+      if (id == null) id = m[2];
+      if (!tipo) tipo = m[1];
+    }
+
+    if (id == null || !tipo) return null;
+    return { id: String(id), tipo };
+  }
+
+  async function retornarEDesvincularSenhaAcolhimento(atendimentoId, atendimentoType, localPadrao = '') {
+    const param = await lerParametrizacao('acolhimento');
+    const cat = param?.senha_simples_categoria?.id;
+    if (!cat) throw new Error('categoria do acolhimento não encontrada');
+
+    const { data: senha } = await senhaSimplesPutFilas(cat + '/retornar_para_atendimento', {
+      atendimento_id: Number(atendimentoId),
+      atendimento_type: atendimentoType,
+      categoria_id: cat
+    });
+
+    if (!senha?.id) throw new Error('Senha Simples não devolveu a senha do atendimento');
+    const liberada = await desvincularSenha(senha, localPadrao || null);
+    return liberada || senha;
+  }
+
+  async function acaoDesvincularOutroProfissional(tr) {
+    if (!ehTelaPrincipalAcolhimento?.()) return;
+
+    if (aguardandoToken || !senhaSimplesPronto()) {
+      toast({
+        tipo: 'aviso',
+        titulo: 'Aguarde o Senha Simples',
+        texto: 'Ainda não foi possível consultar a senha. Tente novamente em alguns segundos.'
+      });
+      return;
+    }
+
+    const item = itemFilaAcolhimentoDaLinha(tr);
+    const atendimento = atendimentoFilaAcolhimento(item);
+    const nome = clean(item?.nome_municipe || tr?.cells?.[2]?.innerText || 'Paciente');
+    const senhaVisual = clean(item?.senha || tr?.cells?.[6]?.innerText || '');
+
+    if (!atendimento) {
+      await dialogo({
+        tipo: 'erro',
+        titulo: 'Não consegui identificar o atendimento',
+        subtitulo: nome,
+        texto: ['Nada foi alterado.', 'Atualize a fila e tente novamente.'],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    const localAtual = localAtualAcolhimentoId();
+    if (!localAtual) {
+      toast({
+        tipo: 'aviso',
+        titulo: 'Guichê não identificado',
+        texto: 'Selecione novamente o guichê do acolhimento e tente de novo.'
+      });
+      return;
+    }
+
+    let estado;
+    try {
+      estado = await consultarSenha(localAtual, atendimento.id, atendimento.tipo);
+    } catch (e) {
+      estado = { erro: descricaoErro(e) };
+    }
+
+    if (estado?.auth || estado?.erro) {
+      await dialogo({
+        tipo: 'erro',
+        titulo: 'Não foi possível conferir a senha',
+        subtitulo: nome,
+        texto: ['Nada foi alterado.', 'Detalhe: ' + (estado?.erro || 'falha no Senha Simples')],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    // 422 ja_chamada é a confirmação de que ela está vinculada a outro atendimento/guichê.
+    if (!estado?.chamada) {
+      await dialogo({
+        tipo: 'info',
+        titulo: 'Senha não está presa em outro profissional',
+        subtitulo: nome,
+        senha: estado?.senha || senhaVisual || '',
+        senhaRotulo: 'Senha',
+        texto: ['Nenhuma alteração foi feita. A senha está disponível neste fluxo ou já pertence a este guichê.'],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    const de = estado.chamadoPor ? pessoaCurta(estado.chamadoPor) : '';
+    const guiche = estado.guiche ? guicheCurto(estado.guiche) : '';
+    const onde = [de, guiche].filter(Boolean).join(' · ');
+
+    const confirmar = await dialogo({
+      tipo: 'pergunta',
+      titulo: 'Desvincular senha de outro profissional?',
+      subtitulo: nome,
+      senha: senhaVisual || '',
+      senhaRotulo: 'Senha atual',
+      texto: [
+        onde ? 'A senha está vinculada a ' + onde + '.' : 'O Senha Simples confirmou que esta senha está vinculada a outro profissional/guichê.',
+        'Ela será liberada e continuará com o mesmo número. Nenhum atendimento será iniciado automaticamente.'
+      ],
+      botoes: [
+        { rotulo: 'Cancelar', valor: false },
+        { rotulo: 'Desvincular senha', valor: true, primario: true }
+      ]
+    });
+    if (!confirmar) return;
+
+    try {
+      const liberada = await retornarEDesvincularSenhaAcolhimento(atendimento.id, atendimento.tipo, localAtual);
+      await dialogo({
+        tipo: 'sucesso',
+        titulo: 'Senha desvinculada',
+        subtitulo: nome,
+        senha: liberada?.senha || senhaVisual || '',
+        senhaRotulo: 'Mesma senha do munícipe',
+        texto: ['A senha foi liberada do outro profissional/guichê e já pode ser chamada novamente.'],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      atualizarFilaAcolhimentoSilenciosa?.({ forcar:true }).catch(() => {});
+    } catch (e) {
+      await dialogo({
+        tipo: 'erro',
+        titulo: 'Não foi possível desvincular a senha',
+        subtitulo: nome,
+        texto: ['Nada mais será feito automaticamente.', 'Detalhe: ' + descricaoErro(e)],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+    }
+  }
+
+  function encontrarMenuAcoesLinhaAcolhimento(tr) {
+    if (!tr?.cells?.length) return null;
+    const acao = tr.cells[tr.cells.length - 1];
+
+    return acao.querySelector(
+      '.dropdown-menu, [role="menu"], .dropdown-menu-right'
+    ) || null;
+  }
+
+  function instalarOpcaoDesvincularLinha(tr) {
+    if (!ehTelaPrincipalAcolhimento?.() || !tr || tr.dataset.om30DesvincularMenu === '1') return false;
+    const menu = encontrarMenuAcoesLinhaAcolhimento(tr);
+    if (!menu) return false;
+
+    if (menu.querySelector('.' + OM30_DESVINCULAR_MENU_CLASS)) {
+      tr.dataset.om30DesvincularMenu = '1';
+      return true;
+    }
+
+    const item = document.createElement('a');
+    item.href = 'javascript:void(0)';
+    item.className = 'dropdown-item ' + OM30_DESVINCULAR_MENU_CLASS;
+    item.setAttribute('role', 'menuitem');
+    item.textContent = 'Desvincular senha de outro profissional';
+    item.title = 'Libera a mesma senha caso esteja presa em outro profissional/guichê';
+
+    item.addEventListener('click', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      acaoDesvincularOutroProfissional(tr).catch(e => {
+        console.warn('[OM30] Desvincular senha manual:', e);
+      });
+    });
+
+    // Se o menu tiver separadores nativos, mantém a opção no fim como ação administrativa.
+    const divider = document.createElement('div');
+    divider.className = 'dropdown-divider om30-desvincular-divider';
+    menu.appendChild(divider);
+    menu.appendChild(item);
+
+    tr.dataset.om30DesvincularMenu = '1';
+    return true;
+  }
+
+  function instalarMenusDesvincularAcolhimento() {
+    if (!ehTelaPrincipalAcolhimento?.()) return;
+
+    const aplicar = () => {
+      const collection = acolhEstavelCollectionVm || collectionPrincipalAcolhimento?.();
+      const raiz = collection?.$el || document;
+      const linhas = raiz.querySelectorAll('tbody tr.collection-row, tbody tr');
+      linhas.forEach(instalarOpcaoDesvincularLinha);
+    };
+
+    aplicar();
+
+    if (observerMenuDesvincular) return;
+    let debounce = null;
+    observerMenuDesvincular = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(aplicar, 80);
+    });
+    observerMenuDesvincular.observe(document.body, { childList:true, subtree:true });
+  }
 
   // ---------------------------------------------------------------------------
   // Tabela nativa de ausentes
@@ -3085,6 +3379,7 @@
   }
 
   iniciarFilaAcolhimentoEstavel();
+  instalarMenusDesvincularAcolhimento();
 
   if (!tentarIniciar()) {
     const obs = new MutationObserver(() => { if (tentarIniciar()) obs.disconnect(); });

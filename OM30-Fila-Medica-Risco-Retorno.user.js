@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.10.7
+// @version      2.10.8
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,11 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.10.8:
+  // - Pesquisa passa a ser 100% local sobre a medFonte completa.
+  // - Durante digitação/limpeza, respostas nativas não podem substituir a fonte-mãe.
+  // - URLs usadas para recarregar a fila descartam somente parâmetros de busca textual.
+  //
   // v2.10.7:
   // - Corrige a detecção do campo de pesquisa nativo que fica fora de #classificacao.
   // - Listener delegado acompanha recriações do input pelo Vue.
@@ -37,8 +42,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2107__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2107__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2108__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2108__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -475,6 +480,22 @@
   // Fonte completa da fila + paginação global
   // ---------------------------------------------------------------------------
 
+  function parametroEhPesquisaFila(nome) {
+    const n = String(nome || '').trim().toLowerCase();
+    if (!n) return false;
+    if (['q','query','search','search_term','term','keyword','keywords','busca','pesquisa'].includes(n)) return true;
+    return /(?:^|[\[\]_.-])(search|query|term|keyword|busca|pesquisa)(?:$|[\[\]_.-])/.test(n);
+  }
+
+  function urlTemPesquisaFila(url) {
+    try {
+      for (const [k, v] of url.searchParams.entries()) {
+        if (parametroEhPesquisaFila(k) && clean(v)) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   function pontuarUrlFila(urlOriginal) {
     try {
       const url = new URL(urlOriginal, location.origin);
@@ -487,6 +508,8 @@
       if (url.searchParams.has('especialidade')) pontos += 4;
       if (url.searchParams.has('status')) pontos += 2;
       if (url.searchParams.has('sortable')) pontos += 1;
+      // Uma URL produzida pela caixa de pesquisa nunca deve virar a fonte-base.
+      if (urlTemPesquisaFila(url)) pontos -= 50;
       return pontos;
     } catch (_) {
       return -1;
@@ -576,6 +599,13 @@
     const url = new URL(urlOriginal, location.origin);
     url.searchParams.delete('page');
     url.searchParams.delete('per_page');
+
+    // A caixa de pesquisa é tratada localmente pela OM30. Se a última requisição
+    // nativa tiver levado "robson", "CN0062" etc., removemos SOMENTE esse parâmetro
+    // textual para não transformar um resultado parcial na nova fonte completa.
+    for (const k of [...url.searchParams.keys()]) {
+      if (parametroEhPesquisaFila(k)) url.searchParams.delete(k);
+    }
     return url;
   }
 
@@ -4447,6 +4477,8 @@
   let medWatchStop = null;
   let medPesquisaTermo = '';
   let medPesquisaInput = null;
+  let medPesquisaUltimaInteracao = 0;
+  let medPesquisaGeracao = 0;
 
   function injetarCSSControleMedico() {
     if (document.getElementById(`${MED_BAR_ID}-css`)) return;
@@ -5177,7 +5209,11 @@
 
         medPesquisaInput = campoAtual;
         medPesquisaTermo = clean(campoAtual.value);
+        medPesquisaUltimaInteracao = Date.now();
+        medPesquisaGeracao++;
         medAssinaturaAplicada = '';
+
+        // Pesquisa/limpeza é local. Não espera nova consulta do Saúde Simples.
         Promise.resolve().then(() => aplicarMedFonte(medVm, true));
       };
 
@@ -5564,6 +5600,18 @@
       if (!vm) return false;
       prepararColecaoMedica(vm);
 
+      const geracaoInicio = medPesquisaGeracao;
+      const termoInicio = lerPesquisaMedica(vm);
+      const pesquisaRecente = Date.now() - medPesquisaUltimaInteracao < 1500;
+
+      // Enquanto há pesquisa — e por um curto período após LIMPAR — a fonte completa
+      // já está em medFonte. Não fazemos fetchCollection nem trocamos a fonte-mãe.
+      if (!inicial && medFonte.length && (termoInicio || pesquisaRecente)) {
+        medAssinaturaAplicada = '';
+        aplicarMedFonte(vm, true);
+        return true;
+      }
+
       let todos;
       if (inicial) {
         // Mesma ideia do Controle de Salas: primeira carga usa o carregador nativo,
@@ -5585,6 +5633,15 @@
       }
 
       if (!Array.isArray(todos)) return false;
+
+      // Se o usuário pesquisou/limpou enquanto a leitura estava em voo, esta resposta
+      // ficou obsoleta. Preserva a medFonte completa e só reaplica a visão atual.
+      if (geracaoInicio !== medPesquisaGeracao) {
+        medAssinaturaAplicada = '';
+        aplicarMedFonte(vm, true);
+        return true;
+      }
+
       const ass = assinaturaMedFonte(todos);
       if (forcar || ass !== medAssinaturaFonte || !medFonte.length) {
         medFonte = todos;
@@ -5781,5 +5838,5 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.10.7 carregado. Pesquisa externa da fila corrigida + RT/36h + Profissional do Retorno + fila estável. Filtro inicial:', filtroSelecionado);
+  log('v2.10.8 carregado. Pesquisa local preserva fonte completa + RT/36h + Profissional do Retorno + fila estável. Filtro inicial:', filtroSelecionado);
 })();

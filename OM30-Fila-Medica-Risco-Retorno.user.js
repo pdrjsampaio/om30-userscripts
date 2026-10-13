@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.3
+// @version      2.11.4
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,10 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.11.4:
+  // - Restaura o texto completo da opção: "Desvincular senha de outro profissional".
+  // - Mantém a correção de z-index/largura do dropdown.
+  //
   // v2.11.3:
   // - Corrige o menu (*) da fila médica sendo cortado pela coluna sticky da linha seguinte.
   // - Enquanto o dropdown está aberto, a linha/célula atual sobe de z-index.
@@ -60,8 +64,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2113__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2113__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2114__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2114__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5887,7 +5891,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.11.3 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.11.4 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====
@@ -7159,7 +7163,7 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     opcao.href = 'javascript:void(0)';
     opcao.className = 'dropdown-item ' + OM30_MED_DESVINCULAR_CLASS;
     opcao.setAttribute('role', 'menuitem');
-    opcao.textContent = 'Desvincular senha';
+    opcao.textContent = 'Desvincular senha de outro profissional';
     opcao.title = 'Libera a mesma senha se ela estiver presa em outro profissional/guichê';
 
     opcao.addEventListener('click', ev => {

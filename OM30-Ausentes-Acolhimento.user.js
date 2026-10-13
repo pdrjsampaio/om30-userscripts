@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.11
+// @version      2.0.12
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,10 +17,12 @@
 (() => {
   'use strict';
 
-  // v2.0.11:
-  // - O visual da fila principal do acolhimento entra imediatamente ao a tabela aparecer no DOM.
-  // - Cabeçalho, idade, espera e resumo não aguardam mais a conexão completa com o Vue.
-  // - Depois o Vue apenas assume/sincroniza os dados, sem refazer o visual.
+  // v2.0.12:
+  // - Fila principal do acolhimento passa a usar a mesma estratégia da Fila Médica/Controle de Salas.
+  // - Primeira carga prepara customPerPage antes do fetch nativo e mostra a lista completa de uma vez.
+  // - BTable fica com perPage=0 (sem corte interno em 10 linhas).
+  // - Paginação manual fica somente como fallback se o backend realmente não devolver tudo.
+  // - Remove a tentativa de decoração antecipada da v2.0.11.
   //
   // v2.0.10:
   // - Preserva a pesquisa nativa por nome na fila principal do acolhimento.
@@ -254,7 +256,7 @@
   //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
   const MODO_NUMERO = 'AMBOS';
   let T0 = performance.now();
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.11';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.12';
   const PREFIX = 'om30-ausentes-acolhimento';
   // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
   const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';
@@ -2956,6 +2958,10 @@
   let acolhEstavelTimer = null;
   let acolhEstavelAssinatura = '';
   let acolhEstavelObserver = null;
+  let acolhEstavelBTable = null;
+  let acolhEstavelOriginalFetch = null;
+  let acolhEstavelCargaInicial = null;
+  let acolhEstavelPronto = false;
 
   function ehTelaPrincipalAcolhimento() {
     return /^\/acolhimentos\/?$/i.test(location.pathname);
@@ -3127,6 +3133,122 @@
     return !!clean(campo?.value);
   }
 
+
+  function tabelaDomFilaAcolhimento() {
+    const raizes = [
+      document.querySelector('#classificacao'),
+      acolhEstavelCollectionVm?.$el,
+      acolhEstavelListVm?.$el
+    ].filter(Boolean);
+
+    for (const raiz of raizes) {
+      const tabelas = [...raiz.querySelectorAll('table')];
+      const achou = tabelas.find(table => {
+        const hs = [...table.querySelectorAll('thead th')].map(th => norm(th.innerText || th.textContent));
+        return hs.length >= 7 &&
+          hs.some(x => x === 'SENHA') &&
+          hs.some(x => x === 'IDADE') &&
+          (hs.some(x => /DATA.*HORA|CHEGADA/.test(x)) || hs[0]?.includes('DATA'));
+      });
+      if (achou) return achou;
+    }
+    return null;
+  }
+
+  function tabelaVueFilaAcolhimento() {
+    const dom = tabelaDomFilaAcolhimento();
+    const candidatos = [...document.querySelectorAll('*')]
+      .map(el => el.__vue__)
+      .filter(Boolean);
+
+    let tabela = candidatos.find(vm =>
+      vm?.$options?.name === 'BTable' &&
+      Array.isArray(vm?.items) &&
+      (!dom || vm.$el === dom || vm.$el?.contains?.(dom) || dom.contains?.(vm.$el))
+    );
+
+    if (!tabela) {
+      tabela = candidatos.find(vm =>
+        vm?.$options?.name === 'BTable' &&
+        Array.isArray(vm?.items) &&
+        (vm.fields || []).some?.(f => ['senha','idade','nome_municipe','codigo_cns'].includes(String(f?.key || '').toLowerCase()))
+      );
+    }
+
+    acolhEstavelBTable = tabela || null;
+    return acolhEstavelBTable;
+  }
+
+  function prepararBTableFilaAcolhimento(total = null) {
+    const tabela = acolhEstavelBTable || tabelaVueFilaAcolhimento();
+    if (!tabela) return null;
+
+    let mudouPerPage = false;
+    try {
+      if (Number(tabela.perPage) !== 0) {
+        if (tabela._props) tabela._props.perPage = 0;
+        else tabela.perPage = 0;
+        mudouPerPage = true;
+      }
+    } catch {}
+    try {
+      if (Number(tabela.currentPage) !== 1) {
+        if (tabela._props) tabela._props.currentPage = 1;
+        else tabela.currentPage = 1;
+      }
+    } catch {}
+
+    if (total != null) {
+      try { tabela.totalRows = Number(total) || 0; } catch {}
+    }
+
+    // Só força uma vez, quando o BTable sai de 10 para 0.
+    if (mudouPerPage) {
+      try { tabela.$forceUpdate?.(); } catch {}
+    }
+    return tabela;
+  }
+
+  function itensRenderizadosFilaAcolhimento(collection = acolhEstavelCollectionVm) {
+    const tabela = acolhEstavelBTable || tabelaVueFilaAcolhimento();
+    if (Array.isArray(tabela?.items)) return tabela.items;
+    if (Array.isArray(collection?.$data?.items)) return collection.$data.items;
+    return [];
+  }
+
+  function substituirItensFilaAcolhimento(collection, lista) {
+    const novos = Array.isArray(lista) ? lista : [];
+    const tabela = prepararBTableFilaAcolhimento(novos.length);
+    const arrCollection = collection?.$data?.items;
+    const arrTabela = tabela?.items;
+
+    // O BTable é quem realmente desenha a fila. Mantemos os dois arrays alinhados
+    // caso o BootstrapVue não esteja usando a mesma referência do componente pai.
+    if (Array.isArray(arrTabela)) {
+      arrTabela.splice(0, arrTabela.length, ...novos);
+    }
+    if (Array.isArray(arrCollection) && arrCollection !== arrTabela) {
+      arrCollection.splice(0, arrCollection.length, ...novos);
+    }
+
+    try { collection.totalRows = novos.length; } catch {}
+    try {
+      if (collection?.$data && 'totalRows' in collection.$data) collection.$data.totalRows = novos.length;
+    } catch {}
+    try { collection.isLoading = false; } catch {}
+    try { collection.preparingLoading = false; } catch {}
+    if (collection?.errorRequest == null) {
+      try { collection.errorRequest = {}; } catch {}
+    }
+
+    if (typeof tabela?.$nextTick === 'function') {
+      tabela.$nextTick(() => requestAnimationFrame(() => decorarFilaPrincipalAcolhimento(collection)));
+    } else {
+      requestAnimationFrame(() => decorarFilaPrincipalAcolhimento(collection));
+    }
+    return true;
+  }
+
   function pontuarUrlFilaAcolhimento(urlOriginal) {
     try {
       const u = new URL(urlOriginal, location.origin);
@@ -3287,17 +3409,20 @@
     return estrutural;
   }
 
-  function prepararCollectionFilaAcolhimento(collection) {
+  function prepararCollectionFilaAcolhimento(collection, { inicial = false } = {}) {
     if (!collection) return;
-    try { collection.customPerPage = ACOLH_ESTAVEL_PER_PAGE; } catch {}
+    // 100 foi o valor já validado no mesmo collection-with-search da fila médica.
+    // Depois da primeira carga mantemos 5000 para impedir qualquer retorno a 10.
+    const porPagina = inicial ? 100 : ACOLH_ESTAVEL_PER_PAGE;
+    try { collection.customPerPage = porPagina; } catch {}
     try { collection.currentPage = 1; } catch {}
     if (collection.$data) {
       try {
-        if ('customPerPage' in collection.$data) collection.$data.customPerPage = ACOLH_ESTAVEL_PER_PAGE;
+        if ('customPerPage' in collection.$data) collection.$data.customPerPage = porPagina;
         if ('currentPage' in collection.$data) collection.$data.currentPage = 1;
       } catch {}
     }
-    try { collection.isLoading = false; } catch {}
+    prepararBTableFilaAcolhimento(collection.totalRows || collection.$data?.totalRows || null);
   }
 
   function timestampFilaAcolhimento(item) {
@@ -3353,173 +3478,6 @@
     return bruto
       .replace(/\banos?\b/gi, m => m.toLowerCase())
       .replace(/\bmeses?\b/gi, m => m.toLowerCase());
-  }
-
-
-  function tabelaFilaPrincipalAcolhimentoDOM() {
-    const candidatas = [
-      ...document.querySelectorAll(
-        '#classificacao .collection-with-search-atendimento table,' +
-        '#classificacao table.b-table,' +
-        '.listagem-fila .collection-with-search-atendimento table'
-      )
-    ];
-
-    return candidatas.find(t => {
-      const ths = [...t.querySelectorAll('thead th')].map(th => norm(th.textContent));
-      return ths.length >= 7 &&
-        (ths.some(x => /DATA.*HORA|CHEGADA/.test(x)) || ths[0]?.includes('DATA')) &&
-        ths.some(x => x === 'IDADE') &&
-        ths.some(x => x === 'SENHA');
-    }) || candidatas[0] || null;
-  }
-
-  function timestampTextoChegadaAcolhimento(texto) {
-    const txt = clean(texto);
-    if (!txt) return 0;
-
-    let m = txt.match(/(\d{2})\/(\d{2})\/(\d{4})[^\d]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-    if (m) return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0), 0).getTime();
-
-    m = txt.match(/(\d{4})-(\d{2})-(\d{2})[^\d]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-    if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), 0).getTime();
-
-    const soHora = txt.match(/\b(\d{1,2}):(\d{2})\b/);
-    if (soHora) {
-      const d = new Date();
-      d.setHours(+soHora[1], +soHora[2], 0, 0);
-      // Se por alguma razão a hora ficou no futuro, considera o dia anterior.
-      if (d.getTime() > Date.now() + 5 * 60000) d.setDate(d.getDate() - 1);
-      return d.getTime();
-    }
-
-    return 0;
-  }
-
-  function decorarLinhaFilaAcolhimentoDOM(tr) {
-    if (!tr?.cells || tr.cells.length < 7) return;
-
-    const chegada = tr.cells[0];
-    if (chegada) {
-      if (!chegada.dataset.om30ChegadaOriginal) {
-        chegada.dataset.om30ChegadaOriginal = clean(chegada.innerText || chegada.textContent);
-      }
-      const ts = timestampTextoChegadaAcolhimento(chegada.dataset.om30ChegadaOriginal);
-
-      let espera = chegada.querySelector('.om30-acolh-espera');
-      if (!espera) {
-        espera = document.createElement('div');
-        espera.className = 'om30-acolh-espera';
-        chegada.appendChild(espera);
-      }
-      espera.innerHTML =
-        '<span class="om30-acolh-clock">🕒</span><span>Espera</span> <strong>' +
-        formatarEsperaAcolhimento(ts ? Math.max(0, Date.now() - ts) : 0) + '</strong>';
-    }
-
-    const idade = tr.cells[5];
-    if (idade) {
-      if (!idade.dataset.om30IdadeOriginal) {
-        idade.dataset.om30IdadeOriginal = clean(idade.innerText || idade.textContent);
-      }
-      let pill = idade.querySelector('.om30-acolh-idade');
-      if (!pill) {
-        idade.textContent = '';
-        pill = document.createElement('span');
-        pill.className = 'om30-acolh-idade';
-        idade.appendChild(pill);
-      }
-      pill.textContent = idadeVisualAcolhimento({}, { textContent: idade.dataset.om30IdadeOriginal || '' });
-    }
-  }
-
-  function atualizarResumoFilaAcolhimentoDOM(tabela = tabelaFilaPrincipalAcolhimentoDOM()) {
-    if (!tabela) return;
-
-    const linhas = [...tabela.querySelectorAll('tbody tr.collection-row, tbody tr')]
-      .filter(tr => tr.cells?.length >= 7);
-
-    const agora = Date.now();
-    const esperas = linhas.map(tr => {
-      const texto = tr.cells?.[0]?.dataset?.om30ChegadaOriginal ||
-        clean(tr.cells?.[0]?.innerText || tr.cells?.[0]?.textContent);
-      const ts = timestampTextoChegadaAcolhimento(texto);
-      return ts ? Math.max(0, agora - ts) : null;
-    }).filter(x => x != null);
-
-    const media = esperas.length ? esperas.reduce((a,b) => a + b, 0) / esperas.length : 0;
-
-    let bar = document.getElementById('om30-acolh-resumo');
-    if (!bar) {
-      const host = tabela.closest('.collection-with-search-atendimento')?.parentNode ||
-        tabela.parentNode;
-      const ref = tabela.closest('.collection-with-search-atendimento') || tabela;
-      if (!host || !ref) return;
-
-      bar = document.createElement('div');
-      bar.id = 'om30-acolh-resumo';
-      bar.innerHTML =
-        '<div class="om30-acolh-card"><span>Na fila</span><strong class="om30-acolh-total">0</strong></div>' +
-        '<div class="om30-acolh-card"><span>Tempo médio</span><strong class="om30-acolh-media">0 min</strong></div>' +
-        '<div class="om30-acolh-card om30-acolh-horario"><span>Horário</span><strong class="om30-acolh-agora">--:--</strong></div>';
-      host.insertBefore(bar, ref);
-    }
-
-    bar.querySelector('.om30-acolh-total').textContent = String(linhas.length);
-    bar.querySelector('.om30-acolh-media').textContent = formatarEsperaAcolhimento(media);
-    bar.querySelector('.om30-acolh-agora').textContent = horarioCurtoAgora();
-  }
-
-  function aplicarVisualAcolhimentoImediato() {
-    if (!ehTelaPrincipalAcolhimento()) return false;
-
-    esconderPaginacaoFilaAcolhimento();
-
-    const tabela = tabelaFilaPrincipalAcolhimentoDOM();
-    if (!tabela) return false;
-
-    const ths = tabela.querySelectorAll('thead th');
-    if (ths[0] && !ths[0].dataset.om30AcolhCabecalho) {
-      ths[0].dataset.om30AcolhCabecalho = '1';
-      ths[0].innerHTML = 'Data/Hora da<br>chegada <span class="om30-acolh-th-espera">+ espera</span>';
-    }
-    if (ths[5]) ths[5].textContent = 'Idade';
-
-    for (const tr of tabela.querySelectorAll('tbody tr.collection-row, tbody tr')) {
-      decorarLinhaFilaAcolhimentoDOM(tr);
-    }
-    atualizarResumoFilaAcolhimentoDOM(tabela);
-    return true;
-  }
-
-  function iniciarVisualAcolhimentoImediato() {
-    if (!ehTelaPrincipalAcolhimento()) return;
-
-    // CSS entra já, mesmo antes da tabela.
-    esconderPaginacaoFilaAcolhimento();
-
-    if (aplicarVisualAcolhimentoImediato()) return;
-
-    // A tabela normalmente nasce poucos ms depois do userscript.
-    let concluido = false;
-    const obs = new MutationObserver(() => {
-      if (concluido) return;
-      if (aplicarVisualAcolhimentoImediato()) {
-        concluido = true;
-        obs.disconnect();
-      }
-    });
-    obs.observe(document.body, { childList:true, subtree:true });
-
-    let tentativas = 0;
-    const rapido = setInterval(() => {
-      tentativas++;
-      if (aplicarVisualAcolhimentoImediato() || tentativas >= 80) {
-        clearInterval(rapido);
-        concluido = true;
-        obs.disconnect();
-      }
-    }, 25);
   }
 
   function linhasFilaPrincipalAcolhimento(collection = acolhEstavelCollectionVm) {
@@ -3600,7 +3558,7 @@
   }
 
   function decorarFilaPrincipalAcolhimento(collection = acolhEstavelCollectionVm) {
-    if (!collection) return aplicarVisualAcolhimentoImediato();
+    if (!collection) return;
     atualizarCabecalhosFilaAcolhimento(collection);
     for (const tr of linhasFilaPrincipalAcolhimento(collection)) {
       const item = itemFilaAcolhimentoDaLinha(tr);
@@ -3611,10 +3569,7 @@
 
   function atualizarRelogiosFilaAcolhimento() {
     const collection = acolhEstavelCollectionVm;
-    if (!collection) {
-      aplicarVisualAcolhimentoImediato();
-      return;
-    }
+    if (!collection) return;
     for (const tr of linhasFilaPrincipalAcolhimento(collection)) {
       const item = itemFilaAcolhimentoDaLinha(tr);
       const forte = tr.querySelector('.om30-acolh-espera strong');
@@ -3650,6 +3605,59 @@
     document.head.appendChild(style);
   }
 
+
+  async function carregarInicialFilaAcolhimento(listVm, collection) {
+    if (acolhEstavelCargaInicial) return acolhEstavelCargaInicial;
+
+    const promessa = (async () => {
+      acolhEstavelListVm = listVm;
+      acolhEstavelCollectionVm = collection;
+      acolhEstavelOriginalFetch =
+        collection.fetchCollection?.__om30Original ||
+        acolhEstavelOriginalFetch ||
+        collection.fetchCollection;
+
+      // Igual à fila médica: configura ANTES de chamar o fetch nativo.
+      prepararCollectionFilaAcolhimento(collection, { inicial:true });
+      prepararBTableFilaAcolhimento();
+
+      const jaTem = itensRenderizadosFilaAcolhimento(collection).length > 0;
+      try { collection.isLoading = !jaTem; } catch {}
+
+      if (typeof acolhEstavelOriginalFetch === 'function') {
+        await Promise.resolve(acolhEstavelOriginalFetch.call(collection));
+        await new Promise(resolve =>
+          collection.$nextTick ? collection.$nextTick(resolve) : setTimeout(resolve, 0)
+        );
+      }
+
+      prepararBTableFilaAcolhimento();
+
+      let todos = [...itensRenderizadosFilaAcolhimento(collection)];
+      const total = Number(collection.totalRows || collection.$data?.totalRows || 0);
+
+      // Normalmente o fetch nativo, já com customPerPage=100, resolve tudo em uma
+      // requisição. Só cai no paginador direto se o backend realmente limitar.
+      if ((total > 0 && total > todos.length) || (!todos.length && descobrirUrlFilaAcolhimento(listVm, collection))) {
+        const completos = await carregarFilaAcolhimentoSilenciosa(listVm, collection);
+        if (Array.isArray(completos) && completos.length >= todos.length) todos = completos;
+      }
+
+      substituirItensFilaAcolhimento(collection, todos);
+      prepararCollectionFilaAcolhimento(collection, { inicial:false });
+      acolhEstavelAssinatura = assinaturaFilaAcolhimento(todos);
+      acolhEstavelPronto = true;
+      return true;
+    })();
+
+    acolhEstavelCargaInicial = promessa;
+    try {
+      return await promessa;
+    } finally {
+      acolhEstavelCargaInicial = null;
+    }
+  }
+
   async function atualizarFilaAcolhimentoSilenciosa({ forcar = false } = {}) {
     if (!ehTelaPrincipalAcolhimento() || document.hidden || acolhEstavelAtualizando) return false;
 
@@ -3667,8 +3675,13 @@
 
     acolhEstavelListVm = listVm;
     acolhEstavelCollectionVm = collection;
-    prepararCollectionFilaAcolhimento(collection);
+    prepararCollectionFilaAcolhimento(collection, { inicial:false });
+    prepararBTableFilaAcolhimento();
     pararRefreshNativoFilaAcolhimento(listVm);
+
+    // Se ainda não fizemos a primeira carga completa, não começa uma segunda leitura
+    // concorrente. A inicial já vai devolver a fila inteira.
+    if (!acolhEstavelPronto && acolhEstavelCargaInicial) return acolhEstavelCargaInicial;
 
     acolhEstavelAtualizando = true;
     try {
@@ -3677,7 +3690,7 @@
 
       if (!forcar && assinatura === acolhEstavelAssinatura) {
         // Nada entrou/saiu: atualiza os mesmos objetos sem reconstruir linha nenhuma.
-        const mapa = new Map((collection.$data.items || []).map(item => [chaveFilaAcolhimento(item), item]));
+        const mapa = new Map(itensRenderizadosFilaAcolhimento(collection).map(item => [chaveFilaAcolhimento(item), item]));
         for (const novo of todos) {
           const existente = mapa.get(chaveFilaAcolhimento(novo));
           if (existente) atualizarObjetoFilaAcolhimento(existente, novo);
@@ -3688,13 +3701,29 @@
       }
 
       acolhEstavelAssinatura = assinatura;
-      reconciliarFilaAcolhimento(collection, todos);
+
+      const renderizados = itensRenderizadosFilaAcolhimento(collection);
+      if (Array.isArray(renderizados)) {
+        reconciliarFilaAcolhimento({ $data:{ items:renderizados } }, todos);
+        const pai = collection.$data?.items;
+        if (Array.isArray(pai) && pai !== renderizados) {
+          pai.splice(0, pai.length, ...renderizados);
+        }
+      } else {
+        substituirItensFilaAcolhimento(collection, todos);
+      }
+
+      prepararBTableFilaAcolhimento(todos.length);
       try { collection.totalRows = todos.length; } catch {}
       try {
         if (collection.$data && 'totalRows' in collection.$data) collection.$data.totalRows = todos.length;
       } catch {}
       try { collection.isLoading = false; } catch {}
-      decorarFilaPrincipalAcolhimento(collection);
+
+      const apos = () => decorarFilaPrincipalAcolhimento(collection);
+      const tabela = acolhEstavelBTable || tabelaVueFilaAcolhimento();
+      if (typeof tabela?.$nextTick === 'function') tabela.$nextTick(() => requestAnimationFrame(apos));
+      else requestAnimationFrame(apos);
       return true;
     } catch (e) {
       console.warn('[OM30 Acolhimento Estável]', e);
@@ -3725,24 +3754,30 @@
     acolhEstavelCollectionVm = collection;
 
     pararRefreshNativoFilaAcolhimento(listVm);
-    prepararCollectionFilaAcolhimento(collection);
     esconderPaginacaoFilaAcolhimento();
-    aplicarVisualAcolhimentoImediato();
-    decorarFilaPrincipalAcolhimento(collection);
 
-    if (mudouComponente || !acolhEstavelAssinatura) {
-      acolhEstavelAssinatura = assinaturaFilaAcolhimento(collection.$data.items || []);
-      if (!pesquisaFilaAcolhimentoAtiva(listVm, collection)) {
-        setTimeout(() => atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {}), 100);
-      }
+    if (mudouComponente) {
+      acolhEstavelPronto = false;
+      acolhEstavelBTable = null;
+      acolhEstavelOriginalFetch = collection.fetchCollection?.__om30Original || collection.fetchCollection;
+    }
+
+    prepararCollectionFilaAcolhimento(collection, { inicial:!acolhEstavelPronto });
+    prepararBTableFilaAcolhimento();
+
+    if (!acolhEstavelPronto && !pesquisaFilaAcolhimentoAtiva(listVm, collection)) {
+      carregarInicialFilaAcolhimento(listVm, collection).catch(e => {
+        console.warn('[OM30 Acolhimento Estável] primeira carga:', e);
+        try { collection.isLoading = false; } catch {}
+      });
+    } else {
+      decorarFilaPrincipalAcolhimento(collection);
     }
     return true;
   }
 
   function iniciarFilaAcolhimentoEstavel() {
     if (!ehTelaPrincipalAcolhimento()) return;
-
-    iniciarVisualAcolhimentoImediato();
 
     if (!window.__OM30_ACOLH_PESQUISA_PROTEGIDA__) {
       window.__OM30_ACOLH_PESQUISA_PROTEGIDA__ = true;
@@ -3775,7 +3810,9 @@
       // Se o Vue recriou o componente (troca de guichê/filtro), conecta no novo
       // e mata o intervalId nativo dele antes da próxima atualização automática.
       conectarFilaAcolhimentoEstavel();
-      atualizarFilaAcolhimentoSilenciosa({ forcar:false }).catch(() => {});
+      if (acolhEstavelPronto && !acolhEstavelCargaInicial) {
+        atualizarFilaAcolhimentoSilenciosa({ forcar:false }).catch(() => {});
+      }
     }, ACOLH_ESTAVEL_REFRESH_MS);
 
     if (!window.__OM30_ACOLH_RELOGIOS__) {

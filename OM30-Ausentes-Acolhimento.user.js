@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.6
+// @version      2.0.7
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,11 @@
 (() => {
   'use strict';
 
+  // v2.0.7:
+  // - /acolhimentos: fila principal estável, sem o refresh nativo que reconstrói a tabela.
+  // - Atualização silenciosa a cada 20s, preservando as linhas Vue existentes e carregando todas as páginas.
+  // - Cloud/classificação e módulo de Ausentes permanecem inalterados.
+  //
   // v2.0.6:
   // - CLOUD OM30 2 zero-config: credencial padrão embarcada de forma ofuscada, sem etapa manual por PC.
   // - Mantidos retry, deduplicação, pendência de sessão e possibilidade de override local para manutenção.
@@ -2618,6 +2623,424 @@
     }
   }, true);
 
+
+  // ---------------------------------------------------------------------------
+  // FILA PRINCIPAL DO ACOLHIMENTO ESTÁVEL
+  // ---------------------------------------------------------------------------
+  // O Saúde Simples atualiza automaticamente a fila do acolhimento e recria a
+  // collection/tabela. Este bloco mantém a tela estável: desliga SOMENTE o
+  // intervalo automático nativo e sincroniza /acolhimentos.json por trás,
+  // preservando os mesmos objetos Vue de quem continua na fila.
+  //
+  // Não interfere:
+  // - na captura/classificação CLOUD OM30 2;
+  // - na lista de Ausentes;
+  // - no clique manual "Atualizar lista";
+  // - nos filtros nativos do Saúde Simples.
+
+  const ACOLH_ESTAVEL_REFRESH_MS = 20000;
+  const ACOLH_ESTAVEL_PER_PAGE = 5000;
+  let acolhEstavelListVm = null;
+  let acolhEstavelCollectionVm = null;
+  let acolhEstavelAtualizando = false;
+  let acolhEstavelTimer = null;
+  let acolhEstavelAssinatura = '';
+  let acolhEstavelObserver = null;
+
+  function ehTelaPrincipalAcolhimento() {
+    return /^\/acolhimentos\/?$/i.test(location.pathname);
+  }
+
+  function chaveFilaAcolhimento(item) {
+    if (!item || typeof item !== 'object') return '';
+    if (item.atendimento_str) return String(item.atendimento_str);
+    if (item.id != null) return 'id:' + String(item.id);
+
+    const atendimentoId = item.atendimento_id ?? item.saude_atendimento_id ?? null;
+    const atendimentoTipo = item.atendimento_type ?? item.saude_atendimento_type ?? '';
+    if (atendimentoId != null) return 'at:' + String(atendimentoTipo) + ':' + String(atendimentoId);
+
+    return [
+      clean(item.codigo_cns),
+      clean(item.senha),
+      clean(item.data_senha_timestamp || item.data_senha_formatada),
+      norm(item.nome_municipe)
+    ].join('|');
+  }
+
+  function assinaturaFilaAcolhimento(lista) {
+    return (Array.isArray(lista) ? lista : []).map(item => [
+      chaveFilaAcolhimento(item),
+      clean(item?.senha),
+      clean(item?.chamada_em),
+      clean(item?.confirmado_em),
+      clean(item?.status || item?.nome_status),
+      clean(item?.data_senha_timestamp || item?.data_senha_formatada)
+    ].join('~')).join('||');
+  }
+
+  function acharListagemPrincipalAcolhimento() {
+    if (!ehTelaPrincipalAcolhimento()) return null;
+
+    const vms = [...document.querySelectorAll('*')]
+      .map(el => el.__vue__)
+      .filter(Boolean);
+
+    // Caminho preferencial: componente específico da U/E.
+    let lista = vms.find(vm =>
+      norm(vm?.$options?.name) === 'URGENCIA-EMERGENCIA-LISTAGEM-FILA-ACOLHIMENTO' &&
+      vm?.$refs?.collectionWithSearch
+    );
+    if (lista) return lista;
+
+    // Fallback: sobe a partir da collection cuja fonte é /acolhimentos.
+    const colecao = vms.find(vm => {
+      if (norm(vm?.$options?.name) !== 'COLLECTION-WITH-SEARCH-ATENDIMENTO') return false;
+      const fontes = [
+        vm?.$props?.propsTable?.pathUrl,
+        vm?.propsTable?.pathUrl,
+        vm?.$parent?.sourceDataUrl,
+        vm?.$parent?.$props?.sourceDataUrl
+      ].filter(Boolean).map(String);
+      return fontes.some(x => /\/acolhimentos(?:\.json)?(?:\?|$)/i.test(x));
+    });
+
+    if (!colecao) return null;
+    let pai = colecao.$parent;
+    for (let i = 0; pai && i < 8; i++, pai = pai.$parent) {
+      if (norm(pai?.$options?.name) === 'URGENCIA-EMERGENCIA-LISTAGEM-FILA-ACOLHIMENTO') return pai;
+    }
+    return colecao.$parent || null;
+  }
+
+  function collectionPrincipalAcolhimento(listVm = acolhEstavelListVm) {
+    const direta = listVm?.$refs?.collectionWithSearch;
+    if (direta && Array.isArray(direta?.$data?.items)) return direta;
+
+    const vms = [...document.querySelectorAll('*')]
+      .map(el => el.__vue__)
+      .filter(Boolean);
+
+    return vms.find(vm => {
+      if (norm(vm?.$options?.name) !== 'COLLECTION-WITH-SEARCH-ATENDIMENTO') return false;
+      if (!Array.isArray(vm?.$data?.items)) return false;
+      const fontes = [
+        vm?.$props?.propsTable?.pathUrl,
+        vm?.propsTable?.pathUrl,
+        vm?.$parent?.sourceDataUrl,
+        vm?.$parent?.$props?.sourceDataUrl
+      ].filter(Boolean).map(String);
+      return fontes.some(x => /\/acolhimentos(?:\.json)?(?:\?|$)/i.test(x));
+    }) || null;
+  }
+
+  function pontuarUrlFilaAcolhimento(urlOriginal) {
+    try {
+      const u = new URL(urlOriginal, location.origin);
+      if (!/\/acolhimentos\.json$/i.test(u.pathname)) return -1;
+
+      let pontos = 1;
+      if (u.searchParams.toString()) pontos += 2;
+      if (u.searchParams.has('ocupacoes_ids[]') || u.searchParams.has('ocupacoes_ids')) pontos += 4;
+      if (u.searchParams.has('status')) pontos += 2;
+      if (u.searchParams.has('sortable')) pontos += 1;
+      return pontos;
+    } catch {
+      return -1;
+    }
+  }
+
+  function descobrirUrlFilaAcolhimento(listVm = acolhEstavelListVm, collection = acolhEstavelCollectionVm) {
+    const candidatos = [];
+
+    // Usa a URL REAL que o próprio Saúde Simples já utilizou. Assim acompanha
+    // unidade, ocupação e filtros sem inventar parâmetros.
+    try {
+      for (const entrada of performance.getEntriesByType('resource')) {
+        if (/\/acolhimentos\.json(?:\?|$)/i.test(entrada.name)) candidatos.push(entrada.name);
+      }
+    } catch {}
+
+    candidatos.push(
+      collection?.$props?.propsTable?.pathUrl,
+      collection?.propsTable?.pathUrl,
+      listVm?.sourceDataUrl,
+      listVm?.$props?.sourceDataUrl
+    );
+
+    let melhor = null;
+    let melhorPontos = -1;
+    for (const candidato of candidatos.filter(Boolean)) {
+      const pontos = pontuarUrlFilaAcolhimento(candidato);
+      if (pontos < 0) continue;
+      // Empate = fica com a URL mais recente observada.
+      if (pontos >= melhorPontos) {
+        try {
+          melhor = new URL(candidato, location.origin).href;
+          melhorPontos = pontos;
+        } catch {}
+      }
+    }
+    return melhor;
+  }
+
+  function normalizarUrlFilaAcolhimento(urlOriginal) {
+    const u = new URL(urlOriginal, location.origin);
+    u.searchParams.delete('page');
+    u.searchParams.delete('per_page');
+    return u;
+  }
+
+  async function buscarPaginaFilaAcolhimento(urlBase, pagina) {
+    const u = new URL(urlBase.href);
+    u.searchParams.set('page', String(pagina));
+    u.searchParams.set('per_page', '100');
+
+    const resp = await fetch(u.href, {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json, text/plain, */*' },
+      cache: 'no-store'
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ao atualizar fila do acolhimento');
+
+    const dados = await resp.json();
+    if (!Array.isArray(dados)) throw new Error('Resposta de /acolhimentos.json não é uma lista.');
+    return dados;
+  }
+
+  async function carregarFilaAcolhimentoSilenciosa(listVm = acolhEstavelListVm, collection = acolhEstavelCollectionVm) {
+    const descoberta = descobrirUrlFilaAcolhimento(listVm, collection);
+    if (!descoberta) throw new Error('Fonte nativa /acolhimentos.json ainda não identificada.');
+
+    const urlBase = normalizarUrlFilaAcolhimento(descoberta);
+    const todos = [];
+    const vistos = new Set();
+
+    for (let pagina = 1; pagina <= 50; pagina++) {
+      const lote = await buscarPaginaFilaAcolhimento(urlBase, pagina);
+      if (!lote.length) break;
+
+      let novos = 0;
+      for (const item of lote) {
+        const chave = chaveFilaAcolhimento(item);
+        if (!chave || vistos.has(chave)) continue;
+        vistos.add(chave);
+        todos.push(item);
+        novos++;
+      }
+
+      // Proteção para backend que ignora page.
+      if (!novos) break;
+
+      // Se aceitou per_page=100, lote menor encerra. Se limitar em 10,
+      // continua normalmente em page=2,3... como na fila médica.
+      if (lote.length > 10 && lote.length < 100) break;
+    }
+
+    return todos;
+  }
+
+  function atualizarObjetoFilaAcolhimento(destino, origem) {
+    if (!destino || !origem || destino === origem) return destino;
+    for (const [k, v] of Object.entries(origem)) {
+      if (destino[k] !== v) {
+        try { destino[k] = v; } catch {}
+      }
+    }
+    return destino;
+  }
+
+  function reconciliarFilaAcolhimento(collection, desejados) {
+    const atual = collection?.$data?.items;
+    if (!Array.isArray(atual) || !Array.isArray(desejados)) return false;
+
+    let estrutural = false;
+    const chavesDesejadas = new Set(desejados.map(chaveFilaAcolhimento));
+
+    // 1) Tira somente quem realmente saiu da fila.
+    for (let i = atual.length - 1; i >= 0; i--) {
+      if (!chavesDesejadas.has(chaveFilaAcolhimento(atual[i]))) {
+        atual.splice(i, 1);
+        estrutural = true;
+      }
+    }
+
+    // 2) Mantém a referência dos itens existentes. Insere/move somente o necessário.
+    for (let alvo = 0; alvo < desejados.length; alvo++) {
+      const novo = desejados[alvo];
+      const chave = chaveFilaAcolhimento(novo);
+
+      if (chaveFilaAcolhimento(atual[alvo]) === chave) {
+        atualizarObjetoFilaAcolhimento(atual[alvo], novo);
+        continue;
+      }
+
+      const existente = atual.findIndex((it, idx) => idx > alvo && chaveFilaAcolhimento(it) === chave);
+      if (existente >= 0) {
+        const mesmoObjeto = atual.splice(existente, 1)[0];
+        atualizarObjetoFilaAcolhimento(mesmoObjeto, novo);
+        atual.splice(alvo, 0, mesmoObjeto);
+      } else {
+        atual.splice(alvo, 0, novo);
+      }
+      estrutural = true;
+    }
+
+    if (atual.length > desejados.length) {
+      atual.splice(desejados.length, atual.length - desejados.length);
+      estrutural = true;
+    }
+
+    return estrutural;
+  }
+
+  function prepararCollectionFilaAcolhimento(collection) {
+    if (!collection) return;
+    try { collection.customPerPage = ACOLH_ESTAVEL_PER_PAGE; } catch {}
+    try { collection.currentPage = 1; } catch {}
+    if (collection.$data) {
+      try {
+        if ('customPerPage' in collection.$data) collection.$data.customPerPage = ACOLH_ESTAVEL_PER_PAGE;
+        if ('currentPage' in collection.$data) collection.$data.currentPage = 1;
+      } catch {}
+    }
+    try { collection.isLoading = false; } catch {}
+  }
+
+  function esconderPaginacaoFilaAcolhimento() {
+    if (document.getElementById('om30-acolhimento-estavel-css')) return;
+    const style = document.createElement('style');
+    style.id = 'om30-acolhimento-estavel-css';
+    style.textContent = [
+      '#classificacao .collection-with-search-atendimento ul.pagination{display:none!important;}',
+      '.listagem-fila .collection-with-search-atendimento ul.pagination{display:none!important;}'
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  async function atualizarFilaAcolhimentoSilenciosa({ forcar = false } = {}) {
+    if (!ehTelaPrincipalAcolhimento() || document.hidden || acolhEstavelAtualizando) return false;
+
+    const listVm = acharListagemPrincipalAcolhimento();
+    const collection = collectionPrincipalAcolhimento(listVm);
+    if (!listVm || !collection) return false;
+
+    acolhEstavelListVm = listVm;
+    acolhEstavelCollectionVm = collection;
+    prepararCollectionFilaAcolhimento(collection);
+    pararRefreshNativoFilaAcolhimento(listVm);
+
+    acolhEstavelAtualizando = true;
+    try {
+      const todos = await carregarFilaAcolhimentoSilenciosa(listVm, collection);
+      const assinatura = assinaturaFilaAcolhimento(todos);
+
+      if (!forcar && assinatura === acolhEstavelAssinatura) {
+        // Nada entrou/saiu: atualiza os mesmos objetos sem reconstruir linha nenhuma.
+        const mapa = new Map((collection.$data.items || []).map(item => [chaveFilaAcolhimento(item), item]));
+        for (const novo of todos) {
+          const existente = mapa.get(chaveFilaAcolhimento(novo));
+          if (existente) atualizarObjetoFilaAcolhimento(existente, novo);
+        }
+        try { collection.isLoading = false; } catch {}
+        return true;
+      }
+
+      acolhEstavelAssinatura = assinatura;
+      reconciliarFilaAcolhimento(collection, todos);
+      try { collection.totalRows = todos.length; } catch {}
+      try {
+        if (collection.$data && 'totalRows' in collection.$data) collection.$data.totalRows = todos.length;
+      } catch {}
+      try { collection.isLoading = false; } catch {}
+      return true;
+    } catch (e) {
+      console.warn('[OM30 Acolhimento Estável]', e);
+      try { collection.isLoading = false; } catch {}
+      return false;
+    } finally {
+      acolhEstavelAtualizando = false;
+    }
+  }
+
+  function pararRefreshNativoFilaAcolhimento(listVm = acolhEstavelListVm) {
+    // intervalId pertence ao próprio urgencia-emergencia-listagem-fila-acolhimento.
+    if (listVm?.intervalId) {
+      try { clearInterval(listVm.intervalId); } catch {}
+      try { listVm.intervalId = null; } catch {}
+    }
+  }
+
+  function conectarFilaAcolhimentoEstavel() {
+    if (!ehTelaPrincipalAcolhimento()) return false;
+
+    const listVm = acharListagemPrincipalAcolhimento();
+    const collection = collectionPrincipalAcolhimento(listVm);
+    if (!listVm || !collection) return false;
+
+    const mudouComponente = listVm !== acolhEstavelListVm || collection !== acolhEstavelCollectionVm;
+    acolhEstavelListVm = listVm;
+    acolhEstavelCollectionVm = collection;
+
+    pararRefreshNativoFilaAcolhimento(listVm);
+    prepararCollectionFilaAcolhimento(collection);
+    esconderPaginacaoFilaAcolhimento();
+
+    if (mudouComponente || !acolhEstavelAssinatura) {
+      acolhEstavelAssinatura = assinaturaFilaAcolhimento(collection.$data.items || []);
+      setTimeout(() => atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {}), 100);
+    }
+    return true;
+  }
+
+  function iniciarFilaAcolhimentoEstavel() {
+    if (!ehTelaPrincipalAcolhimento()) return;
+
+    const tentar = () => conectarFilaAcolhimentoEstavel();
+    if (!tentar()) {
+      let tentativas = 0;
+      const inicio = setInterval(() => {
+        tentativas++;
+        if (tentar() || tentativas >= 50) clearInterval(inicio);
+      }, 100);
+    }
+
+    clearInterval(acolhEstavelTimer);
+    acolhEstavelTimer = setInterval(() => {
+      // Se o Vue recriou o componente (troca de guichê/filtro), conecta no novo
+      // e mata o intervalId nativo dele antes da próxima atualização automática.
+      conectarFilaAcolhimentoEstavel();
+      atualizarFilaAcolhimentoSilenciosa({ forcar:false }).catch(() => {});
+    }, ACOLH_ESTAVEL_REFRESH_MS);
+
+    if (!acolhEstavelObserver) {
+      let debounce = null;
+      acolhEstavelObserver = new MutationObserver(() => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          if (!acolhEstavelListVm?.$el?.isConnected || !acolhEstavelCollectionVm?.$el?.isConnected) {
+            conectarFilaAcolhimentoEstavel();
+          }
+        }, 150);
+      });
+      acolhEstavelObserver.observe(document.body, { childList:true, subtree:true });
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        conectarFilaAcolhimentoEstavel();
+        atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {});
+      }
+    });
+
+    window.addEventListener('pageshow', () => {
+      setTimeout(() => {
+        conectarFilaAcolhimentoEstavel();
+        atualizarFilaAcolhimentoSilenciosa({ forcar:true }).catch(() => {});
+      }, 100);
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Inicialização
   // ---------------------------------------------------------------------------
@@ -2660,6 +3083,8 @@
     if (tabela && !tabela.dataset.om30Ausentes) { iniciar(tabela); return true; }
     return false;
   }
+
+  iniciarFilaAcolhimentoEstavel();
 
   if (!tentarIniciar()) {
     const obs = new MutationObserver(() => { if (tentarIniciar()) obs.disconnect(); });

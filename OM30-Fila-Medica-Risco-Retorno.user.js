@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.1
+// @version      2.12.0
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,11 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.12.0:
+  // - /acolhimentos: fila principal passa a atualizar silenciosamente.
+  // - Mantém o refresh nativo de 20s, mas sem reconstruir a tabela inteira.
+  // - Reutiliza a própria collection Vue e só insere/remove/move linhas quando necessário.
+  //
   // v2.11.1:
   // - Mantém a funcionalidade de Ausentes embutida somente em /prontuarios.
   // - Remove deste script toda captura/salvamento da classificação e toda CLOUD OM30 2.
@@ -50,8 +55,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2120__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2120__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5830,6 +5835,293 @@
     return iniciarFilaControleMedico();
   }
 
+
+  // ---------------------------------------------------------------------------
+  // FILA DO ACOLHIMENTO ESTÁVEL
+  // ---------------------------------------------------------------------------
+  // O Saúde Simples executa atualizarListagemFila() a cada 20 s no componente
+  // urgencia-emergencia-listagem-fila-acolhimento. A versão nativa troca
+  // filtroBaseAtendimentos por um novo objeto, o collection-with-search refaz a
+  // consulta e a tabela inteira pisca. Mantemos o intervalo NATIVO, mas a leitura
+  // passa a ser silenciosa e preserva as referências Vue das linhas existentes.
+
+  const ACOLH_PER_PAGE = 5000;
+  let acolhListVm = null;
+  let acolhCollectionVm = null;
+  let acolhAtualizando = false;
+  let acolhAssinaturaFonte = '';
+
+  function ehPaginaAcolhimento() {
+    return /^\\/acolhimentos\\/?$/i.test(location.pathname);
+  }
+
+  function acharComponenteListaAcolhimento() {
+    const vms = [...document.querySelectorAll('*')]
+      .map(el => el.__vue__)
+      .filter(Boolean);
+
+    return vms.find(vm =>
+      norm(vm?.$options?.name) === 'URGENCIA-EMERGENCIA-LISTAGEM-FILA-ACOLHIMENTO' &&
+      vm?.$refs?.collectionWithSearch
+    ) || null;
+  }
+
+  function colecaoAcolhimento(listVm = acolhListVm) {
+    const vm = listVm?.$refs?.collectionWithSearch || null;
+    return vm && Array.isArray(vm?.$data?.items) ? vm : null;
+  }
+
+  function filtroBaseAcolhimento(listVm = acolhListVm) {
+    const obj = listVm?.filtroBaseAtendimentos;
+    return obj && typeof obj === 'object' ? obj : {};
+  }
+
+  function montarUrlAcolhimento(listVm = acolhListVm, pagina = 1) {
+    const origem = clean(
+      listVm?.sourceDataUrl ||
+      listVm?.tableInfo?.pathUrl ||
+      '/acolhimentos.json'
+    );
+    const url = new URL(origem || '/acolhimentos.json', location.origin);
+
+    url.searchParams.delete('page');
+    url.searchParams.delete('per_page');
+
+    for (const [chave, valor] of Object.entries(filtroBaseAcolhimento(listVm))) {
+      if (valor == null || valor === '') continue;
+
+      url.searchParams.delete(chave);
+      url.searchParams.delete(chave + '[]');
+
+      if (Array.isArray(valor)) {
+        for (const item of valor) {
+          if (item == null || item === '') continue;
+          const k = chave.endsWith('[]') ? chave : chave + '[]';
+          url.searchParams.append(k, String(item));
+        }
+      } else {
+        url.searchParams.set(chave, String(valor));
+      }
+    }
+
+    url.searchParams.set('page', String(pagina));
+    url.searchParams.set('per_page', '100');
+    return url;
+  }
+
+  async function buscarPaginaAcolhimento(listVm, pagina) {
+    const url = montarUrlAcolhimento(listVm, pagina);
+    const resp = await fetch(url.href, {
+      credentials:'same-origin',
+      headers:{ Accept:'application/json, text/plain, */*' },
+      cache:'no-store'
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ao atualizar acolhimento');
+
+    const dados = await resp.json();
+    if (!Array.isArray(dados)) throw new Error('Resposta de /acolhimentos.json não é lista.');
+    return dados;
+  }
+
+  async function carregarAcolhimentoSilencioso(listVm = acolhListVm) {
+    const todos = [];
+    const vistos = new Set();
+
+    for (let pagina = 1; pagina <= 50; pagina++) {
+      const lote = await buscarPaginaAcolhimento(listVm, pagina);
+      if (!lote.length) break;
+
+      let novos = 0;
+      for (const item of lote) {
+        const chave = chaveItem(item);
+        if (!chave || vistos.has(chave)) continue;
+        vistos.add(chave);
+        todos.push(item);
+        novos++;
+      }
+
+      if (!novos) break;
+      // Se aceitou per_page=100 e veio um lote intermediário, acabou.
+      // Se a instalação limitar em 10, continua page=2,3...
+      if (lote.length > 10 && lote.length < 100) break;
+    }
+
+    return todos;
+  }
+
+  function assinaturaAcolhimento(lista) {
+    return (Array.isArray(lista) ? lista : []).map(item => [
+      chaveItem(item),
+      clean(item?.senha),
+      clean(item?.chamada_em),
+      clean(item?.retirada_em),
+      clean(item?.data_senha_timestamp || item?.data_senha_formatada)
+    ].join('~')).join('||');
+  }
+
+  function reconciliarItensAcolhimento(vm, desejados) {
+    const atual = vm?.$data?.items;
+    if (!Array.isArray(atual) || !Array.isArray(desejados)) return false;
+
+    let mudouEstrutura = false;
+    const desejadas = new Set(desejados.map(chaveItem));
+
+    for (let i = atual.length - 1; i >= 0; i--) {
+      if (!desejadas.has(chaveItem(atual[i]))) {
+        atual.splice(i, 1);
+        mudouEstrutura = true;
+      }
+    }
+
+    for (let alvo = 0; alvo < desejados.length; alvo++) {
+      const novo = desejados[alvo];
+      const chave = chaveItem(novo);
+
+      if (chaveItem(atual[alvo]) === chave) {
+        atualizarObjetoMedico(atual[alvo], novo);
+        continue;
+      }
+
+      const existente = atual.findIndex((it, idx) => idx > alvo && chaveItem(it) === chave);
+      if (existente >= 0) {
+        const mesmoObjeto = atual.splice(existente, 1)[0];
+        atualizarObjetoMedico(mesmoObjeto, novo);
+        atual.splice(alvo, 0, mesmoObjeto);
+      } else {
+        atual.splice(alvo, 0, novo);
+      }
+      mudouEstrutura = true;
+    }
+
+    if (atual.length > desejados.length) {
+      atual.splice(desejados.length, atual.length - desejados.length);
+      mudouEstrutura = true;
+    }
+
+    return mudouEstrutura;
+  }
+
+  function aplicarAcolhimentoSilencioso(lista, collection = acolhCollectionVm) {
+    if (!collection || !Array.isArray(collection?.$data?.items) || !Array.isArray(lista)) return false;
+
+    aplicandoItensVue = true;
+    try {
+      collection.customPerPage = ACOLH_PER_PAGE;
+      collection.currentPage = 1;
+      if (collection.$data) {
+        if ('customPerPage' in collection.$data) collection.$data.customPerPage = ACOLH_PER_PAGE;
+        if ('currentPage' in collection.$data) collection.$data.currentPage = 1;
+      }
+
+      reconciliarItensAcolhimento(collection, lista);
+      collection.totalRows = lista.length;
+      try { collection.isLoading = false; } catch (_) {}
+      if (collection.errorRequest == null) {
+        try { collection.errorRequest = {}; } catch (_) {}
+      }
+    } finally {
+      Promise.resolve().then(() => { aplicandoItensVue = false; });
+    }
+
+    return true;
+  }
+
+  async function atualizarAcolhimentoSilencioso({ forcar = false } = {}) {
+    if (acolhAtualizando || !ehPaginaAcolhimento()) return false;
+    const listVm = acolhListVm || acharComponenteListaAcolhimento();
+    const collection = colecaoAcolhimento(listVm);
+    if (!listVm || !collection) return false;
+
+    acolhListVm = listVm;
+    acolhCollectionVm = collection;
+    acolhAtualizando = true;
+
+    try {
+      const todos = await carregarAcolhimentoSilencioso(listVm);
+      const ass = assinaturaAcolhimento(todos);
+
+      if (!forcar && ass === acolhAssinaturaFonte) {
+        const atualPorChave = new Map((collection.$data.items || []).map(x => [chaveItem(x), x]));
+        for (const novo of todos) {
+          const existente = atualPorChave.get(chaveItem(novo));
+          if (existente) atualizarObjetoMedico(existente, novo);
+        }
+        try { collection.isLoading = false; } catch (_) {}
+        return true;
+      }
+
+      acolhAssinaturaFonte = ass;
+      return aplicarAcolhimentoSilencioso(todos, collection);
+    } catch (e) {
+      warn('Fila do acolhimento estável:', e);
+      try { collection.isLoading = false; } catch (_) {}
+      return false;
+    } finally {
+      acolhAtualizando = false;
+    }
+  }
+
+  function instalarAtualizacaoSilenciosaAcolhimento(listVm) {
+    if (!listVm || listVm.atualizarListagemFila?.__om30AcolhStable) return;
+
+    const original = listVm.atualizarListagemFila;
+    const wrapper = function () {
+      return atualizarAcolhimentoSilencioso({ forcar:false });
+    };
+    wrapper.__om30AcolhStable = true;
+    wrapper.__om30Original = original;
+    try { listVm.atualizarListagemFila = wrapper.bind(listVm); } catch (_) {}
+  }
+
+  function injetarCSSAcolhimentoEstavel() {
+    if (document.getElementById('om30-acolhimento-estavel-css')) return;
+    const st = document.createElement('style');
+    st.id = 'om30-acolhimento-estavel-css';
+    st.textContent = [
+      '#classificacao .collection-with-search-atendimento ul.pagination {',
+      '  display:none !important;',
+      '}'
+    ].join('\\n');
+    document.head.appendChild(st);
+  }
+
+  async function iniciarFilaAcolhimentoEstavel() {
+    if (!ehPaginaAcolhimento()) return false;
+    injetarCSSAcolhimentoEstavel();
+
+    const limite = Date.now() + 5000;
+    let listVm = null;
+    while (Date.now() < limite && !listVm) {
+      listVm = acharComponenteListaAcolhimento();
+      if (!listVm) await esperar(50);
+    }
+
+    if (!listVm) {
+      warn('Componente da fila do acolhimento não apareceu em 5s.');
+      return false;
+    }
+
+    const collection = colecaoAcolhimento(listVm);
+    if (!collection) {
+      warn('Collection da fila do acolhimento não encontrada.');
+      return false;
+    }
+
+    acolhListVm = listVm;
+    acolhCollectionVm = collection;
+    acolhAssinaturaFonte = assinaturaAcolhimento(collection.$data.items || []);
+
+    // O setInterval NATIVO de 20 s já existe no componente. O callback usa
+    // this.atualizarListagemFila(), portanto passa a chamar este wrapper.
+    instalarAtualizacaoSilenciosaAcolhimento(listVm);
+
+    // Primeira sincronização já é silenciosa e traz todas as páginas.
+    await atualizarAcolhimentoSilencioso({ forcar:true });
+
+    log('Fila do acolhimento estável ativada: refresh nativo de 20s agora é silencioso.');
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // Bootstrap
   // ---------------------------------------------------------------------------
@@ -5837,6 +6129,8 @@
   if (ehPaginaFila()) {
     // Fila exclusiva da Urgência e Emergência.
     iniciarFila();
+  } else if (ehPaginaAcolhimento()) {
+    iniciarFilaAcolhimentoEstavel();
   } else {
     const contexto = lerContextoRetorno();
     if (ehPaginaAtendimentoUrgenciaEmergencia(contexto)) {
@@ -5846,7 +6140,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.11.1 carregado. Fila/Risco/Retorno + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.12.0 carregado. Fila Médica/Risco/Retorno + Acolhimento estável + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====

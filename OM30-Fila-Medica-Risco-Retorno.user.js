@@ -5192,6 +5192,17 @@
     return riscoItem(item) !== antes;
   }
 
+  function propagarRiscoCloud(item, dado) {
+    if (!item || !dado?.risco) return false;
+    let mudou = aplicarRiscoCloudNoItem(item, dado);
+    const chave = chaveItem(item);
+    if (chave) {
+      const origem = medFonte.find(x => chaveItem(x) === chave);
+      if (origem && origem !== item) mudou = aplicarRiscoCloudNoItem(origem, dado) || mudou;
+    }
+    return mudou;
+  }
+
   function podarCacheRiscoCloudLocal() {
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -5209,7 +5220,12 @@
 
     const local = lerRiscoCloudLocal(senhaId);
     if (local?.risco) {
-      aplicarRiscoCloudNoItem(item, local);
+      const mudou = propagarRiscoCloud(item, local);
+      if (mudou && medVm) {
+        medAssinaturaFonte = assinaturaMedFonte(medFonte);
+        medAssinaturaAplicada = '';
+        Promise.resolve().then(() => aplicarMedFonte(medVm, true));
+      }
       return local;
     }
 
@@ -5249,7 +5265,7 @@
 
         const dado = gravarRiscoCloudLocal(senhaId, risco, Number(j?.grau_risco_id || 0));
         medCloudNaoEncontrado.delete(senhaId);
-        const mudou = aplicarRiscoCloudNoItem(item, dado);
+        const mudou = propagarRiscoCloud(item, dado);
 
         if (mudou && medVm) {
           medAssinaturaFonte = assinaturaMedFonte(medFonte);
@@ -5290,7 +5306,10 @@
       return p;
     };
 
-    return inputs.sort((a,b) => pontuar(b) - pontuar(a))[0] || null;
+    const ordenados = inputs.sort((a,b) => pontuar(b) - pontuar(a));
+    if (!ordenados.length) return null;
+    if (pontuar(ordenados[0]) > 0) return ordenados[0];
+    return ordenados.length === 1 ? ordenados[0] : null;
   }
 
   function lerPesquisaMedica(vm = medVm) {

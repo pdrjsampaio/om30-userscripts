@@ -21,7 +21,7 @@
   // - Fila principal do acolhimento passa a usar a mesma estratégia da Fila Médica/Controle de Salas.
   // - Primeira carga prepara customPerPage antes do fetch nativo e mostra a lista completa de uma vez.
   // - BTable fica com perPage=0 (sem corte interno em 10 linhas).
-  // - Paginação manual fica somente como fallback se o backend realmente não devolver tudo.
+  // - Paginação manual fica somente como fallback se o backend realmente não devolver tudo, em lotes paralelos.
   // - Remove a tentativa de decoração antecipada da v2.0.11.
   //
   // v2.0.10:
@@ -3331,25 +3331,53 @@
     const todos = [];
     const vistos = new Set();
 
-    for (let pagina = 1; pagina <= 50; pagina++) {
-      const lote = await buscarPaginaFilaAcolhimento(urlBase, pagina);
-      if (!lote.length) break;
-
+    const adicionar = lote => {
       let novos = 0;
-      for (const item of lote) {
+      for (const item of lote || []) {
         const chave = chaveFilaAcolhimento(item);
         if (!chave || vistos.has(chave)) continue;
         vistos.add(chave);
         todos.push(item);
         novos++;
       }
+      return novos;
+    };
 
-      // Proteção para backend que ignora page.
-      if (!novos) break;
+    // Primeiro descobre como esse backend pagina.
+    const primeira = await buscarPaginaFilaAcolhimento(urlBase, 1);
+    if (!primeira.length) return todos;
+    adicionar(primeira);
 
-      // Se aceitou per_page=100, lote menor encerra. Se limitar em 10,
-      // continua normalmente em page=2,3... como na fila médica.
-      if (lote.length > 10 && lote.length < 100) break;
+    // Se aceitou per_page=100 e veio menos de 100 (mas mais de 10), acabou.
+    if (primeira.length > 10 && primeira.length < 100) return todos;
+    // Página curta também significa fim.
+    if (primeira.length < 10) return todos;
+
+    // Backend limitado a 10 (ou fila >100): busca as próximas em blocos paralelos.
+    const LOTE_PAGINAS = 5;
+    for (let inicio = 2; inicio <= 50; inicio += LOTE_PAGINAS) {
+      const nums = [];
+      for (let p = inicio; p < inicio + LOTE_PAGINAS && p <= 50; p++) nums.push(p);
+
+      const paginas = await Promise.all(
+        nums.map(p => buscarPaginaFilaAcolhimento(urlBase, p).catch(() => null))
+      );
+
+      let encerrar = false;
+      let teveNovo = false;
+
+      for (const lote of paginas) {
+        if (!Array.isArray(lote) || !lote.length) {
+          encerrar = true;
+          continue;
+        }
+        if (adicionar(lote)) teveNovo = true;
+
+        if (lote.length > 10 && lote.length < 100) encerrar = true;
+        if (lote.length < 10) encerrar = true;
+      }
+
+      if (!teveNovo || encerrar) break;
     }
 
     return todos;
@@ -3638,7 +3666,11 @@
 
       // Normalmente o fetch nativo, já com customPerPage=100, resolve tudo em uma
       // requisição. Só cai no paginador direto se o backend realmente limitar.
-      if ((total > 0 && total > todos.length) || (!todos.length && descobrirUrlFilaAcolhimento(listVm, collection))) {
+      if (
+        (total > 0 && total > todos.length) ||
+        todos.length === 10 ||
+        (!todos.length && descobrirUrlFilaAcolhimento(listVm, collection))
+      ) {
         const completos = await carregarFilaAcolhimentoSilenciosa(listVm, collection);
         if (Array.isArray(completos) && completos.length >= todos.length) todos = completos;
       }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.12.0
+// @version      2.12.1
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,11 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.12.1:
+  // - Acolhimento: desliga somente o refresh nativo automático de 20s.
+  // - Atualização automática passa a consultar a URL real de /acolhimentos.json por trás.
+  // - Filtros/cliques manuais nativos continuam intactos.
+  //
   // v2.12.0:
   // - /acolhimentos: fila principal passa a atualizar silenciosamente.
   // - Mantém o refresh nativo de 20s, mas sem reconstruir a tabela inteira.
@@ -55,8 +60,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2120__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2120__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2121__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2121__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5836,23 +5841,25 @@
   }
 
 
+
   // ---------------------------------------------------------------------------
   // FILA DO ACOLHIMENTO ESTÁVEL
   // ---------------------------------------------------------------------------
-  // O Saúde Simples executa atualizarListagemFila() a cada 20 s no componente
-  // urgencia-emergencia-listagem-fila-acolhimento. A versão nativa troca
-  // filtroBaseAtendimentos por um novo objeto, o collection-with-search refaz a
-  // consulta e a tabela inteira pisca. Mantemos o intervalo NATIVO, mas a leitura
-  // passa a ser silenciosa e preserva as referências Vue das linhas existentes.
+  // O componente nativo urgencia-emergencia-listagem-fila-acolhimento possui
+  // um setInterval de 20 s que chama atualizarListagemFila() e força a collection
+  // inteira a recarregar. Aqui desligamos SOMENTE esse intervalo automático e
+  // fazemos a mesma leitura por trás usada na fila médica estável.
 
   const ACOLH_PER_PAGE = 5000;
+  const ACOLH_REFRESH_MS = 20000;
   let acolhListVm = null;
   let acolhCollectionVm = null;
   let acolhAtualizando = false;
+  let acolhTimer = null;
   let acolhAssinaturaFonte = '';
 
   function ehPaginaAcolhimento() {
-    return /^\\/acolhimentos\\/?$/i.test(location.pathname);
+    return /^\/acolhimentos\/?$/i.test(location.pathname);
   }
 
   function acharComponenteListaAcolhimento() {
@@ -5871,46 +5878,65 @@
     return vm && Array.isArray(vm?.$data?.items) ? vm : null;
   }
 
-  function filtroBaseAcolhimento(listVm = acolhListVm) {
-    const obj = listVm?.filtroBaseAtendimentos;
-    return obj && typeof obj === 'object' ? obj : {};
+  function pontuarUrlAcolhimento(urlOriginal) {
+    try {
+      const url = new URL(urlOriginal, location.origin);
+      if (!/\/acolhimentos\.json$/i.test(url.pathname)) return -1;
+
+      let pontos = 1;
+      if (url.searchParams.toString()) pontos += 2;
+      if (url.searchParams.has('ocupacoes_ids[]') || url.searchParams.has('ocupacoes_ids')) pontos += 4;
+      if (url.searchParams.has('status')) pontos += 2;
+      if (url.searchParams.has('sortable')) pontos += 1;
+      return pontos;
+    } catch (_) {
+      return -1;
+    }
   }
 
-  function montarUrlAcolhimento(listVm = acolhListVm, pagina = 1) {
-    const origem = clean(
-      listVm?.sourceDataUrl ||
-      listVm?.tableInfo?.pathUrl ||
-      '/acolhimentos.json'
-    );
-    const url = new URL(origem || '/acolhimentos.json', location.origin);
+  function descobrirUrlAcolhimento(listVm = acolhListVm, collection = acolhCollectionVm) {
+    const candidatos = [];
 
-    url.searchParams.delete('page');
-    url.searchParams.delete('per_page');
-
-    for (const [chave, valor] of Object.entries(filtroBaseAcolhimento(listVm))) {
-      if (valor == null || valor === '') continue;
-
-      url.searchParams.delete(chave);
-      url.searchParams.delete(chave + '[]');
-
-      if (Array.isArray(valor)) {
-        for (const item of valor) {
-          if (item == null || item === '') continue;
-          const k = chave.endsWith('[]') ? chave : chave + '[]';
-          url.searchParams.append(k, String(item));
-        }
-      } else {
-        url.searchParams.set(chave, String(valor));
-      }
+    // Em empate, o último resource é o mais recente. Isso faz o refresh silencioso
+    // acompanhar também qualquer filtro/pesquisa que o usuário tenha aplicado nativamente.
+    for (const entrada of performance.getEntriesByType('resource')) {
+      if (/\/acolhimentos\.json(?:\?|$)/i.test(entrada.name)) candidatos.push(entrada.name);
     }
 
-    url.searchParams.set('page', String(pagina));
-    url.searchParams.set('per_page', '100');
+    candidatos.push(
+      collection?.$props?.propsTable?.pathUrl,
+      collection?.propsTable?.pathUrl,
+      listVm?.sourceDataUrl,
+      listVm?.$props?.sourceDataUrl
+    );
+
+    let melhor = null;
+    let melhorPontos = -1;
+    for (const candidato of candidatos.filter(Boolean)) {
+      const pontos = pontuarUrlAcolhimento(candidato);
+      if (pontos < 0) continue;
+      if (pontos >= melhorPontos) {
+        try {
+          melhor = new URL(candidato, location.origin).href;
+          melhorPontos = pontos;
+        } catch (_) {}
+      }
+    }
+    return melhor;
+  }
+
+  function normalizarUrlAcolhimento(urlOriginal) {
+    const url = new URL(urlOriginal, location.origin);
+    url.searchParams.delete('page');
+    url.searchParams.delete('per_page');
     return url;
   }
 
-  async function buscarPaginaAcolhimento(listVm, pagina) {
-    const url = montarUrlAcolhimento(listVm, pagina);
+  async function buscarPaginaAcolhimento(urlBase, pagina) {
+    const url = new URL(urlBase.href);
+    url.searchParams.set('page', String(pagina));
+    url.searchParams.set('per_page', '100');
+
     const resp = await fetch(url.href, {
       credentials:'same-origin',
       headers:{ Accept:'application/json, text/plain, */*' },
@@ -5919,16 +5945,20 @@
     if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ao atualizar acolhimento');
 
     const dados = await resp.json();
-    if (!Array.isArray(dados)) throw new Error('Resposta de /acolhimentos.json não é lista.');
+    if (!Array.isArray(dados)) throw new Error('Resposta de /acolhimentos.json não é uma lista.');
     return dados;
   }
 
-  async function carregarAcolhimentoSilencioso(listVm = acolhListVm) {
+  async function carregarAcolhimentoSilencioso(listVm = acolhListVm, collection = acolhCollectionVm) {
+    const descoberta = descobrirUrlAcolhimento(listVm, collection);
+    if (!descoberta) throw new Error('Fonte nativa /acolhimentos.json ainda não identificada.');
+
+    const urlBase = normalizarUrlAcolhimento(descoberta);
     const todos = [];
     const vistos = new Set();
 
     for (let pagina = 1; pagina <= 50; pagina++) {
-      const lote = await buscarPaginaAcolhimento(listVm, pagina);
+      const lote = await buscarPaginaAcolhimento(urlBase, pagina);
       if (!lote.length) break;
 
       let novos = 0;
@@ -5941,8 +5971,8 @@
       }
 
       if (!novos) break;
-      // Se aceitou per_page=100 e veio um lote intermediário, acabou.
-      // Se a instalação limitar em 10, continua page=2,3...
+      // Mesmo comportamento da fila médica: backend que limita em 10 continua
+      // page=2,3...; se aceitou 100 e veio menos, chegou ao fim.
       if (lote.length > 10 && lote.length < 100) break;
     }
 
@@ -5966,6 +5996,7 @@
     let mudouEstrutura = false;
     const desejadas = new Set(desejados.map(chaveItem));
 
+    // Remove somente quem realmente saiu.
     for (let i = atual.length - 1; i >= 0; i--) {
       if (!desejadas.has(chaveItem(atual[i]))) {
         atual.splice(i, 1);
@@ -5973,6 +6004,7 @@
       }
     }
 
+    // Mantém o MESMO objeto Vue de quem continua na fila.
     for (let alvo = 0; alvo < desejados.length; alvo++) {
       const novo = desejados[alvo];
       const chave = chaveItem(novo);
@@ -6015,6 +6047,9 @@
 
       reconciliarItensAcolhimento(collection, lista);
       collection.totalRows = lista.length;
+
+      // Não emite definedItems e não chama fetchCollection: nada de reconstruir
+      // a tabela inteira quando só uma pessoa entrou/saiu.
       try { collection.isLoading = false; } catch (_) {}
       if (collection.errorRequest == null) {
         try { collection.errorRequest = {}; } catch (_) {}
@@ -6022,12 +6057,12 @@
     } finally {
       Promise.resolve().then(() => { aplicandoItensVue = false; });
     }
-
     return true;
   }
 
   async function atualizarAcolhimentoSilencioso({ forcar = false } = {}) {
-    if (acolhAtualizando || !ehPaginaAcolhimento()) return false;
+    if (acolhAtualizando || !ehPaginaAcolhimento() || document.hidden) return false;
+
     const listVm = acolhListVm || acharComponenteListaAcolhimento();
     const collection = colecaoAcolhimento(listVm);
     if (!listVm || !collection) return false;
@@ -6037,10 +6072,11 @@
     acolhAtualizando = true;
 
     try {
-      const todos = await carregarAcolhimentoSilencioso(listVm);
+      const todos = await carregarAcolhimentoSilencioso(listVm, collection);
       const ass = assinaturaAcolhimento(todos);
 
       if (!forcar && ass === acolhAssinaturaFonte) {
+        // Sem entrada/saída/ordenação nova: só sincroniza propriedades dos mesmos objetos.
         const atualPorChave = new Map((collection.$data.items || []).map(x => [chaveItem(x), x]));
         for (const novo of todos) {
           const existente = atualPorChave.get(chaveItem(novo));
@@ -6061,27 +6097,27 @@
     }
   }
 
-  function instalarAtualizacaoSilenciosaAcolhimento(listVm) {
-    if (!listVm || listVm.atualizarListagemFila?.__om30AcolhStable) return;
+  function pararRefreshNativoAcolhimento(listVm) {
+    // Esse intervalId é criado pelo próprio componente em mounted() e executa
+    // atualizarListagemFila() a cada 20 segundos.
+    if (listVm?.intervalId) {
+      try { clearInterval(listVm.intervalId); } catch (_) {}
+      try { listVm.intervalId = null; } catch (_) {}
+    }
+  }
 
-    const original = listVm.atualizarListagemFila;
-    const wrapper = function () {
-      return atualizarAcolhimentoSilencioso({ forcar:false });
-    };
-    wrapper.__om30AcolhStable = true;
-    wrapper.__om30Original = original;
-    try { listVm.atualizarListagemFila = wrapper.bind(listVm); } catch (_) {}
+  function iniciarRefreshSilenciosoAcolhimento() {
+    clearInterval(acolhTimer);
+    acolhTimer = setInterval(() => {
+      atualizarAcolhimentoSilencioso({ forcar:false }).catch(() => {});
+    }, ACOLH_REFRESH_MS);
   }
 
   function injetarCSSAcolhimentoEstavel() {
     if (document.getElementById('om30-acolhimento-estavel-css')) return;
     const st = document.createElement('style');
     st.id = 'om30-acolhimento-estavel-css';
-    st.textContent = [
-      '#classificacao .collection-with-search-atendimento ul.pagination {',
-      '  display:none !important;',
-      '}'
-    ].join('\\n');
+    st.textContent = '#classificacao .collection-with-search-atendimento ul.pagination{display:none!important;}';
     document.head.appendChild(st);
   }
 
@@ -6111,14 +6147,26 @@
     acolhCollectionVm = collection;
     acolhAssinaturaFonte = assinaturaAcolhimento(collection.$data.items || []);
 
-    // O setInterval NATIVO de 20 s já existe no componente. O callback usa
-    // this.atualizarListagemFila(), portanto passa a chamar este wrapper.
-    instalarAtualizacaoSilenciosaAcolhimento(listVm);
+    // Não substitui atualizarListagemFila: clique manual/filtros nativos continuam
+    // exatamente como o Saúde Simples implementou. Só retiramos o refresh automático.
+    pararRefreshNativoAcolhimento(listVm);
+    iniciarRefreshSilenciosoAcolhimento();
 
-    // Primeira sincronização já é silenciosa e traz todas as páginas.
+    // A primeira carga já foi feita pelo sistema. Só completa a lista por trás.
     await atualizarAcolhimentoSilencioso({ forcar:true });
 
-    log('Fila do acolhimento estável ativada: refresh nativo de 20s agora é silencioso.');
+    window.addEventListener('pageshow', () => {
+      setTimeout(() => atualizarAcolhimentoSilencioso({ forcar:true }).catch(() => {}), 100);
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        pararRefreshNativoAcolhimento(acolhListVm);
+        atualizarAcolhimentoSilencioso({ forcar:true }).catch(() => {});
+      }
+    });
+
+    log('Fila do acolhimento estável: refresh automático nativo de 20s substituído por atualização silenciosa.');
     return true;
   }
 
@@ -6140,7 +6188,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.12.0 carregado. Fila Médica/Risco/Retorno + Acolhimento estável + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.12.1 carregado. Fila Médica/Risco/Retorno + Acolhimento estável + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====

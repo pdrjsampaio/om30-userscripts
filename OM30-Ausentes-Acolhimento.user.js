@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.0.8
+// @version      2.0.9
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -17,6 +17,12 @@
 (() => {
   'use strict';
 
+  // v2.0.9:
+  // - Fila principal do acolhimento: visual reorganizado no padrão da fila médica.
+  // - Data/Hora passa a mostrar tempo de espera atualizado sem redesenhar a tabela.
+  // - Idade recebe leitura compacta e o topo mostra Total, Tempo médio e Horário.
+  // - Mantidos fluxo, ordem nativa, Cloud/classificação, Ausentes e ações existentes.
+  //
   // v2.0.8:
   // - Fila principal do acolhimento: adiciona no menu de ações (*) a opção
   //   "Desvincular senha de outro profissional".
@@ -238,7 +244,7 @@
   //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
   const MODO_NUMERO = 'AMBOS';
   let T0 = performance.now();
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.8';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.9';
   const PREFIX = 'om30-ausentes-acolhimento';
   // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
   const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';
@@ -3201,13 +3207,182 @@
     try { collection.isLoading = false; } catch {}
   }
 
+  function timestampFilaAcolhimento(item) {
+    const candidatos = [
+      item?.data_senha_timestamp,
+      item?.data_hora_chegada,
+      item?.data_chegada,
+      item?.created_at,
+      item?.data_senha_formatada
+    ];
+
+    for (const bruto of candidatos) {
+      if (bruto == null || bruto === '') continue;
+
+      if (typeof bruto === 'number' && Number.isFinite(bruto)) {
+        if (bruto > 1e12) return bruto;
+        if (bruto > 1e9) return bruto * 1000;
+      }
+
+      const txt = clean(bruto);
+      if (/^\d{13}$/.test(txt)) return Number(txt);
+      if (/^\d{10}$/.test(txt)) return Number(txt) * 1000;
+
+      let m = txt.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), 0).getTime();
+
+      m = txt.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if (m) return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0), 0).getTime();
+
+      const parsed = Date.parse(txt);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+  }
+
+  function tempoEsperaAcolhimentoMs(item, agora = Date.now()) {
+    const inicio = timestampFilaAcolhimento(item);
+    return inicio > 0 ? Math.max(0, agora - inicio) : 0;
+  }
+
+  function formatarEsperaAcolhimento(ms) {
+    const total = Math.max(0, Math.floor(Number(ms || 0) / 60000));
+    if (total < 60) return total + ' min';
+    const h = Math.floor(total / 60);
+    const m = total % 60;
+    return m ? h + 'h ' + m + 'min' : h + 'h';
+  }
+
+  function idadeVisualAcolhimento(item, celula) {
+    const bruto = clean(item?.idade_municipe || celula?.textContent || '');
+    if (!bruto) return '—';
+    if (/^\d+$/.test(bruto)) return bruto + (Number(bruto) === 1 ? ' ano' : ' anos');
+    return bruto
+      .replace(/\banos?\b/gi, m => m.toLowerCase())
+      .replace(/\bmeses?\b/gi, m => m.toLowerCase());
+  }
+
+  function linhasFilaPrincipalAcolhimento(collection = acolhEstavelCollectionVm) {
+    const raiz = collection?.$el || acolhEstavelListVm?.$el || document;
+    return [...raiz.querySelectorAll('tbody tr.collection-row, tbody tr')]
+      .filter(tr => tr.cells?.length >= 7);
+  }
+
+  function decorarLinhaFilaAcolhimento(tr, item) {
+    if (!tr || !item) return;
+
+    const chegada = tr.cells?.[0];
+    if (chegada) {
+      let espera = chegada.querySelector('.om30-acolh-espera');
+      if (!espera) {
+        espera = document.createElement('div');
+        espera.className = 'om30-acolh-espera';
+        chegada.appendChild(espera);
+      }
+      espera.innerHTML =
+        '<span class="om30-acolh-clock">🕒</span><span>Espera</span> <strong>' +
+        formatarEsperaAcolhimento(tempoEsperaAcolhimentoMs(item)) + '</strong>';
+    }
+
+    const idade = tr.cells?.[5];
+    if (idade) {
+      let pill = idade.querySelector('.om30-acolh-idade');
+      if (!pill) {
+        const textoOriginal = clean(idade.textContent);
+        idade.dataset.om30IdadeOriginal = textoOriginal;
+        idade.textContent = '';
+        pill = document.createElement('span');
+        pill.className = 'om30-acolh-idade';
+        idade.appendChild(pill);
+      }
+      pill.textContent = idadeVisualAcolhimento(item, { textContent: idade.dataset.om30IdadeOriginal || '' });
+    }
+  }
+
+  function atualizarCabecalhosFilaAcolhimento(collection = acolhEstavelCollectionVm) {
+    const raiz = collection?.$el || acolhEstavelListVm?.$el || document;
+    const tabela = raiz.querySelector('table');
+    if (!tabela) return;
+
+    const ths = tabela.querySelectorAll('thead th');
+    if (ths[0] && !ths[0].dataset.om30AcolhCabecalho) {
+      ths[0].dataset.om30AcolhCabecalho = '1';
+      ths[0].innerHTML = 'Data/Hora da<br>chegada <span class="om30-acolh-th-espera">+ espera</span>';
+    }
+    if (ths[5]) ths[5].textContent = 'Idade';
+  }
+
+  function atualizarResumoFilaAcolhimento(collection = acolhEstavelCollectionVm) {
+    if (!collection) return;
+    const itens = Array.isArray(collection?.$data?.items) ? collection.$data.items : [];
+    const agora = Date.now();
+    const esperas = itens.map(x => tempoEsperaAcolhimentoMs(x, agora)).filter(x => x >= 0);
+    const media = esperas.length ? esperas.reduce((a,b) => a + b, 0) / esperas.length : 0;
+
+    let bar = document.getElementById('om30-acolh-resumo');
+    if (!bar) {
+      const host = acolhEstavelListVm?.$el?.parentNode || collection.$el?.parentNode;
+      const ref = acolhEstavelListVm?.$el || collection.$el;
+      if (!host || !ref) return;
+
+      bar = document.createElement('div');
+      bar.id = 'om30-acolh-resumo';
+      bar.innerHTML =
+        '<div class="om30-acolh-card"><span>Na fila</span><strong class="om30-acolh-total">0</strong></div>' +
+        '<div class="om30-acolh-card"><span>Tempo médio</span><strong class="om30-acolh-media">0 min</strong></div>' +
+        '<div class="om30-acolh-card om30-acolh-horario"><span>Horário</span><strong class="om30-acolh-agora">--:--</strong></div>';
+      host.insertBefore(bar, ref);
+    }
+
+    bar.querySelector('.om30-acolh-total').textContent = String(itens.length);
+    bar.querySelector('.om30-acolh-media').textContent = formatarEsperaAcolhimento(media);
+    bar.querySelector('.om30-acolh-agora').textContent = horarioCurtoAgora();
+  }
+
+  function decorarFilaPrincipalAcolhimento(collection = acolhEstavelCollectionVm) {
+    if (!collection) return;
+    atualizarCabecalhosFilaAcolhimento(collection);
+    for (const tr of linhasFilaPrincipalAcolhimento(collection)) {
+      const item = itemFilaAcolhimentoDaLinha(tr);
+      if (item) decorarLinhaFilaAcolhimento(tr, item);
+    }
+    atualizarResumoFilaAcolhimento(collection);
+  }
+
+  function atualizarRelogiosFilaAcolhimento() {
+    const collection = acolhEstavelCollectionVm;
+    if (!collection) return;
+    for (const tr of linhasFilaPrincipalAcolhimento(collection)) {
+      const item = itemFilaAcolhimentoDaLinha(tr);
+      const forte = tr.querySelector('.om30-acolh-espera strong');
+      if (item && forte) forte.textContent = formatarEsperaAcolhimento(tempoEsperaAcolhimentoMs(item));
+    }
+    atualizarResumoFilaAcolhimento(collection);
+  }
+
   function esconderPaginacaoFilaAcolhimento() {
     if (document.getElementById('om30-acolhimento-estavel-css')) return;
     const style = document.createElement('style');
     style.id = 'om30-acolhimento-estavel-css';
     style.textContent = [
-      '#classificacao .collection-with-search-atendimento ul.pagination{display:none!important;}',
-      '.listagem-fila .collection-with-search-atendimento ul.pagination{display:none!important;}'
+      '#classificacao .collection-with-search-atendimento ul.pagination,.listagem-fila .collection-with-search-atendimento ul.pagination{display:none!important;}',
+      '#om30-acolh-resumo{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:8px 0 10px;font-family:Arial,Helvetica,sans-serif;}',
+      '#om30-acolh-resumo .om30-acolh-card{min-width:130px;padding:7px 11px;border:1px solid #d8dfe5;border-radius:8px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.04);display:flex;align-items:center;justify-content:space-between;gap:12px;}',
+      '#om30-acolh-resumo .om30-acolh-card span{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.35px;color:#7a8590;}',
+      '#om30-acolh-resumo .om30-acolh-card strong{font-size:15px;font-weight:800;color:#35404a;font-variant-numeric:tabular-nums;}',
+      '#om30-acolh-resumo .om30-acolh-horario{margin-left:auto;}',
+      '#om30-acolh-resumo .om30-acolh-horario strong{font-size:18px;}',
+      '.collection-with-search-atendimento .om30-acolh-th-espera{display:block;margin-top:2px;font-size:8px;font-weight:700;color:#8a949c;text-transform:none;white-space:nowrap;}',
+      '.collection-with-search-atendimento .om30-acolh-espera{display:inline-flex;align-items:center;gap:4px;margin-top:4px;padding:2px 7px;border-radius:10px;background:#eef1f3;color:#68727b;font-size:9px;line-height:1.25;white-space:nowrap;}',
+      '.collection-with-search-atendimento .om30-acolh-espera strong{color:#303941;font-size:9.5px;font-weight:800;}',
+      '.collection-with-search-atendimento .om30-acolh-clock{font-size:11px;line-height:1;}',
+      '.collection-with-search-atendimento .om30-acolh-idade{display:inline-flex;align-items:center;justify-content:center;min-width:48px;padding:3px 7px;border:1px solid #d8dfe5;border-radius:10px;background:#f7f9fb;color:#46515a;font-size:10px;font-weight:800;white-space:nowrap;}',
+      '.collection-with-search-atendimento tbody td{vertical-align:middle!important;}',
+      '.collection-with-search-atendimento tbody td:nth-child(3),.collection-with-search-atendimento tbody td:nth-child(4){white-space:normal!important;overflow-wrap:anywhere!important;}',
+      '.collection-with-search-atendimento tbody td:last-child{min-width:72px;overflow:visible!important;}',
+      '.collection-with-search-atendimento tbody tr:hover td{background-color:#f7f9fb!important;}',
+      '.collection-with-search-atendimento .dropdown-menu{z-index:3000!important;}',
+      '@media(max-width:1100px){#om30-acolh-resumo .om30-acolh-horario{margin-left:0;}}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -3237,6 +3412,7 @@
           if (existente) atualizarObjetoFilaAcolhimento(existente, novo);
         }
         try { collection.isLoading = false; } catch {}
+        decorarFilaPrincipalAcolhimento(collection);
         return true;
       }
 
@@ -3247,6 +3423,7 @@
         if (collection.$data && 'totalRows' in collection.$data) collection.$data.totalRows = todos.length;
       } catch {}
       try { collection.isLoading = false; } catch {}
+      decorarFilaPrincipalAcolhimento(collection);
       return true;
     } catch (e) {
       console.warn('[OM30 Acolhimento Estável]', e);
@@ -3279,6 +3456,7 @@
     pararRefreshNativoFilaAcolhimento(listVm);
     prepararCollectionFilaAcolhimento(collection);
     esconderPaginacaoFilaAcolhimento();
+    decorarFilaPrincipalAcolhimento(collection);
 
     if (mudouComponente || !acolhEstavelAssinatura) {
       acolhEstavelAssinatura = assinaturaFilaAcolhimento(collection.$data.items || []);
@@ -3306,6 +3484,10 @@
       conectarFilaAcolhimentoEstavel();
       atualizarFilaAcolhimentoSilenciosa({ forcar:false }).catch(() => {});
     }, ACOLH_ESTAVEL_REFRESH_MS);
+
+    if (!window.__OM30_ACOLH_RELOGIOS__) {
+      window.__OM30_ACOLH_RELOGIOS__ = setInterval(atualizarRelogiosFilaAcolhimento, 30000);
+    }
 
     if (!acolhEstavelObserver) {
       let debounce = null;

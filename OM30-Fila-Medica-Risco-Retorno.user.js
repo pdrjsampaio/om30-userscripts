@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.1
+// @version      2.11.2
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,6 +22,11 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.11.2:
+  // - Fila médica: adiciona no menu (*) a opção "Desvincular senha de outro profissional".
+  // - Só executa após confirmação do Senha Simples de que a senha está presa (422 ja_chamada).
+  // - Mantém a mesma senha e não chama/inicia atendimento automaticamente.
+  //
   // v2.11.1:
   // - Mantém a funcionalidade de Ausentes embutida somente em /prontuarios.
   // - Remove deste script toda captura/salvamento da classificação e toda CLOUD OM30 2.
@@ -50,8 +55,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2112__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2112__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5846,7 +5851,7 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.11.1 carregado. Fila/Risco/Retorno + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
+  log('v2.11.2 carregado. Fila/Risco/Retorno + Ausentes + desvincular senha na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====
@@ -6842,7 +6847,320 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     window.senhaSimplesChamarSenhaAtendimento = embrulho;
   }
 
+
   instalarLiberacaoSenhaPresa();
+
+  // ---------------------------------------------------------------------------
+  // Fila médica — opção manual no menu (*) para desvincular senha presa
+  // ---------------------------------------------------------------------------
+
+  const OM30_MED_DESVINCULAR_CLASS = 'om30-med-desvincular-outro-profissional';
+  let om30MedDesvincularObserver = null;
+
+  function acharCollectionFilaMedicaManual() {
+    const candidatos = [...document.querySelectorAll('#classificacao *')]
+      .map(el => el.__vue__)
+      .filter(Boolean);
+
+    return candidatos.find(vm =>
+      norm(vm?.$options?.name) === 'COLLECTION-WITH-SEARCH-ATENDIMENTO' &&
+      Array.isArray(vm?.$data?.items)
+    ) || null;
+  }
+
+  function itensFilaMedicaManual() {
+    const vm = acharCollectionFilaMedicaManual();
+    if (Array.isArray(vm?.$data?.items)) return vm.$data.items;
+    if (Array.isArray(vm?.items)) return vm.items;
+    return [];
+  }
+
+  function itemFilaMedicaDaLinhaManual(tr) {
+    if (!tr) return null;
+    const itens = itensFilaMedicaManual();
+    if (!itens.length) return null;
+
+    const senha = clean(tr.cells?.[6]?.innerText || tr.cells?.[6]?.textContent);
+    const cns = clean(tr.cells?.[1]?.innerText || tr.cells?.[1]?.textContent);
+    const nome = clean(
+      tr.cells?.[2]?.querySelector('span:not(.badge)')?.innerText ||
+      tr.cells?.[2]?.innerText ||
+      tr.cells?.[2]?.textContent
+    );
+
+    // Senha é a chave visual mais forte.
+    if (senha && senha !== '—') {
+      const achou = itens.find(item => norm(item?.senha) === norm(senha));
+      if (achou) return achou;
+    }
+
+    if (cns && cns !== '—') {
+      const porCns = itens.filter(item => clean(item?.codigo_cns) === cns);
+      if (porCns.length === 1) return porCns[0];
+      if (porCns.length > 1 && nome) {
+        const achou = porCns.find(item => norm(item?.nome_municipe) === norm(nome));
+        if (achou) return achou;
+      }
+    }
+
+    if (nome) {
+      const porNome = itens.filter(item => norm(item?.nome_municipe) === norm(nome));
+      if (porNome.length === 1) return porNome[0];
+    }
+
+    return null;
+  }
+
+  function atendimentoFilaMedicaManual(item) {
+    if (!item || typeof item !== 'object') return null;
+
+    let id =
+      item.atendimento_id ??
+      item.saude_atendimento_id ??
+      item.atendimento?.id ??
+      item.saude_atendimento?.id ??
+      null;
+
+    let tipo = clean(
+      item.atendimento_type ??
+      item.saude_atendimento_type ??
+      item.atendimento?.type ??
+      item.atendimento?.tipo ??
+      item.saude_atendimento?.type ??
+      ''
+    );
+
+    const str = clean(item.atendimento_str || item.saude_atendimento_str || '');
+    const m = str.match(/^([^#]+)#(\d+)$/);
+    if (m) {
+      if (id == null) id = m[2];
+      if (!tipo) tipo = m[1];
+    }
+
+    if (id == null || !tipo) return null;
+    return { id: String(id), tipo };
+  }
+
+  function localAtualFilaMedicaManual() {
+    const vm = acharCollectionFilaMedicaManual();
+    let atual = vm;
+    const vistos = new Set();
+
+    for (let i = 0; atual && i < 12 && !vistos.has(atual); i++, atual = atual.$parent) {
+      vistos.add(atual);
+
+      const direto = clean(atual?.localAtendimentoId);
+      if (direto) return direto;
+
+      try {
+        const tipo = clean(atual?.tipoParametrizacao || atual?.$props?.tipoParametrizacao || 'atendimento');
+        const mapa = atual?.$store?.getters?.localAtendimentoAtual || {};
+        const local = mapa?.[tipo] || mapa?.atendimento || null;
+        if (local?.id) return clean(local.id);
+      } catch {}
+    }
+
+    return '';
+  }
+
+  async function retornarEDesvincularFilaMedica(atendimento, localPadrao) {
+    const param = await lerParametrizacao('atendimento');
+    const cat = param?.senha_simples_categoria?.id;
+    if (!cat) throw new Error('categoria da fila médica não encontrada');
+
+    const { data: senha } = await senhaSimplesPutFilas(cat + '/retornar_para_atendimento', {
+      atendimento_id: Number(atendimento.id),
+      atendimento_type: atendimento.tipo,
+      categoria_id: cat
+    });
+
+    if (!senha?.id) throw new Error('Senha Simples não devolveu a senha do atendimento');
+    const liberada = await desvincularSenha(senha, localPadrao || null);
+    return liberada || senha;
+  }
+
+  async function acaoDesvincularFilaMedica(tr) {
+    if (!location.pathname.startsWith('/prontuarios')) return;
+
+    if (!senhaSimplesPronto()) {
+      toast({
+        tipo: 'aviso',
+        titulo: 'Aguarde o Senha Simples',
+        texto: 'Ainda não foi possível consultar a senha. Tente novamente em alguns segundos.'
+      });
+      return;
+    }
+
+    const item = itemFilaMedicaDaLinhaManual(tr);
+    const atendimento = atendimentoFilaMedicaManual(item);
+    const nome = clean(item?.nome_municipe || tr?.cells?.[2]?.innerText || 'Paciente');
+    const senhaVisual = clean(item?.senha || tr?.cells?.[6]?.innerText || '');
+
+    if (!atendimento) {
+      await dialogo({
+        tipo: 'erro',
+        titulo: 'Não consegui identificar o atendimento',
+        subtitulo: nome,
+        texto: ['Nada foi alterado.', 'Atualize a fila e tente novamente.'],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    const localAtual = localAtualFilaMedicaManual();
+    if (!localAtual) {
+      toast({
+        tipo: 'aviso',
+        titulo: 'Guichê não identificado',
+        texto: 'Selecione novamente o guichê da fila médica e tente de novo.'
+      });
+      return;
+    }
+
+    let estado;
+    try {
+      estado = await consultarSenha(localAtual, atendimento.id, atendimento.tipo);
+    } catch (e) {
+      estado = { erro: descricaoErro(e) };
+    }
+
+    if (estado?.auth || estado?.erro) {
+      await dialogo({
+        tipo: 'erro',
+        titulo: 'Não foi possível conferir a senha',
+        subtitulo: nome,
+        texto: ['Nada foi alterado.', 'Detalhe: ' + (estado?.erro || 'falha no Senha Simples')],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    // Só executa quando o recuperar_senha_saude_atendimento respondeu 422 ja_chamada.
+    if (!estado?.chamada) {
+      await dialogo({
+        tipo: 'info',
+        titulo: 'Senha não está presa em outro profissional',
+        subtitulo: nome,
+        senha: estado?.senha || senhaVisual || '',
+        senhaRotulo: 'Senha',
+        texto: ['Nenhuma alteração foi feita. O Senha Simples não confirmou vínculo com outro profissional/guichê.'],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+      return;
+    }
+
+    const profissional = estado.chamadoPor ? pessoaCurta(estado.chamadoPor) : '';
+    const guiche = estado.guiche ? guicheCurto(estado.guiche) : '';
+    const onde = [profissional, guiche].filter(Boolean).join(' · ');
+
+    const ok = await dialogo({
+      tipo: 'pergunta',
+      titulo: 'Desvincular senha de outro profissional?',
+      subtitulo: nome,
+      senha: senhaVisual || '',
+      senhaRotulo: 'Senha atual',
+      texto: [
+        onde
+          ? 'A senha está vinculada a ' + onde + '.'
+          : 'O Senha Simples confirmou que esta senha está vinculada a outro profissional/guichê.',
+        'Ao continuar, ela será liberada desse profissional e ficará disponível para nova chamada.',
+        'A mesma senha será mantida. Nenhum atendimento será iniciado automaticamente.'
+      ],
+      botoes: [
+        { rotulo: 'Cancelar', valor: false },
+        { rotulo: 'Desvincular senha', valor: true, primario: true }
+      ]
+    });
+    if (!ok) return;
+
+    try {
+      const liberada = await retornarEDesvincularFilaMedica(atendimento, localAtual);
+
+      await dialogo({
+        tipo: 'sucesso',
+        titulo: 'Senha desvinculada',
+        subtitulo: nome,
+        senha: liberada?.senha || senhaVisual || '',
+        senhaRotulo: 'Mesma senha do munícipe',
+        texto: ['A senha foi liberada do outro profissional/guichê e já pode ser chamada novamente.'],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+
+      // fetchCollection está envolvido pela fila estável; portanto atualiza por baixo,
+      // sem o pisca-pisca da listagem nativa.
+      try {
+        const vm = acharCollectionFilaMedicaManual();
+        await Promise.resolve(vm?.fetchCollection?.());
+      } catch {}
+    } catch (e) {
+      await dialogo({
+        tipo: 'erro',
+        titulo: 'Não foi possível desvincular a senha',
+        subtitulo: nome,
+        texto: ['Nada mais será feito automaticamente.', 'Detalhe: ' + descricaoErro(e)],
+        botoes: [{ rotulo: 'Fechar', valor: true, primario: true }]
+      });
+    }
+  }
+
+  function menuAcoesFilaMedicaManual(tr) {
+    if (!tr?.cells?.length) return null;
+    const ultima = tr.cells[tr.cells.length - 1];
+    return ultima.querySelector('.dropdown-opcoes-atendimento .dropdown-menu, .dropdown-menu');
+  }
+
+  function instalarOpcaoDesvincularFilaMedica(tr) {
+    if (!tr || !location.pathname.startsWith('/prontuarios')) return false;
+    const menu = menuAcoesFilaMedicaManual(tr);
+    if (!menu) return false;
+
+    if (menu.querySelector('.' + OM30_MED_DESVINCULAR_CLASS)) return true;
+
+    const divisor = document.createElement('div');
+    divisor.className = 'dropdown-divider om30-med-desvincular-divider';
+
+    const opcao = document.createElement('a');
+    opcao.href = 'javascript:void(0)';
+    opcao.className = 'dropdown-item ' + OM30_MED_DESVINCULAR_CLASS;
+    opcao.setAttribute('role', 'menuitem');
+    opcao.textContent = 'Desvincular senha de outro profissional';
+    opcao.title = 'Libera a mesma senha se ela estiver presa em outro profissional/guichê';
+
+    opcao.addEventListener('click', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      acaoDesvincularFilaMedica(tr).catch(e => {
+        console.warn('[OM30] Desvincular senha na fila médica:', e);
+      });
+    });
+
+    menu.appendChild(divisor);
+    menu.appendChild(opcao);
+    return true;
+  }
+
+  function instalarMenusDesvincularFilaMedica() {
+    if (!location.pathname.startsWith('/prontuarios')) return;
+
+    const aplicar = () => {
+      document.querySelectorAll('#classificacao tbody tr.collection-row').forEach(instalarOpcaoDesvincularFilaMedica);
+    };
+
+    aplicar();
+
+    if (om30MedDesvincularObserver) return;
+    let timer = null;
+    om30MedDesvincularObserver = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(aplicar, 80);
+    });
+    om30MedDesvincularObserver.observe(document.querySelector('#classificacao') || document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  instalarMenusDesvincularFilaMedica();
 
   // ---------------------------------------------------------------------------
   // Tabela nativa de ausentes

@@ -238,7 +238,7 @@
   //   'AMBOS' = Senha Simples e, se ele esconder, a ficha | 'SENHA' = só Senha Simples | 'FICHA' = só a ficha
   const MODO_NUMERO = 'AMBOS';
   let T0 = performance.now();
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.3';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '2.0.8';
   const PREFIX = 'om30-ausentes-acolhimento';
   // Tela atual: acolhimento ou fila médica (prontuarios e urgencia_emergencia são a mesma fila).
   const TELA = location.pathname.startsWith('/prontuarios') ? 'MEDICO' : 'ACOLHIMENTO';

@@ -23,10 +23,9 @@
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
   // v2.10.6:
-  // - CLOUD OM30 2 integrada à fila médica: consulta classificação pelo senha_id técnico,
-  //   guarda em cache por 24h e para de consultar assim que encontrar.
-  // - Corrigida a pesquisa nativa: nome, nome social, senha e CNS agora filtram a medFonte
-  //   em conjunto com os cards de risco, sem a coleção completa sobrescrever a busca.
+  // - Corrige a pesquisa da fila médica: nome, nome social, senha e CNS passam a
+  //   filtrar a fonte completa mantida pelo script, sem o refresh restaurar todos.
+  // - Nenhuma integração Cloud/Classificação foi adicionada aqui.
   //
   // - Senha RT = retorno PA/36h (regra independente).
   // - prontuario_com_retorno = tag Retorno nativa (regra independente).
@@ -162,8 +161,8 @@
   }
 
   function riscoItem(item) {
-    const riscoCloud = norm(item?.__om30_nome_grau_risco_cloud);
-    if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(riscoCloud)) return riscoCloud;
+    const risco = norm(item?.nome_grau_risco);
+    if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(risco)) return risco;
 
     const porId = {
       '1': 'VERMELHO',
@@ -172,11 +171,6 @@
       '4': 'AZUL'
     };
 
-    const idCloud = porId[String(item?.__om30_grau_risco_cloud ?? '')];
-    if (idCloud) return idCloud;
-
-    const risco = norm(item?.nome_grau_risco);
-    if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(risco)) return risco;
     return porId[String(item?.grau_risco_id ?? '')] || null;
   }
 
@@ -4450,15 +4444,6 @@
   let medPesquisaTermo = '';
   let medPesquisaInput = null;
 
-  // CLOUD OM30 2 — classificação temporária do Acolhimento.
-  const MED_CLOUD_URL = 'https://om30-classificacao-risco.cloud-om30-2.workers.dev';
-  const MED_CLOUD_KEY = () => String.fromCharCode(111,109,51,48,50,48,50,54);
-  const MED_CLOUD_CACHE_PREFIX = `${PREFIX}:cloud-risco:`;
-  const MED_CLOUD_CACHE_MS = 24 * 60 * 60 * 1000;
-  const medCloudMem = new Map();
-  const medCloudEmVoo = new Map();
-  const medCloudNaoEncontrado = new Map();
-
   function injetarCSSControleMedico() {
     if (document.getElementById(`${MED_BAR_ID}-css`)) return;
     const st = document.createElement('style');
@@ -5095,196 +5080,6 @@
     window.addEventListener('resize', () => solicitarAjusteZoomResponsivoFilaMedica(80), { passive:true });
   }
 
-  function idSeguroCloud(valor) {
-    if (valor == null) return '';
-    const s = clean(valor);
-    return /^[A-Za-z0-9._:-]{4,180}$/.test(s) ? s : '';
-  }
-
-  function senhaIdTecnicoObjeto(obj, nivel = 0, vistos = new Set()) {
-    if (!obj || typeof obj !== 'object' || nivel > 4 || vistos.has(obj)) return '';
-    vistos.add(obj);
-
-    const diretos = [
-      'senha_id', 'senhaId', 'senha_simples_id', 'senhaSimplesId',
-      'id_senha', 'senha_atendimento_id', 'senhaAtendimentoId',
-      'senha_simples_atendimento_id', 'senhaSimplesAtendimentoId'
-    ];
-    for (const k of diretos) {
-      const v = idSeguroCloud(obj[k]);
-      if (v) return v;
-    }
-
-    for (const k of ['senha_obj', 'senhaObj', 'senha_simples', 'senhaSimples', 'senha_atendimento', 'senhaAtendimento']) {
-      const alvo = obj[k];
-      if (!alvo || typeof alvo !== 'object') continue;
-      const v = idSeguroCloud(alvo.id ?? alvo._id ?? alvo.uuid);
-      if (v) return v;
-    }
-
-    // Em algumas versões "senha" é o objeto inteiro; quando for texto (CN0001/RT0001)
-    // ele é deliberadamente ignorado.
-    if (obj.senha && typeof obj.senha === 'object') {
-      const v = idSeguroCloud(obj.senha.id ?? obj.senha._id ?? obj.senha.uuid);
-      if (v) return v;
-    }
-
-    for (const [k, v] of Object.entries(obj)) {
-      if (!v || typeof v !== 'object') continue;
-      if (!/senha|fila|atendimento/i.test(k)) continue;
-      const achou = senhaIdTecnicoObjeto(v, nivel + 1, vistos);
-      if (achou) return achou;
-    }
-    return '';
-  }
-
-  function senhaIdTecnicoLinha(row) {
-    if (!row) return '';
-    for (const el of [row, ...row.querySelectorAll('*')]) {
-      const vm = el.__vue__;
-      if (!vm) continue;
-      for (const alvo of [vm.$props, vm.$data, vm]) {
-        const id = senhaIdTecnicoObjeto(alvo);
-        if (id) return id;
-      }
-    }
-    return '';
-  }
-
-  function senhaIdTecnicoItem(item, row = null) {
-    const salvo = idSeguroCloud(item?.__om30_senha_id_cloud);
-    if (salvo) return salvo;
-    const id = senhaIdTecnicoObjeto(item) || senhaIdTecnicoLinha(row);
-    if (id && item && typeof item === 'object') {
-      try { item.__om30_senha_id_cloud = id; } catch (_) {}
-    }
-    return id;
-  }
-
-  function lerRiscoCloudLocal(senhaId) {
-    if (!senhaId) return null;
-    if (medCloudMem.has(senhaId)) return medCloudMem.get(senhaId);
-    try {
-      const raw = JSON.parse(localStorage.getItem(MED_CLOUD_CACHE_PREFIX + senhaId) || 'null');
-      if (raw?.risco && Date.now() - Number(raw.t || 0) < MED_CLOUD_CACHE_MS) {
-        medCloudMem.set(senhaId, raw);
-        return raw;
-      }
-      if (raw) localStorage.removeItem(MED_CLOUD_CACHE_PREFIX + senhaId);
-    } catch (_) {}
-    return null;
-  }
-
-  function gravarRiscoCloudLocal(senhaId, risco, grauId) {
-    const obj = { risco, grau_id:Number(grauId || 0), t:Date.now() };
-    medCloudMem.set(senhaId, obj);
-    try { localStorage.setItem(MED_CLOUD_CACHE_PREFIX + senhaId, JSON.stringify(obj)); } catch (_) {}
-    return obj;
-  }
-
-  function aplicarRiscoCloudNoItem(item, dado) {
-    if (!item || !dado?.risco) return false;
-    const antes = riscoItem(item);
-    try {
-      item.__om30_nome_grau_risco_cloud = dado.risco;
-      item.__om30_grau_risco_cloud = Number(dado.grau_id || 0) || null;
-    } catch (_) {}
-    return riscoItem(item) !== antes;
-  }
-
-  function propagarRiscoCloud(item, dado) {
-    if (!item || !dado?.risco) return false;
-    let mudou = aplicarRiscoCloudNoItem(item, dado);
-    const chave = chaveItem(item);
-    if (chave) {
-      const origem = medFonte.find(x => chaveItem(x) === chave);
-      if (origem && origem !== item) mudou = aplicarRiscoCloudNoItem(origem, dado) || mudou;
-    }
-    return mudou;
-  }
-
-  function podarCacheRiscoCloudLocal() {
-    try {
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const k = localStorage.key(i);
-        if (!k?.startsWith(MED_CLOUD_CACHE_PREFIX)) continue;
-        const raw = JSON.parse(localStorage.getItem(k) || 'null');
-        if (!raw?.t || Date.now() - Number(raw.t) >= MED_CLOUD_CACHE_MS) localStorage.removeItem(k);
-      }
-    } catch (_) {}
-  }
-
-  async function consultarRiscoCloudItem(item, row = null) {
-    const senhaId = senhaIdTecnicoItem(item, row);
-    if (!senhaId) return null;
-
-    const local = lerRiscoCloudLocal(senhaId);
-    if (local?.risco) {
-      const mudou = propagarRiscoCloud(item, local);
-      if (mudou && medVm) {
-        medAssinaturaFonte = assinaturaMedFonte(medFonte);
-        medAssinaturaAplicada = '';
-        Promise.resolve().then(() => aplicarMedFonte(medVm, true));
-      }
-      return local;
-    }
-
-    const proxima = Number(medCloudNaoEncontrado.get(senhaId) || 0);
-    if (Date.now() < proxima) return null;
-    if (medCloudEmVoo.has(senhaId)) return medCloudEmVoo.get(senhaId);
-
-    const promessa = (async () => {
-      try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 5000);
-        let r;
-        try {
-          r = await fetch(`${MED_CLOUD_URL}/v1/classificacoes/${encodeURIComponent(senhaId)}`, {
-            method:'GET',
-            mode:'cors',
-            cache:'no-store',
-            credentials:'omit',
-            signal:ctrl.signal,
-            headers:{ 'X-OM30-Key': MED_CLOUD_KEY() }
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-
-        if (r.status === 404) {
-          // Normal quando a linha apareceu milissegundos antes do POST do acolhimento.
-          // Tenta de novo depois, sem polling agressivo.
-          medCloudNaoEncontrado.set(senhaId, Date.now() + 10000);
-          return null;
-        }
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-
-        const j = await r.json();
-        const risco = norm(j?.classificacao);
-        if (!['VERMELHO','AMARELO','VERDE','AZUL'].includes(risco)) return null;
-
-        const dado = gravarRiscoCloudLocal(senhaId, risco, Number(j?.grau_risco_id || 0));
-        medCloudNaoEncontrado.delete(senhaId);
-        const mudou = propagarRiscoCloud(item, dado);
-
-        if (mudou && medVm) {
-          medAssinaturaFonte = assinaturaMedFonte(medFonte);
-          medAssinaturaAplicada = '';
-          Promise.resolve().then(() => aplicarMedFonte(medVm, true));
-        }
-        return dado;
-      } catch (e) {
-        medCloudNaoEncontrado.set(senhaId, Date.now() + 30000);
-        return null;
-      } finally {
-        medCloudEmVoo.delete(senhaId);
-      }
-    })();
-
-    medCloudEmVoo.set(senhaId, promessa);
-    return promessa;
-  }
-
   function campoPesquisaMedica(vm = medVm) {
     const raizes = [...new Set([vm?.$el, document.querySelector('#classificacao')].filter(Boolean))];
     if (!raizes.length) return null;
@@ -5301,7 +5096,7 @@
       ].filter(Boolean).join(' '));
       let p = 0;
       if (/PESQUIS|BUSC|SEARCH/.test(s)) p += 20;
-      if (/NOME|SENHA|PACIENTE|MUNICIPE/.test(s)) p += 8;
+      if (/NOME|SENHA|PACIENTE|MUNICIPE|CNS/.test(s)) p += 8;
       if (el.type === 'search') p += 5;
       return p;
     };
@@ -5354,8 +5149,6 @@
     input.addEventListener('change', reaplicar, true);
     return true;
   }
-
-  podarCacheRiscoCloudLocal();
 
   function assinaturaMedFonte(lista) {
     return (Array.isArray(lista) ? lista : []).map(it => [
@@ -5524,31 +5317,6 @@
     for (const r of ['VERMELHO','AMARELO','VERDE','AZUL']) row.classList.remove(`om30-risco-${r}`);
     const risco = riscoItem(item);
     if (risco) row.classList.add(`om30-risco-${risco}`);
-
-    // Consulta a CLOUD só enquanto ainda não temos classificação cacheada para o senha_id.
-    // Não bloqueia a pintura da fila; quando chegar, a própria linha é reconciliada.
-    void consultarRiscoCloudItem(item, row);
-
-    const celulaRisco = row.cells?.[7];
-    if (celulaRisco) {
-      let tag = celulaRisco.querySelector('.om30-cloud-risco-label');
-      const riscoCloud = norm(item?.__om30_nome_grau_risco_cloud);
-      if (['VERMELHO','AMARELO','VERDE','AZUL'].includes(riscoCloud)) {
-        const textoAtual = norm(celulaRisco.innerText || celulaRisco.textContent);
-        if (!textoAtual.includes(riscoCloud)) {
-          if (!tag) {
-            tag = document.createElement('span');
-            tag.className = 'om30-cloud-risco-label';
-            celulaRisco.appendChild(tag);
-          }
-          tag.textContent = riscoCloud;
-        } else {
-          tag?.remove();
-        }
-      } else {
-        tag?.remove();
-      }
-    }
 
     const chegada = row.cells?.[0];
     if (chegada) {
@@ -5974,5 +5742,5 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.10.6 carregado. CLOUD OM30 2 + pesquisa nome/senha corrigida + RT/36h + Profissional do Retorno + fila estável. Filtro inicial:', filtroSelecionado);
+  log('v2.10.6 carregado. Pesquisa por nome/senha/CNS corrigida + RT/36h + Profissional do Retorno + fila estável. Filtro inicial:', filtroSelecionado);
 })();

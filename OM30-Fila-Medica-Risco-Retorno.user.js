@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.0
+// @version      2.11.1
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -22,11 +22,13 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.11.1:
+  // - Mantém a funcionalidade de Ausentes embutida somente em /prontuarios.
+  // - Remove deste script toda captura/salvamento da classificação e toda CLOUD OM30 2.
+  // - O Acolhimento + classificação CLOUD continuam exclusivamente no OM30-Ausentes-Acolhimento.user.js.
+  //
   // v2.11.0:
-  // - Unifica o módulo OM30-Ausentes-Acolhimento v2.0.6 neste mesmo userscript.
-  // - Em /prontuarios mantém Fila Médica + Risco + Retorno e acrescenta Ausentes.
-  // - Em /acolhimentos executa somente o módulo de Ausentes/classificação já existente.
-  // - Se o userscript Ausentes separado também estiver instalado, a trava global evita execução dupla.
+  // - Unifica o módulo de Ausentes na fila médica.
   //
   // v2.10.8:
   // - Pesquisa passa a ser 100% local sobre a medFonte completa.
@@ -48,8 +50,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2110__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2110__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2111__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -5844,28 +5846,17 @@
 
   // Fora da Urgência e Emergência o script não injeta CSS, filtro, observer
   // nem quadro clínico; permanece totalmente inativo.
-  log('v2.11.0 carregado. Fila/Risco/Retorno + módulo Ausentes integrado. Filtro inicial:', filtroSelecionado);
+  log('v2.11.1 carregado. Fila/Risco/Retorno + Ausentes na fila médica, sem Cloud de classificação. Filtro inicial:', filtroSelecionado);
 })();
 
 // ===== OM30 AUSENTES EMBUTIDO — origem: OM30-Ausentes-Acolhimento v2.0.6 =====
-if (/^\/(?:acolhimentos|prontuarios)(?:\/|$)/i.test(location.pathname)) {
+if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
 (() => {
   'use strict';
-
-  // v2.0.6:
-  // - CLOUD OM30 2 zero-config: credencial padrão embarcada de forma ofuscada, sem etapa manual por PC.
-  // - Mantidos retry, deduplicação, pendência de sessão e possibilidade de override local para manutenção.
-  //
-  // v2.0.5:
-  // - Ponte CLOUD OM30 2: após o encaminhamento do acolhimento ser confirmado, envia a classificação
-  //   uma única vez ao Worker om30-classificacao-risco. API key fica somente no localStorage do navegador.
-  // - Retry automático em falha de rede/Worker; pendência fica na sessão até receber confirmação 2xx.
-  //
-  // v2.0.4:
-  // - Captura confirmada da classificação de risco enviada pelo Acolhimento ao Senha Simples:
-  //   PUT /api/v2/filas/{categoria}/{tipo}/{senha_id}/encaminhar, lendo grau_risco_id (1..4).
-  // - Não envia nada para Cloudflare ainda: guarda somente a última captura na sessão e dispara
-  //   o evento "om30:classificacao-risco", pronto para a ponte da CLOUD OM30 2.
+ 
+  // Módulo Ausentes embutido para /prontuarios.
+  // A captura/salvamento da classificação e a CLOUD OM30 2 ficam exclusivamente
+  // no OM30-Ausentes-Acolhimento.user.js separado.
   //
   // v2.0.3:
   // - Mensagem ao devolver: deixa claro que é a MESMA senha do munícipe (não precisa informar
@@ -6139,352 +6130,6 @@ if (/^\/(?:acolhimentos|prontuarios)(?:\/|$)/i.test(location.pathname)) {
       while (i < itens.length) { const k = i++; await fn(itens[k]); }
     }));
   }
-
-  // ---------------------------------------------------------------------------
-  // Classificação de risco enviada pelo Acolhimento
-  //   Captura confirmada do Senha Simples:
-  //   PUT /api/v2/filas/{categoria_origem}/{tipo_origem}/{senha_id}/encaminhar
-  //   body: grau_risco_id + tipo_atendimento_destino_id
-  //
-  //   Guarda a última captura da sessão e dispara "om30:classificacao-risco".
-  //   A ponte CLOUD OM30 2, abaixo, escuta esse evento e faz o POST sem alterar o fluxo nativo.
-  // ---------------------------------------------------------------------------
-
-  const OM30_CLASSIFICACAO_RISCO_CAPTURE_V1 = true;
-  const STORAGE_ULTIMA_CLASSIFICACAO = `${PREFIX}:ultima-classificacao-risco`;
-  const RISCO_POR_ID = Object.freeze({
-    1: 'VERMELHO',
-    2: 'AMARELO',
-    3: 'VERDE',
-    4: 'AZUL'
-  });
-
-  function corpoComoObjeto(corpo) {
-    if (corpo == null) return {};
-    if (typeof FormData !== 'undefined' && corpo instanceof FormData) {
-      return Object.fromEntries([...corpo.entries()]);
-    }
-    if (typeof URLSearchParams !== 'undefined' && corpo instanceof URLSearchParams) {
-      return Object.fromEntries(corpo.entries());
-    }
-    if (typeof corpo === 'object') return corpo;
-    const txt = String(corpo || '').trim();
-    if (!txt) return {};
-    try {
-      const j = JSON.parse(txt);
-      if (j && typeof j === 'object') return j;
-    } catch {}
-    try {
-      return Object.fromEntries(new URLSearchParams(txt).entries());
-    } catch {}
-    return {};
-  }
-
-  function valorProfundo(obj, nomes, nivel = 0) {
-    if (!obj || typeof obj !== 'object' || nivel > 4) return null;
-    for (const nome of nomes) {
-      if (Object.prototype.hasOwnProperty.call(obj, nome) && obj[nome] != null) return obj[nome];
-    }
-    for (const valor of Object.values(obj)) {
-      if (!valor || typeof valor !== 'object') continue;
-      const achou = valorProfundo(valor, nomes, nivel + 1);
-      if (achou != null) return achou;
-    }
-    return null;
-  }
-
-  function lerEncaminhamentoClassificacao(url, metodo, corpo) {
-    if (!location.pathname.startsWith('/acolhimentos')) return null;
-    if (String(metodo || '').toUpperCase() !== 'PUT') return null;
-
-    let u;
-    try { u = new URL(String(url || ''), location.href); } catch { return null; }
-
-    const m = u.pathname.match(/\/api\/v2\/filas\/([^/]+)\/([^/]+)\/([^/]+)\/encaminhar\/?$/i);
-    if (!m) return null;
-
-    const dados = corpoComoObjeto(corpo);
-    const riscoBruto = valorProfundo(dados, ['grau_risco_id']);
-    const riscoId = Number(riscoBruto);
-    if (!Number.isInteger(riscoId) || !RISCO_POR_ID[riscoId]) return null;
-
-    return {
-      senha_id: decodeURIComponent(m[3]),
-      categoria_origem_id: decodeURIComponent(m[1]),
-      tipo_atendimento_origem_id: decodeURIComponent(m[2]),
-      tipo_atendimento_destino_id: String(
-        valorProfundo(dados, ['tipo_atendimento_destino_id']) ?? ''
-      ) || null,
-      grau_risco_id: riscoId,
-      classificacao: RISCO_POR_ID[riscoId],
-      capturado_em: new Date().toISOString()
-    };
-  }
-
-  let ultimaAssinaturaClassificacao = '';
-  let ultimaAssinaturaClassificacaoEm = 0;
-
-  function registrarClassificacaoCapturada(info) {
-    if (!info?.senha_id || !info?.grau_risco_id) return;
-
-    // Axios/fetch/XHR podem passar pela mesma camada em alguns ambientes.
-    // Evita registrar duas vezes a mesma operação.
-    const assinatura = `${info.senha_id}:${info.grau_risco_id}:${info.tipo_atendimento_destino_id || ''}`;
-    const agora = Date.now();
-    if (assinatura === ultimaAssinaturaClassificacao && agora - ultimaAssinaturaClassificacaoEm < 3000) return;
-    ultimaAssinaturaClassificacao = assinatura;
-    ultimaAssinaturaClassificacaoEm = agora;
-
-    gravar(STORAGE_ULTIMA_CLASSIFICACAO, info, sessionStorage);
-    console.info('[OM30 Ausentes] classificação capturada:', info);
-    try {
-      window.dispatchEvent(new CustomEvent('om30:classificacao-risco', { detail: info }));
-    } catch {}
-  }
-
-  // 1) Caminho principal: o Saúde Simples usa um proxy Axios para conversar com o Senha Simples.
-  //    Interceptamos somente respostas 2xx, ou seja, a classificação já foi aceita.
-  async function instalarCapturaClassificacaoAxios() {
-    try {
-      await esperar(() => {
-        const p = (typeof senhaSimplesProxy !== 'undefined') ? senhaSimplesProxy : null;
-        return !!p?.interceptors?.response?.use;
-      }, 30000);
-    } catch { return false; }
-
-    const p = (typeof senhaSimplesProxy !== 'undefined') ? senhaSimplesProxy : null;
-    if (!p?.interceptors?.response?.use) return false;
-    if (p.__om30ClassificacaoRiscoInterceptor) return true;
-
-    p.interceptors.response.use(resp => {
-      try {
-        const cfg = resp?.config || {};
-        const info = lerEncaminhamentoClassificacao(cfg.url, cfg.method, cfg.data);
-        if (info) registrarClassificacaoCapturada(info);
-      } catch (e) {
-        console.warn('[OM30 Ausentes] captura da classificação:', e);
-      }
-      return resp;
-    });
-
-    try { Object.defineProperty(p, '__om30ClassificacaoRiscoInterceptor', { value: true }); }
-    catch { p.__om30ClassificacaoRiscoInterceptor = true; }
-    return true;
-  }
-
-  // 2) Fallback de segurança para telas que façam o PUT diretamente por XMLHttpRequest.
-  function instalarCapturaClassificacaoXHR() {
-    const proto = window.XMLHttpRequest?.prototype;
-    if (!proto || proto.__om30ClassificacaoRiscoXHR) return;
-
-    const abrir = proto.open;
-    const enviar = proto.send;
-
-    proto.open = function(method, url, ...resto) {
-      this.__om30ClassificacaoMeta = { method, url };
-      return abrir.call(this, method, url, ...resto);
-    };
-
-    proto.send = function(body) {
-      const meta = this.__om30ClassificacaoMeta;
-      let candidato = null;
-      try { candidato = lerEncaminhamentoClassificacao(meta?.url, meta?.method, body); } catch {}
-      if (candidato) {
-        this.addEventListener('loadend', () => {
-          if (this.status >= 200 && this.status < 300) registrarClassificacaoCapturada(candidato);
-        }, { once: true });
-      }
-      return enviar.call(this, body);
-    };
-
-    try { Object.defineProperty(proto, '__om30ClassificacaoRiscoXHR', { value: true }); }
-    catch { proto.__om30ClassificacaoRiscoXHR = true; }
-  }
-
-  instalarCapturaClassificacaoXHR();
-  instalarCapturaClassificacaoAxios();
-
-  // Diagnóstico rápido no console. Retorna somente a última classificação desta aba.
-  window.OM30ClassificacaoRiscoUltima = () => lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
-
-
-  // ---------------------------------------------------------------------------
-  // Ponte CLOUD OM30 2
-  //   Zero-config: a credencial padrão já acompanha o script.
-  //   OM30ClassificacaoCloudConfig(...) fica apenas como override opcional para manutenção.
-  // ---------------------------------------------------------------------------
-
-  const OM30_CLASSIFICACAO_CLOUD_V1 = true;
-  const CLASSIFICACAO_CLOUD_URL = 'https://om30-classificacao-risco.cloud-om30-2.workers.dev';
-  const STORAGE_CLASSIFICACAO_CLOUD_KEY = `${PREFIX}:classificacao-cloud-api-key`;
-  const CLASSIFICACAO_CLOUD_KEY_PADRAO = () => String.fromCharCode(111,109,51,48,50,48,50,54);
-  const SESSION_CLASSIFICACAO_PENDENTE = `${PREFIX}:classificacao-cloud-pendente`;
-  const SESSION_CLASSIFICACAO_ULTIMO_ENVIO = `${PREFIX}:classificacao-cloud-ultimo-envio`;
-
-  let envioClassificacaoEmCurso = null;
-  let avisoCloudSemChave = false;
-
-  function classificacaoCloudKey() {
-    try {
-      return clean(localStorage.getItem(STORAGE_CLASSIFICACAO_CLOUD_KEY)) || CLASSIFICACAO_CLOUD_KEY_PADRAO();
-    } catch {
-      return CLASSIFICACAO_CLOUD_KEY_PADRAO();
-    }
-  }
-
-  function payloadClassificacaoCloud(info) {
-    return {
-      senha_id: String(info?.senha_id || ''),
-      grau_risco_id: Number(info?.grau_risco_id || 0),
-      categoria_origem_id: info?.categoria_origem_id || null,
-      tipo_atendimento_origem_id: info?.tipo_atendimento_origem_id || null,
-      tipo_atendimento_destino_id: info?.tipo_atendimento_destino_id || null
-    };
-  }
-
-  function assinaturaClassificacaoCloud(info) {
-    return [
-      info?.senha_id || '',
-      info?.grau_risco_id || '',
-      info?.tipo_atendimento_destino_id || ''
-    ].join(':');
-  }
-
-  async function postarClassificacaoCloud(info, { tentativas = 3 } = {}) {
-    const apiKey = classificacaoCloudKey();
-    if (!apiKey) {
-      if (!avisoCloudSemChave) {
-        avisoCloudSemChave = true;
-        console.info('[OM30 Ausentes] CLOUD OM30 2 sem credencial disponível.');
-      }
-      return { ok: false, sem_chave: true };
-    }
-
-    const payload = payloadClassificacaoCloud(info);
-    if (!payload.senha_id || !RISCO_POR_ID[payload.grau_risco_id]) {
-      return { ok: false, invalido: true };
-    }
-
-    const assinatura = assinaturaClassificacaoCloud(payload);
-    const ultimo = lerJSON(SESSION_CLASSIFICACAO_ULTIMO_ENVIO, sessionStorage);
-    if (ultimo.assinatura === assinatura && Date.now() - Number(ultimo.t || 0) < 10000) {
-      return { ok: true, duplicado: true };
-    }
-
-    gravar(SESSION_CLASSIFICACAO_PENDENTE, info, sessionStorage);
-
-    let erro = null;
-    for (let i = 0; i < tentativas; i++) {
-      try {
-        const r = await fetch(`${CLASSIFICACAO_CLOUD_URL}/v1/classificacoes`, {
-          method: 'POST',
-          mode: 'cors',
-          cache: 'no-store',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-OM30-Key': apiKey
-          },
-          body: JSON.stringify(payload)
-        });
-
-        let resposta = null;
-        try { resposta = await r.json(); } catch {}
-
-        if (!r.ok) {
-          const detalhe = resposta?.erro || `HTTP ${r.status}`;
-          // 401 não melhora com retry: chave configurada neste navegador está incorreta.
-          if (r.status === 401) throw Object.assign(new Error(detalhe), { semRetry: true, status: 401 });
-          throw new Error(detalhe);
-        }
-
-        try { sessionStorage.removeItem(SESSION_CLASSIFICACAO_PENDENTE); } catch {}
-        gravar(SESSION_CLASSIFICACAO_ULTIMO_ENVIO, { assinatura, t: Date.now() }, sessionStorage);
-        console.info('[OM30 Ausentes] classificação enviada à CLOUD OM30 2:', {
-          senha_id: payload.senha_id,
-          classificacao: RISCO_POR_ID[payload.grau_risco_id]
-        });
-        return { ok: true, resposta };
-      } catch (e) {
-        erro = e;
-        if (e?.semRetry || i === tentativas - 1) break;
-        await new Promise(ok => setTimeout(ok, [1000, 3000, 6000][i] || 6000));
-      }
-    }
-
-    console.warn('[OM30 Ausentes] CLOUD OM30 2: classificação ficou pendente para reenvio:', erro);
-    return { ok: false, erro: String(erro?.message || erro) };
-  }
-
-  function enviarClassificacaoCloud(info) {
-    // Serializa os envios nesta aba para não criar duas gravações concorrentes
-    // caso Axios/XHR notifiquem quase juntos.
-    const anterior = envioClassificacaoEmCurso || Promise.resolve();
-    const atual = anterior.catch(() => {}).then(() => postarClassificacaoCloud(info));
-    envioClassificacaoEmCurso = atual;
-    atual.finally(() => {
-      if (envioClassificacaoEmCurso === atual) envioClassificacaoEmCurso = null;
-    });
-    return atual;
-  }
-
-  window.addEventListener('om30:classificacao-risco', ev => {
-    const info = ev?.detail;
-    if (info?.senha_id) void enviarClassificacaoCloud(info);
-  });
-
-  // Configura a chave somente neste navegador/origem. Não imprime nem devolve a chave.
-  window.OM30ClassificacaoCloudConfig = chave => {
-    const valor = clean(chave);
-    if (!valor) {
-      return {
-        ok: false,
-        configurada: !!classificacaoCloudKey(),
-        mensagem: 'Informe a chave da CLOUD OM30 2.'
-      };
-    }
-    try { localStorage.setItem(STORAGE_CLASSIFICACAO_CLOUD_KEY, valor); }
-    catch { return { ok: false, configurada: false, mensagem: 'Não consegui gravar no localStorage.' }; }
-
-    avisoCloudSemChave = false;
-    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
-    const ultima = lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
-    const reenviar = pendente?.senha_id ? pendente : ultima?.senha_id ? ultima : null;
-    if (reenviar) void enviarClassificacaoCloud(reenviar);
-
-    return {
-      ok: true,
-      configurada: true,
-      endpoint: CLASSIFICACAO_CLOUD_URL,
-      reenviando_pendente: !!reenviar
-    };
-  };
-
-  window.OM30ClassificacaoCloudStatus = () => {
-    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
-    return {
-      versao: '1.0',
-      configurada: !!classificacaoCloudKey(),
-      endpoint: CLASSIFICACAO_CLOUD_URL,
-      pendente: pendente?.senha_id ? {
-        senha_id: pendente.senha_id,
-        grau_risco_id: pendente.grau_risco_id,
-        classificacao: pendente.classificacao
-      } : null
-    };
-  };
-
-  window.OM30ClassificacaoCloudReenviar = () => {
-    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
-    const ultima = lerJSON(STORAGE_ULTIMA_CLASSIFICACAO, sessionStorage);
-    const info = pendente?.senha_id ? pendente : ultima?.senha_id ? ultima : null;
-    return info ? enviarClassificacaoCloud(info) : Promise.resolve({ ok: false, vazio: true });
-  };
-
-  // Se a página recarregou depois de uma falha, tenta novamente a classificação pendente.
-  setTimeout(() => {
-    const pendente = lerJSON(SESSION_CLASSIFICACAO_PENDENTE, sessionStorage);
-    if (pendente?.senha_id && classificacaoCloudKey()) void enviarClassificacaoCloud(pendente);
-  }, 1500);
 
   // ---------------------------------------------------------------------------
   // Senha Simples (somente leitura)

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.0.1
-// @description  Procedimentos PA com favoritos pessoais por médico, fluxo real do Controle de Salas e geração automática de SADT externa para exames.
+// @version      2.0.2
+// @description  Procedimentos PA com favoritos pessoais por médico pré-carregados após o login + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -1171,20 +1171,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   .om30-cs-native-body.open{display:block}
   .om30-cs-native-body #om30pa.om30-inline{display:block!important}
   #om30-controle-salas-section > .portlet > .portlet-header{color:#c62828!important}
-  #om30pa .sadt-auto{display:none}
-  #om30pa .sadt-auto-card{
-    margin:0 0 8px;padding:8px 10px;border:1px solid #cfd8dc;border-radius:8px;
-    background:#f8fbfc;color:#263238;font:12px Arial,sans-serif
-  }
-  #om30pa .sadt-auto-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
-  #om30pa .sadt-auto-title{font-weight:700;color:#263238}
-  #om30pa .sadt-auto-badge{font-size:10px;font-weight:700;color:#256029;background:#e8f5e9;border-radius:999px;padding:2px 7px}
-  #om30pa .sadt-auto-text{line-height:1.35;color:#455a64}
-  #om30pa .sadt-auto-items{margin-top:5px;color:#37474f;font-size:11px}
-  #om30pa .sadt-auto-actions{margin-top:7px;display:flex;justify-content:flex-end}
-  #om30pa .sadt-auto-sync{border:1px solid #b0bec5!important;background:#fff!important;color:#37474f!important;border-radius:6px!important;padding:4px 8px!important;font-size:11px!important;cursor:pointer!important}
-  #om30pa .sadt-auto-card.err{border-color:#ef9a9a;background:#fff8f8}
-  #om30pa .sadt-auto-card.busy{border-color:#90caf9;background:#f7fbff}
   @media(max-width:420px){.tabs{grid-template-columns:repeat(2,1fr)}.mgrid{grid-template-columns:1fr}}
   `;
   document.head.appendChild(css);
@@ -1205,7 +1191,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   </div>
   <div class="obody">
     <div class="searchrow"><input class="search" placeholder="Buscar radiografia..."><button class="searchclear" title="Limpar pesquisa" aria-label="Limpar pesquisa">×</button><button class="searchbtn" title="Pesquisar">Pesquisar</button></div>
-    <div class="sadt-auto sect"></div>
     <div class="rx sect"></div><div class="sel sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
   </div>
   <div class="settings">
@@ -1494,7 +1479,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     timerRemontagem=setTimeout(garantirControleSalas,80);
   });
   observerProntuario.observe(document.documentElement,{childList:true,subtree:true});
-  const E={s:q('.search',panel),clear:q('.searchclear',panel),r:q('.res',panel),sel:q('.sel',panel),sadt:q('.sadt-auto',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
+  const E={s:q('.search',panel),clear:q('.searchclear',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer,rxRegiaoAtual=null;
 
   function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}
@@ -1628,321 +1613,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     return !!cd&&selecionadosNativos(t).some(x=>digits(x.codigo)===cd);
   }
 
-  // ============================================================
-  // SADT EXTERNA AUTOMÁTICA • EXAMES DO PA
-  // ============================================================
-  // O botão nativo "Novo SADT" já monta no próprio formulário do
-  // prontuário todos os dados da guia (munícipe, atendimento, unidade,
-  // médico, risco e data). Esta camada apenas replica os exames internos
-  // selecionados na aba EXAMES para os nested_attributes da SADT.
-  //
-  // Importante:
-  // - somente EXAMES (não Raio X);
-  // - somente em prontuário NOVO;
-  // - não cria outro lançamento de exame/BPA;
-  // - não envia nem salva nada sozinho: o próprio submit do prontuário
-  //   continua sendo a única gravação clínica;
-  // - assinatura digital será tratada em uma etapa separada.
-  let AUTO_SADT_PREFIX='';
-  let AUTO_SADT_SYNC_TIMER=null;
-  let AUTO_SADT_WORKING=false;
-  let AUTO_SADT_PENDING=false;
-  let AUTO_SADT_LAST={state:'idle',message:'Aguardando exames.',count:0,items:[]};
-
-  function paginaNovoProntuario(){
-    return /^\/prontuarios\/new$/.test(location.pathname);
-  }
-
-  function campoPorNomeExato(nome,root=document){
-    return qa('[name]',root).find(el=>el.getAttribute('name')===nome)||null;
-  }
-
-  function prefixosSadtNoFormulario(){
-    const out=[];
-    for(const el of qa('input[name*="[sadts_attributes]"][name$="[municipe_id]"]')){
-      const n=el.getAttribute('name')||'';
-      const m=n.match(/^(prontuario\[prontuariavel_attributes\]\[sadts_attributes\]\[[^\]]+\])\[municipe_id\]$/);
-      if(m) out.push(m[1]);
-    }
-    return [...new Set(out)];
-  }
-
-  function prefixoSadtExiste(prefix){
-    return !!prefix && !!campoPorNomeExato(prefix+'[municipe_id]');
-  }
-
-  function campoDestroySadt(prefix){
-    return campoPorNomeExato(prefix+'[_destroy]');
-  }
-
-  function marcarSadtAtiva(prefix,ativa){
-    const d=campoDestroySadt(prefix);
-    if(!d) return;
-    d.value=ativa?'false':'1';
-    d.dispatchEvent(new Event('input',{bubbles:true}));
-    d.dispatchEvent(new Event('change',{bubbles:true}));
-  }
-
-  function limparProcedimentosAutoSadt(){
-    qa('[data-om30-auto-sadt-proc="1"]').forEach(el=>el.remove());
-  }
-
-  function adicionarHiddenAutoSadt(form,nome,valor){
-    const input=document.createElement('input');
-    input.type='hidden';
-    input.name=nome;
-    input.value=String(valor??'');
-    input.dataset.om30AutoSadtProc='1';
-    form.appendChild(input);
-    return input;
-  }
-
-  function refsManuaisDaSadt(prefix){
-    const inicio=prefix+'[sadts_procedimentos_attributes]';
-    return new Set(
-      qa('[name]')
-        .filter(el=>{
-          const n=el.getAttribute('name')||'';
-          return n.startsWith(inicio) &&
-                 n.endsWith('[exame_id_str]') &&
-                 el.dataset.om30AutoSadtProc!=='1' &&
-                 clean(el.value);
-        })
-        .map(el=>clean(el.value))
-    );
-  }
-
-  function refProcedimentoSadt(item){
-    const bruto=clean(
-      item?.id ??
-      item?.procedimento_id ??
-      item?.procedimentoId ??
-      ''
-    );
-
-    if(/^Procedimento#\d+$/i.test(bruto)){
-      const id=bruto.match(/\d+/)?.[0]||'';
-      return id?'Procedimento#'+id:'';
-    }
-
-    const id=bruto.match(/\d+/)?.[0]||'';
-    return id?'Procedimento#'+id:'';
-  }
-
-  async function resolverExameParaSadt(exame){
-    const codigo=digits(exame?.codigo||'').slice(0,10);
-    if(!codigo) throw new Error('Exame sem código SIGTAP para gerar SADT.');
-
-    const xs=await buscar('exame',codigo);
-    const item=xs.find(x=>digits(code('exame',x))===codigo);
-
-    if(!item){
-      throw new Error('Não consegui localizar o exame '+codigo+' na fonte nativa para gerar a SADT.');
-    }
-
-    const ref=refProcedimentoSadt(item);
-    if(!ref){
-      throw new Error('O exame '+codigo+' não retornou o identificador interno necessário para a SADT.');
-    }
-
-    return {
-      codigo,
-      nome:clean(exame?.nome||name('exame',item)),
-      ref
-    };
-  }
-
-  async function garantirSadtAuto(){
-    if(!paginaNovoProntuario()){
-      throw new Error('A SADT automática só é criada durante um novo prontuário.');
-    }
-
-    if(prefixoSadtExiste(AUTO_SADT_PREFIX)){
-      return AUTO_SADT_PREFIX;
-    }
-
-    const botao=q('a.adicionar-sadt,button.adicionar-sadt');
-    if(!botao){
-      throw new Error('Botão nativo "Novo SADT" não encontrado nesta ficha.');
-    }
-
-    const antes=new Set(prefixosSadtNoFormulario());
-    botao.click();
-
-    const apareceu=await esperar(
-      ()=>prefixosSadtNoFormulario().some(p=>!antes.has(p)),
-      3500,
-      50
-    );
-
-    if(!apareceu){
-      throw new Error('O Saúde Simples não criou a estrutura nativa da SADT.');
-    }
-
-    const novo=prefixosSadtNoFormulario().find(p=>!antes.has(p))||'';
-    if(!novo){
-      throw new Error('Não consegui identificar a nova SADT criada.');
-    }
-
-    AUTO_SADT_PREFIX=novo;
-    const ancora=campoPorNomeExato(novo+'[municipe_id]');
-    if(ancora) ancora.dataset.om30AutoSadt='1';
-
-    return novo;
-  }
-
-  function renderSadtAuto(){
-    if(!E?.sadt) return;
-
-    const visivel=tipo==='exames' && paginaNovoProntuario();
-    E.sadt.style.display=visivel?'block':'none';
-    if(!visivel) return;
-
-    const st=AUTO_SADT_LAST||{};
-    const classe=st.state==='error'?' err':(st.state==='busy'?' busy':'');
-    const badge=st.state==='ok'
-      ?'PRONTA'
-      :(st.state==='busy'?'ATUALIZANDO':(st.state==='error'?'ATENÇÃO':'AUTOMÁTICA'));
-
-    const itens=(st.items||[]).slice(0,6);
-    const resto=Math.max(0,(st.items||[]).length-itens.length);
-
-    E.sadt.innerHTML=
-      '<div class="sadt-auto-card'+classe+'">'+
-        '<div class="sadt-auto-head">'+
-          '<span class="sadt-auto-title">Guia SADT externa</span>'+
-          '<span class="sadt-auto-badge">'+esc(badge)+'</span>'+
-        '</div>'+
-        '<div class="sadt-auto-text">'+esc(st.message||'Aguardando exames.')+'</div>'+
-        (itens.length
-          ?'<div class="sadt-auto-items">'+
-             itens.map(x=>'• '+esc(x.codigo)+' — '+esc(x.nome)).join('<br>')+
-             (resto?'<br>• +'+resto+' exame(s)':'')+
-           '</div>'
-          :'')+
-        '<div class="sadt-auto-actions">'+
-          '<button type="button" class="sadt-auto-sync">Atualizar SADT</button>'+
-        '</div>'+
-      '</div>';
-
-    q('.sadt-auto-sync',E.sadt)?.addEventListener('click',e=>{
-      e.preventDefault();
-      e.stopPropagation();
-      agendarSincronizacaoSadt(0);
-    });
-  }
-
-  async function sincronizarSadtAuto(){
-    if(!paginaNovoProntuario()) return;
-
-    if(AUTO_SADT_WORKING){
-      AUTO_SADT_PENDING=true;
-      return;
-    }
-
-    AUTO_SADT_WORKING=true;
-
-    try{
-      const exames=selecionadosNativos('exames')
-        .filter(x=>digits(x.codigo).length===10);
-
-      if(!exames.length){
-        limparProcedimentosAutoSadt();
-
-        if(prefixoSadtExiste(AUTO_SADT_PREFIX)){
-          marcarSadtAtiva(AUTO_SADT_PREFIX,false);
-        }
-
-        AUTO_SADT_LAST={
-          state:'idle',
-          message:'Selecione exames de coleta. A SADT externa será preparada automaticamente.',
-          count:0,
-          items:[]
-        };
-        renderSadtAuto();
-        return;
-      }
-
-      AUTO_SADT_LAST={
-        state:'busy',
-        message:'Preparando a SADT externa com os exames selecionados...',
-        count:exames.length,
-        items:exames
-      };
-      renderSadtAuto();
-
-      const resolvidos=await Promise.all(exames.map(resolverExameParaSadt));
-      const prefix=await garantirSadtAuto();
-      const form=formProntuarioAtual();
-
-      if(!form){
-        throw new Error('Formulário do prontuário não encontrado para montar a SADT.');
-      }
-
-      marcarSadtAtiva(prefix,true);
-      limparProcedimentosAutoSadt();
-
-      const manuais=refsManuaisDaSadt(prefix);
-      const unicos=[];
-      const vistos=new Set();
-
-      for(const item of resolvidos){
-        const chave=item.ref+'|'+item.codigo;
-        if(vistos.has(chave)) continue;
-        vistos.add(chave);
-        unicos.push(item);
-      }
-
-      let seq=Date.now();
-
-      for(const item of unicos){
-        if(manuais.has(item.ref)) continue;
-
-        const child=String(seq++);
-        const base=prefix+'[sadts_procedimentos_attributes]['+child+']';
-
-        adicionarHiddenAutoSadt(form,base+'[exame_id_str]',item.ref);
-        adicionarHiddenAutoSadt(form,base+'[quantidade]','1');
-        adicionarHiddenAutoSadt(form,base+'[_destroy]','false');
-      }
-
-      AUTO_SADT_LAST={
-        state:'ok',
-        message:'SADT externa preparada automaticamente com '+unicos.length+' exame(s). Ela será gravada junto com o prontuário.',
-        count:unicos.length,
-        items:unicos
-      };
-      renderSadtAuto();
-
-      console.info('[OM30 PA SADT] SADT externa sincronizada.',{
-        prefix,
-        exames:unicos.map(x=>({codigo:x.codigo,nome:x.nome,ref:x.ref}))
-      });
-    }catch(err){
-      console.error('[OM30 PA SADT] Falha ao preparar SADT externa:',err);
-      AUTO_SADT_LAST={
-        state:'error',
-        message:err?.message||String(err),
-        count:0,
-        items:[]
-      };
-      renderSadtAuto();
-    }finally{
-      AUTO_SADT_WORKING=false;
-
-      if(AUTO_SADT_PENDING){
-        AUTO_SADT_PENDING=false;
-        agendarSincronizacaoSadt(80);
-      }
-    }
-  }
-
-  function agendarSincronizacaoSadt(delay=220){
-    if(!paginaNovoProntuario()) return;
-    clearTimeout(AUTO_SADT_SYNC_TIMER);
-    AUTO_SADT_SYNC_TIMER=setTimeout(sincronizarSadtAuto,delay);
-  }
-
   function renderSelecionados(){
     if(!E?.sel) return;
 
@@ -1973,7 +1643,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 
         if(removerLinhaNativa(item.row)){
           setTimeout(renderSelecionados,80);
-          if(tipo==='exames') agendarSincronizacaoSadt();
         }else{
           status('Não foi possível remover este item com segurança.','err');
         }
@@ -1985,23 +1654,8 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   const observerSelecionados=new MutationObserver(muts=>{
     const relevantes=muts.some(m=>!panel.contains(m.target));
     if(!relevantes) return;
-
-    const tocouExames=muts.some(m=>{
-      const alvo=m.target instanceof Element?m.target:null;
-      if(alvo?.closest?.('tr.prontuario-exame-row')) return true;
-
-      return [...m.addedNodes,...m.removedNodes].some(node=>
-        node?.nodeType===Node.ELEMENT_NODE &&
-        (
-          node.matches?.('tr.prontuario-exame-row') ||
-          node.querySelector?.('tr.prontuario-exame-row')
-        )
-      );
-    });
-
     clearTimeout(timerSelecionados);
     timerSelecionados=setTimeout(renderSelecionados,100);
-    if(tocouExames) agendarSincronizacaoSadt();
   });
   observerSelecionados.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style']});
   function defs(){
@@ -2138,10 +1792,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
         status(name(nt,validado)+' já está selecionado neste atendimento.','ok');
       }else{
         status(name(nt,validado)+' selecionado no prontuário. O destino da sala continua sendo definido pelo Saúde Simples.','ok');
-      }
-
-      if(nt==='exame' && tipo==='exames'){
-        agendarSincronizacaoSadt();
       }
     }catch(e){
       console.error(e);
@@ -2526,7 +2176,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     E.rx.innerHTML='';
     E.mc.innerHTML='';
     renderSelecionados();
-    renderSadtAuto();
     renderFavs();
     updatePlaceholder();
     if(tipo==='raiox') renderRX();
@@ -2571,10 +2220,8 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   atualizarBotaoLimparBusca();
   renderFavs();
   renderRX();
-  renderSadtAuto();
   updatePlaceholder();
   status('');
-  agendarSincronizacaoSadt(350);
   console.info('[OM30 PA] v1.9.5 carregada para',UNIT);
 })();
 }
@@ -6344,6 +5991,6 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     startUiWatcher();
   }
 
-  console.info('[OM30 PA TESTE] OM30 Procedimentos PA v2.0.1 carregado; favoritos pessoais por médico no om30-preferencias + fluxo real do Controle de Salas no om30-fluxo-ordens no Worker om30-fluxo-ordens + padrão da unidade + ocultação permanente por unidade/grupo/código + salvamento de favoritos 3s após a última alteração + edição sem piscar + vias filtradas + Salvar e Sair sempre bloqueado + revisão obrigatória + aviso estilo ChatGPT ao salvar sem retorno médico + popup de sucesso nativo preservado + observação sem traço + outras vias no editar + SADT externa automática para exames;');
+  console.info('[OM30 PA TESTE] OM30 Procedimentos PA v2.0.0 carregado; favoritos pessoais por médico no om30-preferencias + fluxo real do Controle de Salas no om30-fluxo-ordens no Worker om30-fluxo-ordens + padrão da unidade + ocultação permanente por unidade/grupo/código + salvamento de favoritos 3s após a última alteração + edição sem piscar + vias filtradas + Salvar e Sair sempre bloqueado + revisão obrigatória + aviso estilo ChatGPT ao salvar sem retorno médico + popup de sucesso nativo preservado + observação sem traço + outras vias no editar; GitHub não foi alterado.');
 })();
 }

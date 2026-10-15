@@ -20,6 +20,7 @@
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * Hotfix de teste: alergia reconhece abreviação "NG ALERGIAS A MEDICAÇÕES" e não vaza campos seguintes do prontuário.
      * Revisão: espera copiada do padrão da Fila Médica; ícone de Dados do Munícipe copiado do Unificado v2.0.20; alergia com lógica integral da v2.0.80,
      * Pendências/Cancelar preservados da v2.0.80, handoff exato por AtendimentoPa,
      * pendências/retorno pela ponte central do médico + handoff nativo; AtendimentoPa exato por linha/ficha; Cancelar e vínculo de local em todas as filas.
@@ -5791,6 +5792,14 @@
         function a280Normalizar(v) {
             return a280Limpar(v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
         }
+        function a280CortarNoProximoCampo(valor) {
+            const original = a280Limpar(valor);
+            if (!original) return '';
+            const n = a280Normalizar(original);
+            const re = /(?:\s*[·•|]\s*|\s+[—-]\s+)(?=(?:MEDICAC(?:AO|OES)(?:\s+EM\s+USO)?|MEDICAMENTOS?|PRODUTO|SITUACAO|POSOLOGIA|VIA\s+DE\s+ADMINISTRACAO|UNIDADE\s+DE\s+MEDIDA|OBSERVACAO|ACOLHIMENTO|ATENDIMENTO|DESCRITIVO\s+DO\s+ATENDIMENTO|EVOLUCAO|CONDUTA|EXAMES?|PROCEDIMENTOS?|RECEITUARIO|APLICAR|CANCELAR)\b)|\s+(?=(?:MEDICACAO\s+EM\s+USO|ACOLHIMENTO|ATENDIMENTO|DESCRITIVO\s+DO\s+ATENDIMENTO|EVOLUCAO|CONDUTA|EXAMES?|PROCEDIMENTOS?|RECEITUARIO)\b)/;
+            const m = re.exec(n);
+            return m && m.index > 0 ? original.slice(0, m.index).trim() : original;
+        }
         function a280LimparAlergia(valor) {
             let v = a280Limpar(valor)
                 .replace(/^ALERTA!?\s*/i, '')
@@ -5798,10 +5807,14 @@
                 .replace(/^ALERGIAS?\s*[:\-]?\s*/i, '')
                 .replace(/^ALERGICO\s+A\s*[:\-]?\s*/i, '')
                 .trim();
-            v = v.split(/\s+(?=MEDICAMENTOS?\b|PRODUTO\b|SITUA[CÇ][AÃ]O\b|POSOLOGIA\b|VIA\s+DE\s+ADMINISTRA[CÇ][AÃ]O\b|UNIDADE\s+DE\s+MEDIDA\b|OBSERVA[CÇ][AÃ]O\b|APLICAR\b|CANCELAR\b)/i)[0].trim();
+            if (a280EhNegativo(v)) return '';
+            v = a280CortarNoProximoCampo(v);
             const n = a280Normalizar(v);
             if (!v || /^(NAO|NAO POSSUI|NENHUMA|SEM ALERGIA|NAO INFORMADO|NAO INFORMADA|NEGA|NEGADO|\-)$/.test(n)) return '';
             return v;
+        }
+        function a280EhGenerico(valor) {
+            return /^(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|DROGA|DROGAS)$/.test(a280Normalizar(valor));
         }
         function a280CapturarAlergiaDoTexto(valor) {
             const texto = a280Limpar(valor);
@@ -5814,8 +5827,10 @@
             for (const re of padroes) {
                 const m = texto.match(re);
                 if (!m) continue;
-                const v = a280LimparAlergia(m[1]);
-                if (v) return v.slice(0, 500);
+                const bruto = a280Limpar(m[1]);
+                if (a280EhNegativo(bruto)) continue;
+                const v = a280LimparAlergia(bruto);
+                if (v && !a280EhGenerico(v)) return v.slice(0, 500);
             }
             return '';
         }
@@ -5884,10 +5899,13 @@
             const n = a280Normalizar(valor);
             if (!n) return false;
             // Exemplos reais do prontuário:
-            // "NEGA ALERGIAS A MEDICAÇÕES", "NEGA ALERGIA A MEDICAMENTOS",
+            // "NEGA ALERGIAS A MEDICAÇÕES", "NG ALERGIAS A MEDICAÇÕES",
             // "SEM ALERGIAS MEDICAMENTOSAS", "NÃO POSSUI ALERGIAS".
-            return /^(?:NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?(?:\s+MEDICAMENTOSAS?)?(?:\s+(?:A|AO|AOS|AS)\s+(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|DROGA|DROGAS))?$/.test(n)
-                || /^(?:NENHUMA|NENHUMA ALERGIA|NENHUMA ALERGIA MEDICAMENTOSA|NEGADO|NEGATIVO)$/.test(n);
+            if (/^(?:NENHUMA|NENHUMA ALERGIA|NENHUMA ALERGIA MEDICAMENTOSA|NEGADO|NEGATIVO)$/.test(n)) return true;
+            const m = n.match(/^(?:NG|NGA|NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?(?:\s+MEDICAMENTOSAS?)?(?:\s+(?:A|AO|AOS|AS)\s+(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|DROGA|DROGAS))?/);
+            if (!m) return false;
+            const resto = n.slice(m[0].length).trim();
+            return !resto || /^(?:[·•|—-]|(?:(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|ACOLHIMENTO|ATENDIMENTO|DESCRITIVO|EVOLUCAO|CONDUTA|EXAMES?|PROCEDIMENTOS?|RECEITUARIO)\b))/.test(resto);
         }
         function a280EhNegativo(valor) {
             const n = a280Normalizar(valor);
@@ -5900,6 +5918,7 @@
         }
         function a280LimparTermoEvolucao(valor) {
             let v = a280Limpar(valor).replace(/^[\s:;,.\-]+|[\s:;,.\-]+$/g, '');
+            v = a280CortarNoProximoCampo(v);
             v = v.split(/\s+(?=CID\b|CIDS\b|DIAGNOSTICO\b|CONDUTA\b|CONDUTAS\b|EXAMES?\b|MEDICAMENTOS?\b|PROCEDIMENTOS?\b|RECEITUARIO\b|function\b|const\b|let\b|var\b)/i)[0].trim();
             return v.slice(0, 160);
         }
@@ -5913,7 +5932,11 @@
                 if (!valor) valor = a280Limpar(strong.nextElementSibling?.textContent || '');
                 if (a280EhNaoInformado(valor)) return { localizado: true, valor: '', negativa: false, naoInformada: true };
                 if (a280EhNegativo(valor)) return { localizado: true, valor: '', negativa: true, naoInformada: false };
-                return { localizado: true, valor: a280LimparAlergia(valor) || a280Limpar(valor), negativa: false, naoInformada: false };
+                valor = a280CortarNoProximoCampo(valor);
+                if (a280EhNegativo(valor)) return { localizado: true, valor: '', negativa: true, naoInformada: false };
+                const limpa = a280LimparAlergia(valor);
+                if (!limpa || a280EhGenerico(limpa)) return { localizado: true, valor: '', negativa: false, naoInformada: true };
+                return { localizado: true, valor: limpa, negativa: false, naoInformada: false };
             }
             return { localizado: false, valor: '', negativa: false, naoInformada: false };
         }
@@ -5941,7 +5964,7 @@
                 // Sem isso, "NEGA ALERGIAS A MEDICAÇÕES" vira falso positivo "MEDICAÇÕES".
                 if (
                     a280FraseNegaAlergia(candidato.texto) ||
-                    /\b(?:NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)
+                    /\b(?:NG|NGA|NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)
                 ) {
                     return { positiva: '', negativa: true, trecho: candidato.texto, fonte: candidato.fonte };
                 }
@@ -5949,7 +5972,7 @@
                     const m = candidato.texto.match(re);
                     const valor = a280LimparTermoEvolucao(m?.[1] || '');
                     const nv = a280Normalizar(valor);
-                    const generico = /^(?:MEDICACAO|MEDICACOES|MEDICAMENTO|MEDICAMENTOS|DROGA|DROGAS)$/.test(nv);
+                    const generico = a280EhGenerico(valor);
                     if (valor && !generico && !a280EhNegativo(valor) && !a280EhNaoInformado(valor)) {
                         return { positiva: valor, negativa: false, trecho: candidato.texto, fonte: candidato.fonte };
                     }

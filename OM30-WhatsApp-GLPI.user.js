@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.14
+// @version      0.9.15
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
-// @description  WhatsApp → GLPI: motor silencioso + reset seguro de evidência + fila + progresso + scroll automático
+// @description  WhatsApp → GLPI: criação imediata sem fila, tratamento de erros, evidências e progresso
 // @match        https://web.whatsapp.com/*
 // @match        https://suporte.om30.cloud/*
 // @grant        GM_getValue
@@ -27,8 +27,8 @@
 
     const GLPI_TEST = {
         base: 'https://suporte.om30.cloud',
-        jobKey: 'OM30_GLPI_JOB_V0800',
-        resultKey: 'OM30_GLPI_LAST_RESULT_V0714',
+        jobKey: 'OM30_GLPI_JOB_V0915_SEM_FILA',
+        resultKey: 'OM30_GLPI_LAST_RESULT_V0915_SEM_FILA',
         queueKey: 'OM30_GLPI_QUEUE_V0800'
     };
 
@@ -255,56 +255,73 @@
 
 
     // ============================================================
-    // FILA DE CHAMADOS
-    //
-    // O WhatsApp pode montar/enfileirar novos chamados enquanto o
-    // primeiro ainda está sendo enviado. O motor GLPI processa um por
-    // vez para evitar colisão de CSRF/upload, mas a interface nunca fica
-    // bloqueada esperando o chamado anterior terminar.
+    // PUBLICAÇÃO IMEDIATA SEM FILA (v0.9.15)
+    // Uma única tentativa por clique. Nenhum chamado pode esperar
+    // atrás de outro, nem ser disparado automaticamente no futuro.
     // ============================================================
 
     function readGlpiQueue() {
-        try {
-            const raw = GM_getValue(GLPI_TEST.queueKey, '[]');
-            const parsed = raw ? JSON.parse(raw) : [];
-            return Array.isArray(parsed) ? parsed : [];
-        } catch (error) {
-            console.error('OM30: erro lendo fila GLPI', error);
-            return [];
-        }
+        return [];
     }
 
-    function saveGlpiQueue(queue) {
-        GM_setValue(GLPI_TEST.queueKey, JSON.stringify(Array.isArray(queue) ? queue : []));
+    function saveGlpiQueue() {
+        // Fila removida intencionalmente.
     }
 
     function enqueueGlpiJob(job) {
-        const active = readGlpiJob();
-        if (!active) {
-            saveGlpiJob(job);
-            return { started: true, position: 0, queued: 0 };
+        if (readGlpiJob()) {
+            throw new Error('Já existe uma criação em andamento. Aguarde a confirmação ou o erro do GLPI. Nenhum chamado foi colocado em fila.');
         }
-
-        const queue = readGlpiQueue();
-        queue.push(job);
-        saveGlpiQueue(queue);
-        return { started: false, position: queue.length, queued: queue.length };
+        saveGlpiJob(job);
+        return { started: true, position: 0, queued: 0 };
     }
 
     function activateNextGlpiQueuedJob() {
-        if (readGlpiJob()) return null;
-        const queue = readGlpiQueue();
-        if (!queue.length) return null;
-
-        const next = queue.shift();
-        saveGlpiQueue(queue);
-        saveGlpiJob(next);
-        return next;
+        return null;
     }
 
     function glpiHasPendingWork() {
-        return !!readGlpiJob() || readGlpiQueue().length > 0;
+        return !!readGlpiJob();
     }
+
+    // Os chamados antigos ainda não enviados ficam somente no backup
+    // local do Tampermonkey. NUNCA são publicados automaticamente.
+    function archiveLegacyGlpiQueueOnce() {
+        if (location.hostname !== 'web.whatsapp.com') return;
+        const marker = 'OM30_GLPI_LEGACY_MIGRATED_V0915';
+        if (GM_getValue(marker, false)) return;
+        const keys = [
+            'OM30_GLPI_JOB_V0800',
+            'OM30_GLPI_QUEUE_V0800',
+            'OM30_GLPI_LAST_RESULT_V0714'
+        ];
+        try {
+            const saved = {};
+            let pending = 0;
+            for (const key of keys) {
+                const value = GM_getValue(key, '');
+                if (!value || value === '[]') continue;
+                saved[key] = value;
+                if (key.includes('_JOB_')) pending++;
+                if (key.includes('_QUEUE_')) {
+                    try { pending += JSON.parse(value).length || 0; } catch {}
+                }
+            }
+            if (Object.keys(saved).length) {
+                GM_setValue('OM30_GLPI_LEGACY_BACKUP_V0915', JSON.stringify({
+                    archived_at: new Date().toISOString(),
+                    stored_values: saved
+                }));
+                for (const key of keys) GM_deleteValue(key);
+                console.warn('OM30 GLPI: registros antigos arquivados, NÃO enviados:', pending);
+            }
+            GM_setValue(marker, true);
+        } catch (error) {
+            console.error('OM30 GLPI: backup legado falhou; dados originais mantidos e não serão lidos pela versão sem fila.', error);
+        }
+    }
+
+    archiveLegacyGlpiQueueOnce();
 
     function readGlpiResult() {
         try {
@@ -5045,10 +5062,12 @@
         }
 
         const isError =
-            result.kind ===
-                'background-error' ||
-            result.status ===
-                'error';
+            result.kind === 'background-error' ||
+            result.status === 'error' ||
+            result.kind === 'login-required' ||
+            result.status === 'login-required' ||
+            result.kind === 'login-confirmed' ||
+            result.status === 'login-confirmed';
 
         if (isError) {
             try {
@@ -5078,36 +5097,14 @@
         }
     }
 
-    function setCreateButtonFeedback(
-        button,
-        queued
-    ) {
-        if (!button) {
-            return;
-        }
-
-        clearTimeout(
-            button.__om30FeedbackTimer
-        );
-
-        button.disabled =
-            true;
-
-        button.classList.remove(
-            'om30-creating'
-        );
-
-        button.classList.add(
-            'om30-enqueued'
-        );
-
-        button.textContent =
-            queued.started
-                ? '✓ CRIAÇÃO INICIADA'
-                : `✓ NA FILA (${queued.position})`;
-
-        // Mantém bloqueado até chegar sucesso/erro/login.
-        // Assim preservamos a ficha sem permitir um clique duplicado.
+    function setCreateButtonFeedback(button) {
+        if (!button) return;
+        clearTimeout(button.__om30FeedbackTimer);
+        button.disabled = true;
+        button.classList.remove('om30-enqueued');
+        button.classList.add('om30-creating');
+        button.textContent = '⏳ CRIANDO CHAMADO...';
+        // Permanece bloqueado apenas durante esta tentativa, não há fila.
     }
 
     function releaseCreateButton(text = 'CRIAR CHAMADO') {
@@ -5246,45 +5243,23 @@
         // ========================================================
         if (result?.kind === 'login-confirmed' || result?.status === 'login-confirmed') {
             GM_deleteValue(GLPI_TEST.resultKey);
-
-            // Retoma o job no próprio WhatsApp via GM_xmlhttpRequest.
-            const waitingJob = readGlpiJob();
-            if (waitingJob?.stage === 'waiting-login') {
-                waitingJob.stage =
-                    waitingJob.resume_stage ||
-                    'silent-create';
-                delete waitingJob.resume_stage;
-                delete waitingJob.login_required_at;
-                waitingJob.login_confirmed_at =
-                    new Date().toISOString();
-                saveGlpiJob(waitingJob);
-            }
-
-            kickSilentGlpiQueue();
-
+            releaseCreateButton('CRIAR CHAMADO');
             box.style.display = 'flex';
             box.classList.add('om30-result-login');
             if (check) check.textContent = '✓';
             if (number) number.textContent = 'Login confirmado';
-            if (title) title.textContent = 'Continuando o chamado...';
+            if (title) title.textContent = 'Volte à ficha e clique em CRIAR CHAMADO. Nenhum envio será feito automaticamente.';
             if (view) {
-                view.textContent = 'AGUARDE';
-                view.onclick = null;
-            }
-
-            setTimeout(() => {
-                const current = readGlpiResult();
-                if (!current) {
+                view.disabled = false;
+                view.textContent = 'ENTENDI';
+                view.onclick = () => {
                     box.classList.remove('om30-result-login');
                     renderLastTicketMain();
-                }
-            }, 1800);
+                };
+            }
             return;
         }
 
-        // ========================================================
-        // LOGIN NECESSÁRIO
-        // ========================================================
         if (result?.kind === 'login-required' || result?.status === 'login-required') {
             // A aba de background já confirmou que não há sessão válida.
             // Fecha ela e só abre uma aba VISÍVEL quando o usuário clicar ENTRAR NO GLPI.
@@ -5330,6 +5305,7 @@
                 ensurePanelInViewport(document.getElementById(ID.panel));
             }
 
+            releaseCreateButton('CRIAR CHAMADO');
             return;
         }
 
@@ -12555,41 +12531,18 @@
         });
     }
 
-    function silentRequireLogin(
-        job,
-        resumeStage,
-        message
-    ) {
-        job.resume_stage =
-            resumeStage ||
-            job.stage ||
-            'silent-create';
-
-        job.stage =
-            'waiting-login';
-
-        job.login_required_at =
-            new Date().toISOString();
-
-        saveGlpiJob(job);
-
-        om30Log(
-            'glpi.login-required',
-            {
-                job_id:
-                    job.id,
-                resume_stage:
-                    job.resume_stage,
-                message
-            },
-            'warn'
-        );
-
-        saveGlpiLoginRequired(
-            job,
-            message ||
-            'Entre no GLPI para continuar a criação do chamado.'
-        );
+    function silentRequireLogin(job, resumeStage, message) {
+        om30Log('glpi.login-required', {
+            job_id: job?.id,
+            resume_stage: resumeStage || job?.stage || 'silent-create',
+            message,
+            retained_in_queue: false
+        }, 'warn');
+        // Não mantém job em waiting-login: informa o usuário agora e
+        // exige novo clique após autenticação, sem reenvio automático.
+        saveGlpiLoginRequired(job,
+            message || 'Entre no GLPI e clique novamente em CRIAR CHAMADO.');
+        GM_deleteValue(GLPI_TEST.jobKey);
     }
 
     async function silentCreateAndFixJob(job) {
@@ -13030,27 +12983,20 @@
             return;
         }
 
-        if (
-            job.stage ===
-            'waiting-login'
-        ) {
+        if (job.stage === 'waiting-login') {
+            silentSaveError(job, 'Autenticação', new Error(
+                'Tentativa anterior interrompida por falta de login. Entre no GLPI e tente novamente.'
+            ));
+            GM_deleteValue(GLPI_TEST.jobKey);
             return;
         }
 
-        if (
-            job.stage ===
-            'silent-publishing' ||
-            job.stage ===
-            'silent-publish-unknown'
-        ) {
-            silentSaveError(
-                job,
-                'Publicação',
-                new Error(
-                    'Há um POST anterior com resultado ainda não confirmado. A OM30 não repetirá a criação.'
-                )
-            );
-
+        if (job.stage === 'silent-publishing' ||
+            job.stage === 'silent-publish-unknown') {
+            silentSaveError(job, 'Publicação', new Error(
+                'A publicação anterior não foi confirmada. Confira no GLPI se o chamado já existe antes de tentar novamente.'
+            ));
+            GM_deleteValue(GLPI_TEST.jobKey);
             return;
         }
 
@@ -13585,7 +13531,7 @@
                 );
 
             // Mantido para compatibilidade com partes antigas do motor.
-            // A fonte oficial das imagens na v0.9.14 é evidenceImages.
+            // A fonte oficial das imagens na v0.9.15 é evidenceImages.
             const printDataUrl =
                 evidenceImages[0]?.dataUrl ||
                 '';
@@ -13656,7 +13602,7 @@
                 true;
 
             console.log(
-                'OM30 WhatsApp → GLPI v0.9.14',
+                'OM30 WhatsApp → GLPI v0.9.15',
                 {
                     job:
                         job.id,
@@ -13842,7 +13788,7 @@
 
         if (errors.length) {
             console.error(
-                '❌ OM30 v0.9.14 self-check:',
+                '❌ OM30 v0.9.15 self-check:',
                 errors
             );
 
@@ -13850,7 +13796,7 @@
         }
 
         console.log(
-            '✅ OM30 v0.9.14 self-check OK',
+            '✅ OM30 v0.9.15 self-check OK',
             {
                 unitsInUi:
                     UNITS.length,
@@ -13866,5 +13812,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp v0.9.14 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp v0.9.15 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

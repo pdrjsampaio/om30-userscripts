@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - WhatsApp → GLPI
 // @namespace    om30
-// @version      0.9.15
+// @version      0.9.16
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-WhatsApp-GLPI.user.js
 // @description  WhatsApp → GLPI: criação imediata sem fila, tratamento de erros, evidências e progresso
@@ -7747,11 +7747,14 @@
                 box-shadow:0 22px 70px rgba(0,40,80,.28);
                 font-family:"Segoe UI",Arial,sans-serif;
                 overflow:hidden;
+                display:flex;
+                flex-direction:column;
+                min-height:0;
             }
             #${ID.panel} *{box-sizing:border-box}
 
             .om30-head{
-                height:64px; padding:0 15px;
+                height:64px; flex:0 0 64px; padding:0 15px;
                 background:linear-gradient(135deg,var(--om30-secondary),#0059B3);
                 color:#fff; display:flex; align-items:center; justify-content:space-between;
                 cursor:move; user-select:none;
@@ -7771,9 +7774,29 @@
                 background:rgba(255,255,255,.13);color:#fff;cursor:pointer;font-size:15px;
             }
 
-            .om30-body{
-                padding:13px; max-height:calc(100vh - 146px); overflow-y:auto;
+            /* Barra de rolagem explícita: o cabeçalho fica fixo, somente o formulário rola. */
+            #${ID.panel} > .om30-body{
+                padding:13px;
+                flex:1 1 auto;
+                min-height:0;
+                max-height:calc(100vh - 146px);
+                overflow-y:scroll !important;
+                overflow-x:hidden;
+                scrollbar-width:auto !important;
+                scrollbar-color:#8AA7C3 #EDF4FB;
+                scrollbar-gutter:stable;
+                overscroll-behavior-y:contain;
                 background:#fff;
+            }
+            #${ID.panel} > .om30-body::-webkit-scrollbar{width:12px !important}
+            #${ID.panel} > .om30-body::-webkit-scrollbar-track{
+                background:#EDF4FB;border-radius:8px;
+            }
+            #${ID.panel} > .om30-body::-webkit-scrollbar-thumb{
+                background:#8AA7C3;border:2px solid #EDF4FB;border-radius:8px;
+            }
+            #${ID.panel} > .om30-body::-webkit-scrollbar-thumb:hover{
+                background:#5E83A9;
             }
             .om30-chat-card{
                 display:flex;align-items:center;justify-content:space-between;gap:10px;
@@ -13812,5 +13835,5 @@
 
     runOm30IntegrationSelfCheck();
 
-    console.log('✅ OM30 WhatsApp v0.9.15 carregado · reset de evidência + scroll automático + motor silencioso.');
+    console.log('✅ OM30 WhatsApp v0.9.16 carregado · reset de evidência + scroll automático + motor silencioso.');
 })();

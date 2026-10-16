@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.43
+// @version      3.0.44
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,11 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.43
+    /* OM30 - CONTROLE DE SALAS v3.0.44
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.44: corrige falso conflito quando Acolhimento/Atendimento negam alergia com texto truncado ou colado (ex.: "NEGA ALERGIAS MEDICAÇOE..."). Prefixos NG/NGA/NEGA/SEM/NÃO POSSUI + ALERGIA são sempre tratados como negativa.
      * v3.0.43: corrige leitura de alergia abreviada (ex.: "NG ALERGIAS A MEDICAÇÕES") e impede campos seguintes do prontuário de vazarem para o alerta.
      * Revisão: espera copiada do padrão da Fila Médica; ícone de Dados do Munícipe copiado do Unificado v2.0.20; alergia com lógica integral da v2.0.80,
      * Pendências/Cancelar preservados da v2.0.80, handoff exato por AtendimentoPa,
@@ -471,7 +472,8 @@
             // preservada; conflito só existe quando outra fonte nega alergia explicitamente.
             const limpar = v => String(v ?? '').replace(/\s+/g, ' ').trim();
             const norm = v => semAcento(limpar(v));
-            const ehNegativa = v => /^(NAO|NAO POSSUI|NAO POSSUI ALERGIA|NAO POSSUI ALERGIAS|NENHUMA|NENHUMA ALERGIA|SEM ALERGIA|SEM ALERGIAS|NEGA|NEGA ALERGIA|NEGA ALERGIAS|NEGA ALERGIA MEDICAMENTOSA|NEGA ALERGIAS MEDICAMENTOSAS|NEGADO|NEGATIVO)$/.test(norm(v));
+            const ehNegativa = v => /^(?:NG|NGA|NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(norm(v))
+                || /^(NAO|NAO POSSUI|NENHUMA|NENHUMA ALERGIA|NEGADO|NEGATIVO)$/.test(norm(v));
             const ehVazia = v => /^(|—|-|NAO INFORMADO|NAO INFORMADA|NAO PREENCHIDO|SEM INFORMACAO)$/.test(norm(v));
             const positivas = [];
             const fontes = [];
@@ -5909,7 +5911,10 @@
         }
         function a280EhNegativo(valor) {
             const n = a280Normalizar(valor);
-            return /^(NAO|NAO POSSUI|NAO POSSUI ALERGIA|NAO POSSUI ALERGIAS|NENHUMA|NENHUMA ALERGIA|SEM ALERGIA|SEM ALERGIAS|NEGA|NEGA ALERGIA|NEGA ALERGIAS|NEGA ALERGIA MEDICAMENTOSA|NEGA ALERGIAS MEDICAMENTOSAS|NEGADO|NEGATIVO)$/.test(n)
+            // Negação clínica explícita vence qualquer sufixo truncado/colado.
+            // Ex.: "NEGA ALERGIAS MEDICAÇOE...", "NG ALERGIAS A MEDICAÇÕES".
+            if (/^(?:NG|NGA|NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)) return true;
+            return /^(NAO|NAO POSSUI|NENHUMA|NENHUMA ALERGIA|NEGADO|NEGATIVO)$/.test(n)
                 || a280FraseNegaAlergia(valor);
         }
         function a280EhNaoInformado(valor) {

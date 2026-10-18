@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.50
+// @version      3.0.51
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,11 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.50
+    /* OM30 - CONTROLE DE SALAS v3.0.51
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.51: aplica o pacote visual completo do layout Claude 3.0.49 (resumo e risco em badges, idade, medicação destacada, via quadrada, Chamar azul, Cancelar separado e tipografia), preservando a lógica atual.
      * v3.0.50: restaura somente o desenho da coluna de ações usado no layout Claude 3.0.49 (botões 30px e largura natural da coluna), preservando toda a lógica atual e a remoção de "obs." vazio.
      * v3.0.45: observação vazia ou composta apenas por traços não exibe mais "obs.".
      * v3.0.44: corrige falso conflito quando Acolhimento/Atendimento negam alergia com texto truncado ou colado (ex.: "NEGA ALERGIAS MEDICAÇOE..."). Prefixos NG/NGA/NEGA/SEM/NÃO POSSUI + ALERGIA são sempre tratados como negativa.
@@ -1653,11 +1654,11 @@
         }
 
         if (semRetorno) {
-          aviso.innerHTML = '<div style="font-size:9px;letter-spacing:.5px;color:#6b7d88">RETORNO MÉDICO</div><div style="font-size:14px;font-weight:900;margin-top:2px">Sem retorno ao consultório médico</div>';
+          aviso.innerHTML = '<div style="font-size:10.5px;letter-spacing:.5px;color:#5b6672">RETORNO MÉDICO</div><div style="font-size:14px;font-weight:900;margin-top:2px">Sem retorno ao consultório médico</div>';
         } else if (destino === 'atendimento') {
-          aviso.innerHTML = '<div style="font-size:9px;letter-spacing:.5px;color:#6b7d88">PRÓXIMO DESTINO</div><div style="font-size:14px;font-weight:900;margin-top:2px">↩ Retorno ao consultório médico</div>';
+          aviso.innerHTML = '<div style="font-size:10.5px;letter-spacing:.5px;color:#5b6672">PRÓXIMO DESTINO</div><div style="font-size:14px;font-weight:900;margin-top:2px">↩ Retorno ao consultório médico</div>';
         } else if (nome) {
-          aviso.innerHTML = `<div style="font-size:9px;letter-spacing:.5px;color:#6b7d88">PRÓXIMO DESTINO</div><div style="font-size:14px;font-weight:900;margin-top:2px">→ ${nome}</div>${fallback ? '<div style="margin-top:3px;font-size:9px;color:#7a8a92;font-weight:700">Destino obtido do contexto confirmado do atendimento.</div>' : ''}`;
+          aviso.innerHTML = `<div style="font-size:10.5px;letter-spacing:.5px;color:#5b6672">PRÓXIMO DESTINO</div><div style="font-size:14px;font-weight:900;margin-top:2px">→ ${nome}</div>${fallback ? '<div style="margin-top:3px;font-size:9px;color:#7a8a92;font-weight:700">Destino obtido do contexto confirmado do atendimento.</div>' : ''}`;
         }
         clearInterval(timer);
       }, 80);
@@ -3983,10 +3984,10 @@
     }
     estilo(`
         .cs-destino-sucesso{margin:11px auto 12px;padding:10px 12px;width:min(330px,88%);box-sizing:border-box;border:1px solid #d8dee5;border-left:4px solid #7D09D5;border-radius:8px;background:#fafafa;color:#263238;text-align:left}
-        .cs-destino-label{font-size:9px;letter-spacing:.7px;font-weight:900;line-height:1.15;color:#6b7280}
+        .cs-destino-label{font-size:10.5px;letter-spacing:.7px;font-weight:900;line-height:1.15;color:#6b7280}
         .cs-destino-msg{font-size:12px;color:#475569;line-height:1.35}
         .cs-destino-valor{margin-top:4px;font-size:14px;line-height:1.2;font-weight:900;color:#4c1d95}
-        .cs-destino-ajuda{margin-top:4px;font-size:9.5px;line-height:1.25;font-weight:700;color:#7a8691}
+        .cs-destino-ajuda{margin-top:4px;font-size:10.5px;line-height:1.25;font-weight:700;color:#7a8691}
     `);
     function csInstalarCapturaDestino(){
         // O módulo OM30FluxoControleSalas acima já captura fetch/XHR com a URL real.
@@ -5100,6 +5101,58 @@
             #cs-aviso-flutuante.cs-visivel { opacity:1; transform:none; }
         `);
 
+        // ── Visual Claude ────────────────────────────────────────────────────
+        // Somente apresentação: não altera ordem, chamada, status, cancelamento,
+        // alergia, filas, APIs ou regras clínicas.
+        estilo(`
+            /* Resumo: nome do risco em etiqueta colorida */
+            .cs-barra .cs-media-cor { grid-template-columns:0 auto auto !important; column-gap:6px !important; }
+            .cs-barra .cs-media-dot { visibility:hidden !important; width:0 !important; }
+            .cs-barra .cs-media-nome { padding:2px 6px; border-radius:3px; font-size:10.5px !important; font-weight:800 !important; letter-spacing:.03em; color:#fff !important; background:#8a96a3; }
+            .cs-barra .cs-media-cor[title^="Vermelho"] .cs-media-nome { background:#c62828; }
+            .cs-barra .cs-media-cor[title^="Laranja"] .cs-media-nome { background:#e65100; }
+            .cs-barra .cs-media-cor[title^="Amarelo"] .cs-media-nome { background:#f5c518; color:#3b2f00 !important; }
+            .cs-barra .cs-media-cor[title^="Verde"] .cs-media-nome { background:#1b6e2e; }
+            .cs-barra .cs-media-cor[title^="Azul"] .cs-media-nome { background:#1565c0; }
+            .cs-barra .cs-media-qtd { font-size:14px !important; }
+
+            /* Risco: etiqueta com o nome */
+            .cs-fila td.cs-col-risco.cs-risco-ok { font-size:0 !important; }
+            .cs-fila td.cs-col-risco.cs-risco-ok > :not(.cs-risco-box) { display:none !important; }
+            .cs-risco-box { font-size:11px; }
+            .cs-risco-pill { display:inline-block; padding:3px 7px; border-radius:3px; font-size:10.5px; font-weight:800; letter-spacing:.04em; line-height:1.2; color:#fff; background:#8a96a3; white-space:nowrap; }
+            .cs-rp-vermelho { background:#c62828; } .cs-rp-laranja { background:#e65100; } .cs-rp-amarelo { background:#f5c518; color:#3b2f00; }
+            .cs-rp-verde { background:#1b6e2e; } .cs-rp-azul { background:#1565c0; }
+
+            /* Senha e idade */
+            .cs-fila td.cs-col-senha { font-weight:700 !important; font-variant-numeric:tabular-nums; }
+            .cs-idade-box { margin-top:2px; font-size:11px; font-weight:700; color:#5b6672; white-space:nowrap; }
+            .cs-idade-box:empty { display:none; }
+
+            /* Medicação */
+            .cs-fila .cs-med-prod { color:#1b242e; font-weight:700 !important; }
+            .cs-fila .cs-med-pos { font-size:11px; color:#5b6672; }
+            .cs-via { border-radius:3px !important; font-size:10px !important; line-height:16px !important; min-width:28px !important; }
+
+            /* Ações */
+            .cs-fila.cs-com-med td.cs-col-acoes .botao-chamar,
+            .cs-fila.cs-com-med td.cs-col-acoes .botao-atender { padding-left:6px !important; padding-right:6px !important; justify-content:center !important; text-align:center !important; }
+
+            .cs-fila.cs-com-med td.cs-col-acoes .botao-chamar:not(.disabled):not([disabled]) {
+                position:relative !important; background-color:#2b6cb0 !important; background-size:0 0 !important;
+                border-color:#2b6cb0 !important; color:#fff !important; font-weight:700 !important; }
+            .cs-fila.cs-com-med td.cs-col-acoes .botao-chamar:not(.disabled):not([disabled])::before {
+                content:''; position:absolute; left:7px; top:50%; width:18px; height:18px; transform:translateY(-50%);
+                background-image:inherit; background-repeat:no-repeat; background-position:center; background-size:18px;
+                filter:brightness(0) invert(1); pointer-events:none; }
+            .cs-fila.cs-com-med td.cs-col-acoes .botao-chamar:not(.disabled):not([disabled]):hover { background-color:#245a93 !important; }
+
+            .cs-fila .cs-acao-extra { margin-top:8px !important; padding-top:6px; border-top:1px solid #e6eaee; }
+            .cs-cancelar-linha { height:24px !important; font-size:11px !important; background:#fff !important; border-color:#e8b4b4 !important; }
+            .cs-cancelar-linha:hover:not(:disabled) { background:#fdf0f0 !important; }
+        `);
+
+
         // Espera o Vue e os componentes do Saúde Simples aparecerem para remendar
         // as definições antes da tabela ser montada.
         const inicio = Date.now();
@@ -5603,6 +5656,8 @@
                     novos.push(med
                         ? { key: 'cs_med', label: 'Medicação', class: 'col-md-3 col-lg-3 text-left cs-col-med' }
                         : { key: 'cs_detalhes', label: setor.nome, class: 'col-md-3 col-lg-3 text-left cs-col-med' });
+                } else if (/risco/i.test(String(c.key || ''))) {
+                    novos.push(Object.assign({}, c, { class: String(c.class || '') + ' cs-col-risco' }));
                 } else if (c.key === 'profissional_responsavel') {
                     novos.push(Object.assign({}, c, { class: String(c.class || '').replace(/col-(md|lg)-2/g, 'col-$1-1') }));
                 } else {
@@ -6195,6 +6250,24 @@
         // As células das colunas Medicação e Ação são do Vue; o conteúdo extra vai
         // numa caixa própria, reescrita só quando muda (a linha pode passar a ser de
         // outro paciente).
+        // Exibe idade abaixo da data de nascimento.
+        function idadeTexto(texto) {
+            const t = String(texto || '');
+            const br = /(\d{2})\/(\d{2})\/(\d{4})/.exec(t), iso = /(\d{4})-(\d{2})-(\d{2})/.exec(t);
+            if (!br && !iso) return '';
+            const nasc = br ? new Date(+br[3], +br[2] - 1, +br[1]) : new Date(+iso[1], +iso[2] - 1, +iso[3]);
+            const hoje = new Date();
+            if (isNaN(nasc) || nasc > hoje) return '';
+            let anos = hoje.getFullYear() - nasc.getFullYear();
+            let meses = hoje.getMonth() - nasc.getMonth();
+            if (hoje.getDate() < nasc.getDate()) meses--;
+            if (meses < 0) { anos--; meses += 12; }
+            if (anos >= 1) return anos === 1 ? '1 ano' : `${anos} anos`;
+            const totalMeses = anos * 12 + meses;
+            if (totalMeses >= 1) return totalMeses === 1 ? '1 mês' : `${totalMeses} meses`;
+            const dias = Math.floor((hoje - nasc) / 864e5);
+            return dias === 1 ? '1 dia' : `${dias} dias`;
+        }
         function caixa(td, classe, aoClicar) {
             let box = td.querySelector(`:scope > .${classe}`);
             if (!box) {
@@ -6264,6 +6337,8 @@
             const colNome = campos.findIndex(f => f.key === 'nome_municipe');
             const colChegada = campos.findIndex(f => f.key === 'data_encaminhamento');
             const colStatus = campos.findIndex(f => f.key === 'status');
+            const colRisco = campos.findIndex(f => /risco/i.test(String(f.key || '')));
+            const colNasc = campos.findIndex(f => /nasc/i.test(String(f.key || '')));
             if (colDet < 0) return;
             const linhas = vm.$el.querySelectorAll('tbody > tr');
             (vm.items || []).forEach((it, i) => {
@@ -6299,6 +6374,20 @@
                     } else {
                         aviso?.remove();
                     }
+                }
+
+                if (colRisco >= 0 && tr.children[colRisco]) {
+                    const tdRisco = tr.children[colRisco];
+                    const nomeRisco = String(it.grau_risco || '').trim().toUpperCase();
+                    const chaveRisco = ({ VERMELHO:'vermelho', LARANJA:'laranja', AMARELO:'amarelo', VERDE:'verde', AZUL:'azul' })[nomeRisco] || 'sem';
+                    trocarHtml(caixa(tdRisco, 'cs-risco-box'), `<span class="cs-risco-pill cs-rp-${chaveRisco}">${esc(nomeRisco || 'SEM RISCO')}</span>`);
+                    tdRisco.classList.add('cs-risco-ok');
+                }
+                if (colNasc >= 0 && tr.children[colNasc]) {
+                    const tdNasc = tr.children[colNasc];
+                    const campoNasc = campos[colNasc].key;
+                    const textoNasc = `${it[campoNasc] || ''} ${tdNasc.firstChild?.textContent || ''}`;
+                    trocarHtml(caixa(tdNasc, 'cs-idade-box'), esc(idadeTexto(textoNasc)));
                 }
 
                 if (tr.children[colDet]) trocarHtml(caixa(tr.children[colDet], setor.key === 'medicacao' ? 'cs-med-box' : 'cs-det-box'),

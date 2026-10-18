@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.45
+// @version      3.0.50
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,11 +16,12 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.45
+    /* OM30 - CONTROLE DE SALAS v3.0.50
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
-     * v3.0.45: compacta e centraliza o bloco Chamar/Atender/Cancelar em linhas altas com muitas medicações; observação vazia ou composta apenas por traços não exibe mais "obs.".
+     * v3.0.50: restaura somente o desenho da coluna de ações usado no layout Claude 3.0.49 (botões 30px e largura natural da coluna), preservando toda a lógica atual e a remoção de "obs." vazio.
+     * v3.0.45: observação vazia ou composta apenas por traços não exibe mais "obs.".
      * v3.0.44: corrige falso conflito quando Acolhimento/Atendimento negam alergia com texto truncado ou colado (ex.: "NEGA ALERGIAS MEDICAÇOE..."). Prefixos NG/NGA/NEGA/SEM/NÃO POSSUI + ALERGIA são sempre tratados como negativa.
      * v3.0.43: corrige leitura de alergia abreviada (ex.: "NG ALERGIAS A MEDICAÇÕES") e impede campos seguintes do prontuário de vazarem para o alerta.
      * Revisão: espera copiada do padrão da Fila Médica; ícone de Dados do Munícipe copiado do Unificado v2.0.20; alergia com lógica integral da v2.0.80,
@@ -4889,27 +4890,11 @@
             /* Coluna Ação com medicações: botões com rótulo em vez de ícones soltos. */
             .cs-fila.cs-com-med td.cs-col-senha { white-space:pre-line; }
             .cs-fila.cs-com-med td.cs-col-acoes {
-                vertical-align:middle !important;
-                padding:4px 2px !important;
+                vertical-align:middle;
+                padding-right:2px !important;
             }
-            /* A linha pode ficar alta por causa de várias medicações; as ações ficam
-               num bloco compacto no centro, sem acompanhar visualmente essa altura. */
-            .cs-fila.cs-com-med td.cs-col-acoes > .row {
-                display:flex !important;
-                flex-direction:column !important;
-                justify-content:center !important;
-                align-items:center !important;
-                gap:2px;
-                margin:0 auto !important;
-                width:100% !important;
-                max-width:116px !important;
-            }
-            .cs-fila.cs-com-med td.cs-col-acoes > .row > * {
-                width:100% !important;
-                max-width:116px !important;
-                float:none !important;
-                margin:0 auto !important;
-            }
+            .cs-fila.cs-com-med td.cs-col-acoes > .row { display:flex !important; flex-direction:column !important; gap:2px; margin:0 !important; width:100% !important; }
+            .cs-fila.cs-com-med td.cs-col-acoes > .row > * { width:100% !important; max-width:none !important; float:none !important; margin:0 !important; }
             .cs-fila.cs-com-med td.cs-col-acoes .botao-tempo-chegada { display:none !important; }
             /* ESCONDER_ATENDER: só o Chamar, ocupando a célula toda. */
             .cs-fila.cs-sem-atender td .botao-atender, .cs-fila.cs-com-med.cs-sem-atender td.cs-col-acoes .botao-atender { display:none !important; }
@@ -4918,8 +4903,8 @@
             .cs-fila.cs-com-med td.cs-col-acoes .botao-chamar,
             .cs-fila.cs-com-med td.cs-col-acoes .botao-atender {
                 display:flex !important; align-items:center; justify-content:center; gap:4px; max-width:none !important; width:auto !important;
-                flex:none !important; height:27px; width:100% !important; padding:0 5px 0 23px !important; border:1px solid #b9c2cc; border-radius:5px; background-color:#fff;
-                background-position:5px center; background-size:16px; color:#24313f !important; font-size:11.5px; font-weight:600;
+                flex:none !important; height:30px; width:100% !important; padding:0 6px 0 26px !important; border:1px solid #b9c2cc; border-radius:5px; background-color:#fff;
+                background-position:6px center; background-size:18px; color:#24313f !important; font-size:12px; font-weight:600;
                 text-decoration:none !important; white-space:nowrap; filter:none; }
             .cs-fila.cs-com-med td.cs-col-acoes .botao-chamar::after { content:'Chamar'; }
             .cs-fila.cs-com-med td.cs-col-acoes .botao-atender::after { content:'Atender'; }
@@ -4988,9 +4973,8 @@
             .cs-hist-nota { text-align:left; font-size:11px; color:#8a1f1f; background:#fdf0f0; border-left:3px solid #d9534f; padding:2px 6px; border-radius:3px; }
             .cs-barra .cs-dica { color:#6b7785; font-style:italic; }
             .cs-acao-extra {
-                margin:2px auto 0;
+                margin-top:2px;
                 width:100%;
-                max-width:116px;
             }
             .cs-cancelar-linha {
                 display:flex;
@@ -4999,15 +4983,15 @@
                 gap:4px;
                 width:100%;
                 min-width:0;
-                height:27px;
+                height:30px;
                 box-sizing:border-box;
                 margin:0;
-                padding:0 5px;
+                padding:0 6px;
                 border:1px solid #e3a5a5;
                 border-radius:5px !important;
                 background:#fff5f5;
                 color:#a32020;
-                font-size:11.5px;
+                font-size:12px;
                 line-height:1;
                 font-weight:600;
                 cursor:pointer;

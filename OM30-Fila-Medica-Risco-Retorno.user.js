@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.11.6
+// @version      2.11.7-rt-teste
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -73,8 +73,8 @@
   //   bloco legado "Médico NOME" quando não houver BPA nem data-profissional-*.
 
 
-  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2116__) return;
-  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2116__ = true;
+  if (window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2117RT__) return;
+  window.__OM30_FILA_MEDICA_RISCO_RETORNO_V2117RT__ = true;
 
   const PREFIX = 'om30-fila-risco-retorno';
   const STORAGE_FILTRO = `${PREFIX}:filtro`;
@@ -1402,10 +1402,15 @@
     const clone = doc.body?.cloneNode(true);
     if (!clone) return [];
     clone.querySelectorAll('script, style, noscript, button, svg, .tooltip, .popover').forEach(el => el.remove());
-    return (clone.innerText || clone.textContent || '')
-      .split(/\r?\n/)
-      .map(clean)
-      .filter(Boolean);
+    // DOMParser gera documento destacado: innerText/textContent não preservam linhas visuais.
+    const linhas = [];
+    const walker = doc.createTreeWalker(clone, 4);
+    let node;
+    while ((node = walker.nextNode())) {
+      const txt = clean(node.textContent);
+      if (txt) linhas.push(txt);
+    }
+    return linhas;
   }
 
   function valorDepoisDoRotulo(linhas, rotulos, validador = null) {
@@ -1558,9 +1563,28 @@
     const corte = linhas.findIndex(l => ['EVOLUCAO CLINICA', 'HISTORICO DE ATENDIMENTOS'].includes(norm(l)));
     const topo = corte > 0 ? linhas.slice(0, corte) : linhas.slice(0, 160);
 
-    const data = valorDepoisDoRotulo(topo, ['Data'], v => /^(?:\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2})$/.test(v));
-    const hora = valorDepoisDoRotulo(topo, ['Hora'], v => /^\d{1,2}:\d{2}(?::\d{2})?$/.test(v));
-    const profissional = valorDepoisDoRotulo(topo, ['Médico', 'Medico', 'Profissional']);
+    const buscarRotulo = (rotulos, regex) => {
+      const alvos = rotulos.map(norm);
+      for (let i = 0; i < topo.length; i++) {
+        const linha = clean(topo[i]);
+        const n = norm(linha);
+        for (const rotulo of alvos) {
+          if (n === rotulo) {
+            for (let j = i + 1; j < Math.min(i + 5, topo.length); j++) {
+              if (regex.test(clean(topo[j]))) return clean(topo[j]);
+            }
+          }
+          if (n.startsWith(rotulo + ':') || n.startsWith(rotulo + ' ')) {
+            const resto = clean(linha.slice(rotulo.length).replace(/^\s*[:\-]\s*/, ''));
+            if (regex.test(resto)) return resto;
+          }
+        }
+      }
+      return '';
+    };
+    const data = buscarRotulo(['Data'], /^(?:\d{2}\/\d{2}\/\d{4}|\d{4}-\d{2}-\d{2})$/);
+    const hora = buscarRotulo(['Hora'], /^\d{1,2}:\d{2}(?::\d{2})?$/);
+    const profissional = buscarRotulo(['Médico', 'Medico', 'Profissional'], /[A-Za-zÀ-ÿ]{3,}/);
     const especialidade = valorDepoisDoRotulo(topo, ['Especialidade']);
     const unidade = extrairUnidadesDocumento(doc);
 
@@ -1743,12 +1767,14 @@
         // do prontuário. Assim uma ficha com dezenas de históricos não dispara
         // dezenas de GETs só para descobrir que estão fora das 36h.
         let candidatosRecentes = candidatos.filter(r => candidatoRapidoMesmaUnidade36h(r, unidadeAtual, refMs));
-
-        // Se o ambiente não expuser ID da unidade/número no padrão observado,
-        // usa um fallback curto. Não volta a varrer o histórico inteiro.
-        if (!candidatosRecentes.length && !(unidadeAtual.ids?.length)) {
-          candidatosRecentes = candidatos.slice(0, 8);
-        }
+        // O número do prontuário é APENAS otimização, não prova de inexistência.
+        // Consulta também candidatos cujo número não segue o padrão presumido.
+        const restantes = candidatos.filter(r => !candidatosRecentes.includes(r));
+        candidatosRecentes = [...candidatosRecentes, ...restantes].slice(0, 60);
+        console.info('[OM30 RT TESTE] Histórico candidato', atendimentoStr, {
+          total: candidatos.length, consultados: candidatosRecentes.length,
+          unidade: descreverUnidade(unidadeAtual)
+        });
 
         if (!candidatosRecentes.length) {
           log('Nenhum candidato da mesma unidade em datas compatíveis com 36h', atendimentoStr, descreverUnidade(unidadeAtual));
@@ -1769,16 +1795,23 @@
           // O prefixo do número já comprovou o ID da mesma unidade. Se a página
           // também trouxer unidade explícita e ela conflitar, rejeita por segurança.
           const codificada = dataCodificadaNoNumeroProntuario(registro.prontuarioNumero, unidadeAtual);
-          if (!codificada) continue;
-
           const unidadeAnterior = registro.unidade || { ids: [], nomes: [] };
+          // Sem código compatível, exige confirmação explícita da mesma unidade.
+          if (!codificada && !unidadesCompativeis(unidadeAtual, unidadeAnterior)) {
+            const unidadeDoAtendimento = await carregarUnidadeAtendimentoHistorico(registro);
+            if (!unidadesCompativeis(unidadeAtual, unidadeDoAtendimento)) {
+              console.info('[OM30 RT TESTE] Unidade sem confirmação', registro.prontuarioId || registro.prontuarioNumero);
+              continue;
+            }
+            registro.unidade = unidadeDoAtendimento;
+          }
           if (unidadeIdentificada(unidadeAnterior) && !unidadesCompativeis(unidadeAtual, unidadeAnterior)) {
             // Só faz UMA confirmação adicional quando existe conflito explícito.
             const unidadeDoAtendimento = await carregarUnidadeAtendimentoHistorico(registro);
             if (!unidadesCompativeis(unidadeAtual, unidadeDoAtendimento)) continue;
             registro.unidade = unidadeDoAtendimento;
           } else if (!unidadeIdentificada(unidadeAnterior)) {
-            registro.unidade = { ids: [codificada.idUnidade], nomes: [] };
+            registro.unidade = codificada ? { ids: [codificada.idUnidade], nomes: [] } : registro.unidade;
           }
 
           compativeis.push(registro);
@@ -1788,6 +1821,11 @@
         const registro = compativeis[0] || null;
 
         if (registro) {
+          console.info('[OM30 RT TESTE] Atendimento escolhido', {
+            profissional: registro.profissional, data: registro.data, hora: registro.hora,
+            prontuarioId: registro.prontuarioId, atendimentoId: registro.atendimentoId,
+            candidatosValidos: compativeis.length
+          });
           registro.unidadeAtual = unidadeAtual;
           log('Último atendimento médico anterior NA MESMA UNIDADE / 36h', atendimentoStr, {
             unidadeAtual: descreverUnidade(unidadeAtual),
@@ -1796,7 +1834,7 @@
             realizadoEm: [registro.data, registro.hora].filter(Boolean).join(' ')
           });
         } else {
-          log('Nenhum atendimento médico anterior na mesma unidade dentro de 36h', atendimentoStr, descreverUnidade(unidadeAtual));
+          console.warn('[OM30 RT TESTE] Nenhum registro validado. Verificar data/hora/unidade no HTML.', atendimentoStr);
         }
 
         return registro;
@@ -1899,7 +1937,7 @@
 
       info.style.color = '#8a5555';
       info.textContent =
-        'Nenhum profissional encontrado — atendimento há mais de 36h ou realizado manualmente.';
+        'Profissional anterior não confirmado; consulte o histórico (ver logs OM30 RT TESTE).';
     }
   }
 

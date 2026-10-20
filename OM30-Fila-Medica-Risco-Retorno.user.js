@@ -4,8 +4,8 @@
 // @version      2.11.7-rt-teste
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
-// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
-// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
+// @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/teste/fila-medica-rt-2117/OM30-Fila-Medica-Risco-Retorno.user.js
+// @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/teste/fila-medica-rt-2117/OM30-Fila-Medica-Risco-Retorno.user.js
 // @match        https://guaruja.saudesimples.net/prontuarios*
 // @match        https://guarujahomolog.saudesimples.net/prontuarios*
 // @match        https://guaruja.saudesimples.net/atendimentos/prontuario*

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.3.7
+// @version      2.3.8
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -699,7 +699,7 @@
 (() => {
   'use strict';
 
-  // v2.3.7:
+  // v2.3.8:
   // - Origem da ausência registrada no Cloudflare D1 no momento em que o Saúde Simples confirma
   //   "Paciente ausente" (PUT nativo, resposta 2xx; descartada se o próprio sistema desfizer).
   // - Lista de ausentes consulta o D1 em lote: com registro, a origem vem do D1 (sem varrer guichês);
@@ -3224,6 +3224,7 @@
       if (em) r.cat = em.cat;
     }
     tr.dataset.om30Origem = r.origem;
+    tr.dataset.om30Fonte = r.fonte || '';
     tr.dataset.om30Erro = r.erroHttp || '';
     if (r.senha) tr.dataset.om30Senha = r.senha; else delete tr.dataset.om30Senha;
     if (r.setor) tr.dataset.om30Setor = r.setor;
@@ -3265,7 +3266,7 @@
     // Botão remover: bloqueado se a ausência é de outra fila
     const btn = tr.querySelector(SEL_REMOVER);
     if (btn) {
-      const bloquear = !podeRemoverAqui(r.origem, r.setor);
+      const bloquear = r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor);
       btn.classList.toggle('om30a-bloqueado', bloquear);
       if (bloquear) {
         if (btn.dataset.om30TituloOriginal === undefined) btn.dataset.om30TituloOriginal = btn.getAttribute('title') || '';
@@ -3527,21 +3528,8 @@
     const tr = a.closest('tr');
     const origem = tr?.dataset.om30Origem;
 
-    if (origem && !['ACOLHIMENTO', 'MEDICO', 'EMERGENCIA', 'OUTROS'].includes(origem)) {
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      dialogo({
-        tipo: 'aviso',
-        titulo: 'Remoção bloqueada',
-        subtitulo: 'Origem da ausência não confirmada',
-        texto: [
-          'Não consegui confirmar no Senha Simples onde este paciente foi ausentado.',
-          'Clique em "Atualizar" na barra acima e tente de novo. Se continuar assim, remova pela tela da fila onde ele foi ausentado.'
-        ],
-        botoes: [{ rotulo: 'Entendi', valor: true, primario: true }]
-      });
-      return;
-    }
+    // Origem não confirmada: não bloqueia; segue a remoção nativa do Saúde Simples.
+    if (origem && !['ACOLHIMENTO', 'MEDICO', 'EMERGENCIA', 'OUTROS'].includes(origem)) return;
     if (!origem) {
       ev.preventDefault();
       ev.stopImmediatePropagation();
@@ -3550,6 +3538,8 @@
     }
 
     const setor = tr.dataset.om30Setor || '';
+    // Origem só deduzida (sem D1) e de outra fila: não bloqueia; remoção nativa, sem escolher fila.
+    if (tr.dataset.om30Fonte !== 'D1' && !podeRemoverAqui(origem, setor)) return;
     if (!podeRemoverAqui(origem, setor)) {
       ev.preventDefault();
       ev.stopImmediatePropagation();

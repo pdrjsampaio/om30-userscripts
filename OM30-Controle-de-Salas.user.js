@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.51
+// @version      3.0.52
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,11 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.51
+    /* OM30 - CONTROLE DE SALAS v3.0.52
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.52: ao abrir ou recarregar a página o período volta para "Hoje"; a contagem do título e da barra segue a mesma regra em todos os computadores (Hoje, sem filtro do sistema), mesmo com período 24 horas/Data ou filtro salvo neste PC; o "hoje" usa o relógio do servidor quando o do PC está errado; com a tela visível e a lista mais de 1 min sem atualizar (aba em segundo plano, PC que acordou, ciclo do sistema parado), atualiza sozinha.
      * v3.0.51: aplica o pacote visual completo do layout Claude 3.0.49 (resumo e risco em badges, idade, medicação destacada, via quadrada, Chamar azul, Cancelar separado e tipografia), preservando a lógica atual.
      * v3.0.50: restaura somente o desenho da coluna de ações usado no layout Claude 3.0.49 (botões 30px e largura natural da coluna), preservando toda a lógica atual e a remoção de "obs." vazio.
      * v3.0.45: observação vazia ou composta apenas por traços não exibe mais "obs.".
@@ -4192,6 +4193,13 @@
     // Tela "Controle de Salas" (lista)
     // ─────────────────────────────────────────────────────────────────────────────
     function iniciarFila() {
+        // Ao abrir ou recarregar a página o período volta para "Hoje": 24 horas/Data...
+        // valem só enquanto a página está aberta e não ficam presos neste PC.
+        const cfgSalva = lerJSON(CHAVE_CONFIG, {});
+        if (cfgSalva.periodo !== 'hoje' || cfgSalva.dataInicial || cfgSalva.dataFinal) {
+            gravarJSON(CHAVE_CONFIG, Object.assign({}, cfgSalva, { periodo: 'hoje', dataInicial: '', dataFinal: '' }));
+        }
+
         // Estado compartilhado entre os componentes remendados.
         const CS = {
             itens: new Map(),          // encaminhamento_id → item da última carga
@@ -4204,6 +4212,7 @@
             truncado: false,
             totalPeriodo: 0,
             erro: null,
+            desvioRelogio: 0,          // ms (servidor − PC), só quando o relógio do PC está errado
         };
         window.__controleSalasFila = CS; // para depuração no console
 
@@ -4608,10 +4617,18 @@
             return pedirPaginaAxios(url, params);
         }
         function pedirPaginaAxios(url, params) {
-            return window.axios.get(url, { params }).then(resp => ({
-                dados: Array.isArray(resp.data) ? resp.data : [],
-                total: parseInt(resp.headers && resp.headers.total, 10),
-            }));
+            return window.axios.get(url, { params }).then(resp => {
+                // Relógio do servidor: com o PC adiantado/atrasado o "Hoje" pedia outro dia.
+                const t = new Date(resp.headers && resp.headers.date).getTime();
+                if (Number.isFinite(t)) {
+                    const d = t - Date.now();
+                    CS.desvioRelogio = Math.abs(d) > 120e3 ? d : 0;
+                }
+                return {
+                    dados: Array.isArray(resp.data) ? resp.data : [],
+                    total: parseInt(resp.headers && resp.headers.total, 10),
+                };
+            });
         }
 
         (function vigiarControleSalas() {
@@ -5161,13 +5178,24 @@
             if (V && V.options && V.options.components && V.options.components['controle-salas-listagem-fila-aplicacao']) {
                 clearInterval(timer);
                 try { remendarComponentes(V); } catch (e) { console.error('[Controle de Salas] remendo falhou', e); }
-                setInterval(() => { varrerInstancias(); atualizarTitulo(); }, 3000);
+                setInterval(() => { varrerInstancias(); atualizarTitulo(); vigiarListaParada(); }, 3000);
+                document.addEventListener('visibilitychange', vigiarListaParada);
                 varrerInstancias();
             } else if (Date.now() - inicio > 60000) {
                 clearInterval(timer);
                 console.warn('[Controle de Salas] componentes Vue não encontrados; script inativo.');
             }
         }, 25);
+
+        // Lista parada (aba voltou do segundo plano, PC acordou, ciclo de 20 s do sistema
+        // parou): com a tela visível e mais de 1 min sem atualizar, atualiza sem esperar.
+        function vigiarListaParada() {
+            if (!CS.colecao || !CS.ultimaAtualizacao || document.visibilityState === 'hidden') return;
+            if (Date.now() + (CS.desvioRelogio || 0) - CS.ultimaAtualizacao.getTime() < 60e3) return;
+            if (Date.now() - (CS.vigiaEm || 0) < 30e3) return; // falhando, tenta de novo a cada 30 s
+            CS.vigiaEm = Date.now();
+            carregar(CS.colecao, { silencioso: true });
+        }
 
         // Instância criada já com a definição remendada: a varredura não precisa mexer nela.
         function marcarRemendada() { this.__cs = true; }
@@ -6929,7 +6957,7 @@
             vm.isLoading = !jaTemItens;
 
             const cfg = lerConfig();
-            const agora = new Date();
+            const agora = new Date(Date.now() + (CS.desvioRelogio || 0));
             const inicioCarga = performance.now();
             let cond, minimo, filtroDataSistema;
             const condBase = Object.assign({}, vm.conditions || {});
@@ -6975,6 +7003,14 @@
                 return { paginas, total };
             };
 
+            // Contagem do título e da barra: a mesma regra em todos os computadores
+            // (Hoje, sem filtro do sistema). Com 24 horas/Data ou filtro salvo neste PC,
+            // ela sai de uma consulta à parte; a tabela continua como foi escolhida.
+            const comFiltro = !!(cond.status || cond.grau_risco || cond.search_term || (cond.profissional && cond.profissional.id != null));
+            const contagemPadrao = !historico && (cfg.periodo !== 'hoje' || comFiltro)
+                ? buscarTudo(N.aplicarPeriodo(Object.assign({}, condBase, { search_term: null, profissional: {}, status: '', grau_risco: '' }), 'hoje', agora).cond).catch(() => null)
+                : null;
+
             try {
                 const consultas = historico
                     // Histórico: o mesmo filtro do sistema com status Cancelado e Finalizado.
@@ -7008,7 +7044,13 @@
                 CS.itens = new Map(todos.map(it => [it.encaminhamento_id, it]));
                 CS.erro = null;
                 CS.ultimaAtualizacao = agora;
-                CS.resumo = N.resumo(lista);
+                let paraContar = lista;
+                if (contagemPadrao) {
+                    const rp = await contagemPadrao;
+                    if (seq !== CS.carga) return;
+                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento'));
+                }
+                CS.resumo = N.resumo(paraContar);
                 CS.resumoHist = historico ? {
                     cancelados: lista.filter(it => it.status === 'Cancelado').length,
                     finalizados: lista.filter(it => it.status !== 'Cancelado').length,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.72
+// @version      3.0.75
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,13 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.72
+    /* OM30 - CONTROLE DE SALAS v3.0.75
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.75: botão "Desvincular" com ícone e cor âmbar, no mesmo tamanho do Cancelar; a janela do Senha Simples passa a ser evitada no próprio pedido de login do sistema (dispatch do Vuex), sem depender de chegar antes da fila.
+     * v3.0.74: a janela de login do Senha Simples não abre mais a cada carga de página: o token válido da aba é reaproveitado (some o "Não foi possível realizar esta operação" quando a janela era bloqueada/fechada). Com o token vencido, segue o fluxo do sistema.
+     * v3.0.73: botão "Desvincular senha" em cada linha da fila (todas as salas): confere no Senha Simples se a senha está presa em outro profissional, confirma e libera a mesma senha (retornar + desvincular). Nada é chamado automaticamente.
      * v3.0.72: "Coletar todos" dos Exames pela API do sistema: todas as consultas de faturamento saem juntas e os exames ficam coletados de uma vez (sem clicar um por um, sem a espera de 500 ms). Continua sem salvar.
      * v3.0.71: a alergia não aparece mais nas salas de Raio-X e Exames (continua na Medicação e na Enfermagem).
      * v3.0.70: "Pediatria" na Medicação inclui as senhas PP (pediatria preferencial) além das PD.
@@ -50,6 +53,55 @@
      * Pendências/Cancelar preservados da v2.0.80, handoff exato por AtendimentoPa,
      * pendências/retorno pela ponte central do médico + handoff nativo; AtendimentoPa exato por linha/ficha; Cancelar e vínculo de local em todas as filas.
      */
+
+    // ── SENHA SIMPLES SEM JANELA ────────────────────────────────────────────────
+    // A cada carga de página o Vuex do sistema começa sem token e o componente da fila
+    // abre a janela de login do Senha Simples (popup 600x700). Se a janela é bloqueada,
+    // fechada ou demora, aparece "Não foi possível realizar esta operação" e a fila não
+    // carrega. O token da própria aba (sessionStorage, vale ~12 h) é entregue ao Vuex
+    // antes da fila montar: com ele válido, a janela não abre. Vencido → fluxo nativo.
+    // O pedido de login passa pelo dispatch('authenticateSenhaSimples') do Vuex: ele é
+    // interceptado no Vuex.Store (antes do store existir) e, se tarde, no próprio store.
+    (function tokenSenhaSemJanela() {
+        const vence = tk => { try { const p = JSON.parse(atob(String(tk).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); return p && p.exp ? p.exp * 1000 : 0; } catch (_) { return 0; } };
+        const tokenValido = () => { let tk = ''; try { tk = sessionStorage.getItem('senhaSimplesToken') || ''; } catch (_) {} return tk && vence(tk) - Date.now() > 5 * 60e3 ? tk : ''; };
+        function embrulhar(orig, fixo) {
+            if (typeof orig !== 'function' || orig.__om30Token) return orig;
+            const f = function (tipo) {
+                const nome = tipo && typeof tipo === 'object' ? tipo.type : tipo;
+                if (nome === 'authenticateSenhaSimples' || nome === 'authorizeSenhaSimples') {
+                    const tk = tokenValido(), st = fixo || this;
+                    if (tk && st && typeof st.commit === 'function') {
+                        try {
+                            st.commit('GET_SENHA_SIMPLES_TOKEN', tk);
+                            st.commit('SET_SENHA_SIMPLES_ERROR', {});
+                            if (typeof senhaSimplesProxy !== 'undefined') senhaSimplesProxy.defaults.headers = { Authorization: `Bearer ${tk}` };   // eslint-disable-line no-undef
+                            console.info('[OM30] Senha Simples: token desta aba reaproveitado, sem abrir a janela de login.');
+                            return Promise.resolve();
+                        } catch (e) { console.warn('[OM30] Senha Simples: token não reaproveitado', e); }
+                    }
+                }
+                return orig.apply(this, arguments);
+            };
+            f.__om30Token = true;
+            return f;
+        }
+        const ajustarVuex = v => { try { if (v && v.Store && v.Store.prototype) v.Store.prototype.dispatch = embrulhar(v.Store.prototype.dispatch); } catch (_) {} };
+        let vx = window.Vuex;
+        if (vx) ajustarVuex(vx);
+        else {
+            try { Object.defineProperty(window, 'Vuex', { configurable: true, enumerable: true, get() { return vx; }, set(v) { vx = v; ajustarVuex(v); } }); } catch (_) {}
+        }
+        // Store já criado (script carregou tarde): embrulha o dispatch da instância.
+        const ajustarStore = () => {
+            let st = null;
+            try { st = (typeof store !== 'undefined') ? store : null; } catch (_) { st = null; }   // eslint-disable-line no-undef
+            if (!st || typeof st.dispatch !== 'function') return false;
+            st.dispatch = embrulhar(st.dispatch, st);
+            return true;
+        };
+        if (!ajustarStore()) { const t = setInterval(() => { if (ajustarStore()) clearInterval(t); }, 20); setTimeout(() => clearInterval(t), 30000); }
+    })();
 
     // ── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
     // Mostrar na fila os medicamentos de cada paciente (produto, via, posologia e
@@ -5506,6 +5558,12 @@
             .cs-fila .cs-acao-extra { margin-top:8px !important; padding-top:6px; border-top:1px solid #e6eaee; }
             .cs-cancelar-linha { height:24px !important; font-size:11px !important; background:#fff !important; border-color:#e8b4b4 !important; }
             .cs-cancelar-linha:hover:not(:disabled) { background:#fdf0f0 !important; }
+            .cs-desv-box { margin-top:2px; width:100%; }
+            .cs-desv-box:empty { display:none; }
+            .cs-desv-linha { display:flex; align-items:center; justify-content:center; gap:5px; width:100%; height:24px; box-sizing:border-box; margin:0; padding:0 6px; border:1px solid #e6c27a !important; border-radius:5px !important; background:#fffaf0 !important; color:#8a5a00; font-size:11px; font-weight:600; line-height:1; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-shadow:none; transition:background .15s, border-color .15s; }
+            .cs-desv-linha svg { width:12px; height:12px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+            .cs-desv-linha:hover:not(:disabled) { background:#fdf0d5 !important; border-color:#d4a440 !important; }
+            .cs-desv-linha:disabled { opacity:.6; cursor:default; }
         `);
 
 
@@ -6145,6 +6203,70 @@
             DET.cache.delete(`${setor.key}:${id}`);const ap=atendimentoPres(it.atendimento_str);if(ap)presReq('/api/attendance/delete',{atendimento_id:ap.chave,sala:setor.api}).catch(()=>{});CS.ultimaAssinatura='';aviso(`${setor.nome}: cancelamento concluído.`);if(CS.colecao)carregar(CS.colecao,{silencioso:true});
         }
         function cliqueCancelarSetor(ev){const b=ev.target.closest('button[data-cs-cancelar-setor]');if(!b)return;ev.preventDefault();ev.stopPropagation();const vm=CS.colecao,setor=setorDaColecao(vm),it=(vm.items||[]).find(x=>idGenerico(x,setor)===b.dataset.csCancelarSetor);if(!setor||!it)return;b.disabled=true;cancelarSetorDireto(it,setor).catch(e=>swalSeguro({type:'error',title:'Cancelamento não concluído',html:esc(e&&e.message||e)})).finally(()=>{if(b.isConnected)b.disabled=false;});}
+
+        // ── Desvincular senha presa em outro profissional ─────────────────────
+        // Mesmo fluxo do Acolhimento: confere no Senha Simples (422 ja_chamada = presa),
+        // pede confirmação, retorna a senha para a categoria desta sala e desvincula.
+        // A senha continua com o mesmo número e nada é chamado automaticamente.
+        const TIPO_SALA = { medicacao:'controle_de_salas_medicacao', exames:'controle_de_salas_exames', raio_x:'controle_de_salas_raio_x', enfermagem:'controle_de_salas_procedimento_enfermagem' };
+        const DESV = { emCurso:new Set() };
+        function htmlDesvincular(it){
+            if(CS.historico || (it.status!=='Em Espera'&&it.status!=='Em Andamento') || !String(it.senha||'').trim()) return '';
+            const at=String(it.atendimento_str||''); if(!/^\w+#\d+$/.test(at)) return '';
+            const ic='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 4 8"/><path d="M8 12h3"/><path d="M3 3l18 18"/></svg>';
+            if(DESV.emCurso.has(at)) return `<button type="button" class="cs-desv-linha" disabled>${ic}<span>Liberando…</span></button>`;
+            return `<button type="button" class="cs-desv-linha" data-cs-desv="${esc(at)}" title="Libera a senha presa em outro profissional">${ic}<span>Desvincular</span></button>`;
+        }
+        function guicheDaSala(setor){
+            const tipo=TIPO_SALA[setor&&setor.key]; if(!tipo) return null;
+            const g=autoSalaVMs().find(vm=>vm?.tipoParametrizacao===tipo&&typeof vm?.redirectFilaAtendimento==='function'&&autoSalaVisivel(vm?.$el));
+            if(!g) return null;
+            let local=null; try{ local=g.$store.getters.localAtendimentoAtual[tipo]||null; }catch(_){}
+            return { tipo, local: local&&local.id ? local : null, cat: g.categoriaId || null };
+        }
+        function erroSenhaSimples(e){ const st=e&&e.response&&e.response.status; return st===401?'Senha Simples desconectado (HTTP 401)':st?`HTTP ${st}`:String(e&&e.message||e); }
+        async function desvincularDaLinha(it,setor){
+            if(typeof window.senhaSimplesGetSenhaAtendimento!=='function'||typeof window.senhaSimplesPutFilas!=='function') throw new Error('Senha Simples indisponível');
+            const ctx=guicheDaSala(setor);
+            if(!ctx||!ctx.local) throw new Error('Selecione o guichê da sala');
+            if(!ctx.cat) throw new Error('Categoria da sala não encontrada');
+            const m=String(it.atendimento_str).match(/^(\w+)#(\d+)$/); if(!m) throw new Error('Atendimento não identificado');
+            const params={ atendimento_id:+m[2], atendimento_type:m[1] };
+            let presa=null;
+            try{ await window.senhaSimplesGetSenhaAtendimento({ localAtendimentoAtualId:ctx.local.id, params }); }
+            catch(e){
+                const st=e&&e.response&&e.response.status, d=(e&&e.response&&e.response.data)||{};
+                if(st===422&&d.ja_chamada){ const mm=String(d.error||'').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i)||[]; presa={ quem: mm[1]&&!/seu usu[aá]rio/i.test(mm[1]) ? mm[1].trim() : '', guiche:(mm[2]||'').trim() }; }
+                else if(st===404){ await swalSeguro({type:'info',title:'Senha não encontrada',html:esc(it.senha)}); return; }
+                else throw new Error(erroSenhaSimples(e));
+            }
+            if(!presa){ await swalSeguro({type:'info',title:'Senha livre',html:`<b>${esc(it.senha)}</b> já pode ser chamada.`}); return; }
+            const onde=[presa.quem,presa.guiche].filter(Boolean).join(' · ');
+            const ok=await swalSeguro({type:'warning',title:'Desvincular senha?',html:`<b>${esc(it.senha)}</b>${onde?`<br>Presa com ${esc(onde)}`:''}`,showCancelButton:true,confirmButtonText:'Desvincular',cancelButtonText:'Voltar'});
+            if(!ok) return;
+            const at=String(it.atendimento_str); DESV.emCurso.add(at); pintarMedicacoes();
+            try{
+                let s;
+                try{ s=(await window.senhaSimplesPutFilas(`${ctx.cat}/retornar_para_atendimento`,{ atendimento_id:params.atendimento_id, atendimento_type:params.atendimento_type, categoria_id:ctx.cat })).data; }
+                catch(e){ throw new Error(erroSenhaSimples(e)); }
+                if(!s||!s.id||!s.tipo_atendimento||!s.tipo_atendimento.id) throw new Error('Senha Simples não devolveu a senha');
+                const local=(s.local_atendimento&&s.local_atendimento.id)||ctx.local.id;
+                try{ await window.senhaSimplesPutFilas(`${local}/${s.tipo_atendimento.id}/${s.id}/desvincular`); }
+                catch(e){ throw new Error(erroSenhaSimples(e)); }
+                aviso(`Senha ${it.senha} liberada.`);
+            } finally {
+                DESV.emCurso.delete(at); CS.ultimaAssinatura='';
+                if(CS.colecao) carregar(CS.colecao,{silencioso:true}); else pintarMedicacoes();
+            }
+        }
+        function cliqueDesvincular(ev){
+            const b=ev.target.closest('button[data-cs-desv]'); if(!b) return;
+            ev.preventDefault(); ev.stopPropagation();
+            const vm=CS.colecao, setor=setorDaColecao(vm), it=(vm&&vm.items||[]).find(x=>String(x.atendimento_str)===b.dataset.csDesv);
+            if(!setor||!it) return;
+            b.disabled=true;
+            desvincularDaLinha(it,setor).catch(e=>swalSeguro({type:'error',title:'Não foi possível desvincular',html:esc(e&&e.message||e)})).finally(()=>{ if(b.isConnected) b.disabled=false; });
+        }
         // ── Medicações de cada paciente ───────────────────────────────────────
         // A lista não traz os medicamentos. Eles são lidos da
         // página de consulta /aplicacoes_medicamentos/{id}, baixada em segundo plano.
@@ -6898,6 +7020,7 @@
                 } else if (colAcao >= 0 && tr.children[colAcao]) {
                     trocarHtml(caixa(tr.children[colAcao], 'cs-acao-extra', cliqueCancelarSetor), htmlCancelarSetor(it,setor));
                 }
+                if (colAcao >= 0 && tr.children[colAcao]) trocarHtml(caixa(tr.children[colAcao], 'cs-desv-box', cliqueDesvincular), htmlDesvincular(it));
                 if (colNome >= 0 && tr.children[colNome]) {
                     destacarNome(tr.children[colNome], it);
                     if (!CS.historico) pedirAlergia(it, tr);

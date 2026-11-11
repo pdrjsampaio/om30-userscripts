@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.75
+// @version      3.0.78
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,13 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.75
+    /* OM30 - CONTROLE DE SALAS v3.0.78
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.78: "Por Fulano" passa a ser gravado também quando a ficha de Exames/Raio-X/Enfermagem abre na mesma aba (Confirmar atendimento do topo, senha perdida, aba nova bloqueada). Antes só gravava na aba aberta pelo script. O paciente vem da lista do sistema pelo número do encaminhamento da ficha.
+     * v3.0.77: Raio-X: "Em medicação" vira uma fila à parte (Mostrar: Todos | Em medicação (n) | Histórico), como a Pediatria. O botão "Em medicação" no Status manda o paciente para lá; ele sai da fila principal, da contagem e do tempo médio; lá aparece a etiqueta EM MEDICAÇÃO (quem marcou · há X min) e "Terminou" devolve à fila. Vale em todos os PCs (Worker de presença). Em atendimento, a espera para na chamada. "Por Fulano" também quando a ficha foi aberta sem o script: o nome vem de quem chamou a senha no Senha Simples.
+     * v3.0.76: (não publicada) primeira versão do "Em medicação", que só jogava o paciente para o fim da fila.
      * v3.0.75: botão "Desvincular" com ícone e cor âmbar, no mesmo tamanho do Cancelar; a janela do Senha Simples passa a ser evitada no próprio pedido de login do sistema (dispatch do Vuex), sem depender de chegar antes da fila.
      * v3.0.74: a janela de login do Senha Simples não abre mais a cada carga de página: o token válido da aba é reaproveitado (some o "Não foi possível realizar esta operação" quando a janela era bloqueada/fechada). Com o token vencido, segue o fluxo do sistema.
      * v3.0.73: botão "Desvincular senha" em cada linha da fila (todas as salas): confere no Senha Simples se a senha está presa em outro profissional, confirma e libera a mesma senha (retornar + desvincular). Nada é chamado automaticamente.
@@ -1002,7 +1005,7 @@
         const c = lerJSON(CHAVE_CONFIG, {});
         return {
             periodo: (N.PERIODOS[c.periodo] || c.periodo === 'datas') ? c.periodo : 'hoje',
-            mostrar: ['todos', 'pediatria', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
+            mostrar: ['todos', 'pediatria', 'em_medicacao', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
             medicacoes: true,
             dataInicial: /^\d{4}-\d{2}-\d{2}$/.test(c.dataInicial || '') ? c.dataInicial : '',
             dataFinal: /^\d{4}-\d{2}-\d{2}$/.test(c.dataFinal || '') ? c.dataFinal : '',
@@ -4541,12 +4544,45 @@
         };
     })();
 
+    // AtendimentoPa da ficha de Exames/Raio-X/Enfermagem pela lista do sistema (Em Andamento,
+    // depois Em Espera; ontem e hoje), casando o número do encaminhamento da URL.
+    async function csAtendimentoDaFicha() {
+        const m = caminho.match(/^\/(encaminhamentos_(?:exames|radiografias|procedimentos_enfermagem))\/(\d+)\/edit$/);
+        if (!m) return '';
+        const fmt = x => `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
+        const hoje = new Date(), ontem = new Date(hoje.getTime() - 864e5);
+        for (const st of ['2', '1']) {
+            for (let page = 1; page <= 3; page++) {
+                const q = `format=json&sortable=%7B%7D&page=${page}&per_page=100&profissional=%7B%7D&status=${st}&grau_risco=&dataInicial=${encodeURIComponent(fmt(ontem))}&dataFinal=${encodeURIComponent(fmt(hoje))}`;
+                const r = await fetch(`/${m[1]}?${q}`, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+                if (!r.ok) break;
+                const arr = await r.json().catch(() => []);
+                if (!Array.isArray(arr) || !arr.length) break;
+                const it = arr.find(x => String(x.encaminhamento_id || '').replace(/\D/g, '') === m[2]);
+                if (it && /^AtendimentoPa#\d+$/.test(String(it.atendimento_str || ''))) return String(it.atendimento_str);
+                if (arr.length < 100) break;
+            }
+        }
+        return '';
+    }
+
     if (caminho === '/aplicacoes_medicamentos') iniciarFila();
     else if (caminho === '/aplicacoes_medicamentos/new' || caminho === '/aplicacoes_medicamentos/create') iniciarAplicacao();
-    else if (fichaOutraSala && /^cs-atendimento-/.test(window.name)) {
-        // A identidade do AtendimentoPa permanece na sessionStorage da aba.
-        // Não depende mais do seed de 60 s nem reutiliza a sala anterior.
-        csRegistrarPresencaFilha({}).catch(e=>console.warn('[OM30 PRESENÇA] registro da sala não realizado:',e?.message||e));
+    else if (fichaOutraSala) {
+        // Aba aberta pelo script (cs-atendimento-*): a identidade do AtendimentoPa permanece
+        // na sessionStorage da aba. Ficha aberta na MESMA aba (Confirmar atendimento do topo,
+        // senha perdida, aba nova bloqueada): o AtendimentoPa vem da lista do próprio sistema
+        // pelo número do encaminhamento da URL — nunca de cache, que pode ser de outro paciente.
+        (async () => {
+            let info = {};
+            if (!/^cs-atendimento-/.test(window.name)) {
+                const a = await csAtendimentoDaFicha().catch(() => '');
+                if (!a) { console.warn('[OM30 PRESENÇA] ficha sem atendimento identificado na lista; presença não registrada'); return; }
+                try { sessionStorage.setItem(CS_ATENDIMENTO_PA_FILHO, a.replace(/\D/g, '')); } catch (_) {}
+                info = { atendimento: a };
+            }
+            await csRegistrarPresencaFilha(info);
+        })().catch(e=>console.warn('[OM30 PRESENÇA] registro da sala não realizado:',e?.message||e));
         try {
             const seed=JSON.parse(localStorage.getItem('cs-presenca-seed')||'null');
             definirTitulo(seed?.nome?`${seed.nome} · Atendimento`:'Atendimento');
@@ -4604,6 +4640,26 @@
         }
         async function presReq(path,payload) {
             return csPresReq(path,payload,false);
+        }
+        // Nome de quem chamou a senha (Senha Simples), guardado por 60 s por atendimento.
+        const SSNOME=new Map();
+        async function nomePelaSenha(a,setor){
+            const c=SSNOME.get(a.bruto); if(c&&Date.now()-c.em<60000)return c.nome;
+            if(typeof window.senhaSimplesGetSenhaAtendimento!=='function')return '';
+            const ctx=guicheDaSala(setor); if(!ctx||!ctx.local)return '';
+            let nome='';
+            try{
+                const {data:s}=await window.senhaSimplesGetSenhaAtendimento({localAtendimentoAtualId:ctx.local.id,params:{atendimento_id:+a.id,atendimento_type:a.tipo}});
+                if(s&&(s.chamado_em||s.confirmado_em))nome=String(s.usuario&&s.usuario.nome||'').trim();
+            }catch(e){
+                const d=(e&&e.response&&e.response.data)||{};
+                if(e&&e.response&&e.response.status===422&&d.ja_chamada){
+                    const m=String(d.error||'').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i);
+                    if(m&&!/seu usu[aá]rio/i.test(m[1]))nome=m[1].trim();
+                }
+            }
+            SSNOME.set(a.bruto,{nome,em:Date.now()});
+            return nome;
         }
         async function atualizarPresencas(vm,lista,opcoes={}) {
             const setor=setorDaColecao(vm); if(!setor) return;
@@ -4761,6 +4817,15 @@
                 for(const [k,v] of encontrados){
                     mesclado.set(k,v);
                     PRES.misses.delete(k);
+                }
+                // Ficha aberta sem o script (outro PC, versão antiga) não grava presença:
+                // o nome de quem chamou a senha nesta sala vem do Senha Simples.
+                const semNome=(lista||[]).filter(it=>it?.status==='Em Andamento')
+                    .map(it=>atendimentoPres(it.atendimento_str||it.atendimentoStr||it.atendimento||''))
+                    .filter(a=>a&&!mesclado.has(a.bruto));
+                for(const a of semNome.slice(0,6)){
+                    const nome=await nomePelaSenha(a,setor).catch(()=>'');
+                    if(nome)mesclado.set(a.bruto,{found:true,profissional:nome,fonte:'senha',vistoEm:Date.now()});
                 }
 
                 PRES.cache=mesclado;
@@ -5564,6 +5629,17 @@
             .cs-desv-linha svg { width:12px; height:12px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
             .cs-desv-linha:hover:not(:disabled) { background:#fdf0d5 !important; border-color:#d4a440 !important; }
             .cs-desv-linha:disabled { opacity:.6; cursor:default; }
+            .cs-emmed-box { margin-top:6px; display:flex; flex-direction:column; align-items:center; gap:4px; }
+            .cs-emmed-box:empty { display:none; }
+            .cs-emmed-box svg { width:12px; height:12px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+            .cs-emmed-btn { display:inline-flex; align-items:center; justify-content:center; gap:4px; height:22px; padding:0 8px; box-sizing:border-box; border:1px solid #c9b6e4 !important; border-radius:11px !important; background:#faf7ff !important; color:#5b3a8c; font-size:10.5px; font-weight:600; line-height:1; cursor:pointer; white-space:nowrap; box-shadow:none; }
+            .cs-emmed-btn:hover:not(:disabled) { background:#f0e8fc !important; border-color:#a98bd6 !important; }
+            .cs-emmed-btn:disabled { opacity:.6; cursor:default; }
+            .cs-emmed-fim { border-color:#9ccfb0 !important; background:#f2fbf5 !important; color:#1d6b3b; }
+            .cs-emmed-fim:hover:not(:disabled) { background:#e3f5ea !important; border-color:#6fb98c !important; }
+            .cs-emmed-tag { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:#6b46a3; color:#fff; text-align:left; line-height:1.1; }
+            .cs-emmed-tag strong { display:block; font-size:10px; letter-spacing:.3px; }
+            .cs-emmed-tag small { display:block; font-size:9.5px; opacity:.9; font-weight:500; }
         `);
 
 
@@ -6208,7 +6284,7 @@
         // Mesmo fluxo do Acolhimento: confere no Senha Simples (422 ja_chamada = presa),
         // pede confirmação, retorna a senha para a categoria desta sala e desvincula.
         // A senha continua com o mesmo número e nada é chamado automaticamente.
-        const TIPO_SALA = { medicacao:'controle_de_salas_medicacao', exames:'controle_de_salas_exames', raio_x:'controle_de_salas_raio_x', enfermagem:'controle_de_salas_procedimento_enfermagem' };
+        var TIPO_SALA = { medicacao:'controle_de_salas_medicacao', exames:'controle_de_salas_exames', raio_x:'controle_de_salas_raio_x', enfermagem:'controle_de_salas_procedimento_enfermagem' };
         const DESV = { emCurso:new Set() };
         function htmlDesvincular(it){
             if(CS.historico || (it.status!=='Em Espera'&&it.status!=='Em Andamento') || !String(it.senha||'').trim()) return '';
@@ -6259,6 +6335,84 @@
                 if(CS.colecao) carregar(CS.colecao,{silencioso:true}); else pintarMedicacoes();
             }
         }
+        // ── Raio-X: paciente ainda em medicação ───────────────────────────────
+        // O soro recebe baixa, mas o paciente continua tomando medicação e não pode
+        // ir ao Raio-X. A equipe marca "Em medicação": a linha vai para o fim da fila,
+        // fica esmaecida e sai da contagem/tempo médio. Vale em todos os PCs: fica no
+        // Worker de presença (sala "radiografia", chave 8+chave do atendimento, sem
+        // dado do paciente). Sem renovação vence em 20 min; enquanto alguma tela do
+        // Raio-X estiver aberta e o paciente na fila, é renovada sozinha.
+        // var (não const): a barra e a carga da fila podem rodar antes desta linha.
+        var EMMED = { mapa:new Map(), lidoEm:0, lendo:false, SALA:'radiografia', LEITURA_MS:45000, RENOVA_MS:8*60000, CACHE:'cs-em-medicacao-v1' };
+        // Última leitura guardada neste PC (até 3 min): evita o paciente marcado piscar na fila ao abrir.
+        try{ const c=JSON.parse(localStorage.getItem(EMMED.CACHE)||'null'); if(c&&Date.now()-c.t<180000&&Array.isArray(c.itens)) for(const [b,v] of c.itens) EMMED.mapa.set(b,v); }catch(_){}
+        function guardarEmMed(){ try{ localStorage.setItem(EMMED.CACHE,JSON.stringify({t:Date.now(),itens:[...EMMED.mapa]})); }catch(_){} }
+        const ICONE_EMMED = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8"/><path d="M10 3v3"/><path d="M14 3v3"/><rect x="7" y="6" width="10" height="9" rx="2"/><path d="M12 15v3"/><path d="M12 18c0 2 2 3 4 3"/></svg>';
+        function setorEmMed(setor){ return !!setor && setor.key === 'raio_x'; }
+        function chaveEmMed(it){ const a=atendimentoPres(it && it.atendimento_str); return a ? { bruto:a.bruto, chave:'8'+a.chave } : null; }
+        function emMedicacao(it){ if(!EMMED) return false; const c=chaveEmMed(it); return !!c && EMMED.mapa.has(c.bruto); }
+        async function lerEmMed(vm,lista,opcoes={}){
+            const setor=setorDaColecao(vm);
+            if(!setorEmMed(setor)||CS.historico||EMMED.lendo) return;
+            if(!opcoes.forcar && Date.now()-EMMED.lidoEm<EMMED.LEITURA_MS) return;
+            const cs=(lista||[]).filter(it=>it.status==='Em Espera').map(chaveEmMed).filter(Boolean);
+            EMMED.lendo=true;
+            try{
+                const novo=new Map(), porChave=new Map(cs.map(c=>[c.chave,c.bruto]));
+                if(porChave.size){
+                    const res=await presReq('/api/attendance/batch',{sala:EMMED.SALA,atendimentos:[...porChave.keys()]});
+                    for(const [k,v] of Object.entries((res&&res.items)||{})){
+                        const b=porChave.get(String(k));
+                        if(b&&v&&typeof v==='object'&&v.found!==false) novo.set(b,{quem:String(v.profissional||'').trim(),em:v.aberto_em||'',atualizado:v.atualizado_em||''});
+                    }
+                }
+                const antes=JSON.stringify([...EMMED.mapa.keys()].sort()), depois=JSON.stringify([...novo.keys()].sort());
+                EMMED.mapa=novo; EMMED.lidoEm=Date.now(); guardarEmMed();
+                for(const [chave,b] of porChave){
+                    const v=novo.get(b); if(!v) continue;
+                    if(Date.now()-(Date.parse(v.atualizado)||0)>EMMED.RENOVA_MS)
+                        presReq('/api/attendance/upsert',{atendimento_id:chave,sala:EMMED.SALA,display_name:v.quem||'OM30',actor_id:'om30-em-medicacao'}).then(r=>{if(r&&r.atualizado_em)v.atualizado=r.atualizado_em;}).catch(()=>{});
+                }
+                if(antes!==depois&&CS.colecao){ CS.ultimaAssinatura=''; carregar(CS.colecao,{silencioso:true}); }
+            }catch(e){ console.warn('[Controle de Salas] em medicação: leitura indisponível', e); }
+            finally{ EMMED.lendo=false; }
+        }
+        function htmlEmMed(it,setor){
+            if(!setorEmMed(setor)||CS.historico||it.status!=='Em Espera') return '';
+            const c=chaveEmMed(it); if(!c) return '';
+            const m=EMMED.mapa.get(c.bruto);
+            if(m){
+                const quem=m.quem&&m.quem!=='OM30'?nomePresencaVisual(m.quem):'';
+                const min=m.em?Math.max(0,Math.round((Date.now()-Date.parse(m.em))/60000)):null;
+                const sub=[quem,min!=null&&Number.isFinite(min)?`há ${min} min`:''].filter(Boolean).join(' · ');
+                return `<div class="cs-emmed-tag">${ICONE_EMMED}<span><strong>EM MEDICAÇÃO</strong>${sub?`<small>${esc(sub)}</small>`:''}</span></div><button type="button" class="cs-emmed-btn cs-emmed-fim" data-cs-emmed="${esc(c.bruto)}" title="Medicação terminou: volta para a fila do Raio-X">Terminou</button>`;
+            }
+            return `<button type="button" class="cs-emmed-btn" data-cs-emmed="${esc(c.bruto)}" title="Ainda tomando medicação: vai para o fim da fila e sai da contagem">${ICONE_EMMED}<span>Em medicação</span></button>`;
+        }
+        async function alternarEmMed(it){
+            const c=chaveEmMed(it); if(!c) throw new Error('Atendimento não identificado');
+            if(EMMED.mapa.has(c.bruto)){
+                await presReq('/api/attendance/delete',{atendimento_id:c.chave,sala:EMMED.SALA});
+                EMMED.mapa.delete(c.bruto);
+            }else{
+                let nome=''; try{ nome=(await csIdentidadeUsuario()).nome||''; }catch(_){}
+                const r=await presReq('/api/attendance/upsert',{atendimento_id:c.chave,sala:EMMED.SALA,display_name:nome||'OM30',actor_id:'om30-em-medicacao'});
+                if(!r||r.ok===false) throw new Error('Marcação não confirmada');
+                const agora=new Date().toISOString();
+                EMMED.mapa.set(c.bruto,{quem:nome,em:r.aberto_em||agora,atualizado:r.atualizado_em||agora});
+            }
+            EMMED.lidoEm=Date.now(); guardarEmMed(); CS.ultimaAssinatura='';
+            if(CS.colecao) carregar(CS.colecao,{silencioso:true}); else pintarMedicacoes();
+        }
+        function cliqueEmMed(ev){
+            const b=ev.target.closest('button[data-cs-emmed]'); if(!b) return;
+            ev.preventDefault(); ev.stopPropagation();
+            const vm=CS.colecao, it=(vm&&vm.items||[]).find(x=>(chaveEmMed(x)||{}).bruto===b.dataset.csEmmed);
+            if(!it) return;
+            b.disabled=true;
+            alternarEmMed(it).catch(e=>swalSeguro({type:'error',title:'Não foi possível marcar',html:esc(e&&e.message||e)})).finally(()=>{ if(b.isConnected) b.disabled=false; });
+        }
+
         function cliqueDesvincular(ev){
             const b=ev.target.closest('button[data-cs-desv]'); if(!b) return;
             ev.preventDefault(); ev.stopPropagation();
@@ -6996,7 +7150,9 @@
                     } else {
                         aviso?.remove();
                     }
+                    trocarHtml(caixa(tdStatus, 'cs-emmed-box', cliqueEmMed), htmlEmMed(it, setor));
                 }
+                tr.classList.toggle('cs-em-med', setorEmMed(setor) && !CS.historico && it.status === 'Em Espera' && emMedicacao(it));
 
                 if (colRisco >= 0 && tr.children[colRisco]) {
                     const tdRisco = tr.children[colRisco];
@@ -7756,6 +7912,11 @@
             // Medicação: "Pediatria" mostra só as senhas PD (pediatria) e PP (pediatria preferencial).
             const soPediatria = cfg.mostrar === 'pediatria' && (setorDaColecao(vm) || {}).key === 'medicacao';
             const ehPediatria = it => /^P[DP]\d/i.test(String(it.senha || '').trim());
+            // Raio-X: "Em medicação" é uma fila à parte; quem está marcado sai da fila principal.
+            const comEmMed = !historico && setorEmMed(setorDaColecao(vm));
+            const soEmMed = comEmMed && cfg.mostrar === 'em_medicacao';
+            const marcadoEmMed = it => it.status === 'Em Espera' && emMedicacao(it);
+            const filaEmMed = it => !comEmMed || (soEmMed ? marcadoEmMed(it) : !marcadoEmMed(it));
             if (vm.$el && vm.$el.classList) vm.$el.classList.toggle('cs-historico', historico);
 
             // Todas as páginas de uma consulta à lista; null se outra carga começou depois.
@@ -7814,13 +7975,15 @@
                 CS.totalPeriodo = total;
                 if (!historico) gravarJSON(CHAVE_ULTIMO_TOTAL, total);
                 CS.truncado = todos.length < CS.totalPeriodo;
-                const ativos = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
+                const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
+                const ativos = comEmMed ? ativosBase.filter(filaEmMed) : ativosBase;
                 const filtrados = N.filtrar(ativos, { minimo, soEspera: false });
                 const lista = historico ? N.ordenarHistorico(filtrados) : N.ordenar(filtrados);
                 const classes = historico ? N.classesHistorico(lista) : N.classesLinhas(lista);
                 lista.forEach((it, i) => {
                     it.__csClasse = classes[i];
-                    it.cs_espera = historico ? '' : N.espera(it, agora);
+                    // Em atendimento: a espera para na chamada que iniciou o atendimento nesta sala.
+                    it.cs_espera = historico ? '' : ((it.status === 'Em Andamento' && N.esperaAteChamada(it)) || N.espera(it, agora));
                 });
 
                 CS.itens = new Map(todos.map(it => [it.encaminhamento_id, it]));
@@ -7832,6 +7995,7 @@
                     if (seq !== CS.carga) return;
                     if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
                 }
+                if (comEmMed) paraContar = paraContar.filter(filaEmMed);
                 CS.resumo = N.resumo(paraContar);
                 CS.resumoHist = historico ? {
                     cancelados: lista.filter(it => it.status === 'Cancelado').length,
@@ -7840,7 +8004,7 @@
                 CS.filtroDataSistema = filtroDataSistema ? `${cond.dataInicial || '…'} a ${cond.dataFinal || '…'}` : '';
 
                 ajustarColunas(vm);
-                const assinatura = JSON.stringify(lista.map(it => [it.encaminhamento_id, it.status, it.senha, it.grau_risco, it.chamada_em, it.cs_espera, it.__csClasse]));
+                const assinatura = JSON.stringify(lista.map(it => [it.encaminhamento_id, it.status, it.senha, it.grau_risco, it.chamada_em, it.cs_espera, it.__csClasse, comEmMed && marcadoEmMed(it)]));
                 if (!silencioso || assinatura !== CS.ultimaAssinatura || !jaTemItens) {
                     CS.ultimaAssinatura = assinatura;
                     vm.customPerPage = 5000; // fetchProps volta para 10 quando a busca muda
@@ -7860,6 +8024,7 @@
                 pedirDetalhesSetor(vm, lista);
                 if (!historico) for (const it of lista) pedirAlergia(it);
                 atualizarPresencas(vm, lista).catch(() => {});
+                lerEmMed(vm, ativosBase).catch(() => {});
                 vm.$nextTick(pintarMedicacoes);
             } catch (erro) {
                 if (seq !== CS.carga) return;
@@ -8223,7 +8388,10 @@
                 : '';
             const naMedicacao = !!CS.colecao && (setorDaColecao(CS.colecao) || {}).key === 'medicacao';
             const pediatriaHtml = naMedicacao ? bt('mostrar:pediatria', 'Pediatria', cfg.mostrar === 'pediatria') : '';
-            const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao);
+            const noRaioX = !!CS.colecao && setorEmMed(setorDaColecao(CS.colecao));
+            const qtdEmMed = (EMMED && EMMED.mapa.size) || 0;
+            const emMedHtml = noRaioX ? bt('mostrar:em_medicacao', qtdEmMed ? `Em medicação (${qtdEmMed})` : 'Em medicação', cfg.mostrar === 'em_medicacao') : '';
+            const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao) || (cfg.mostrar === 'em_medicacao' && !noRaioX);
             const avisos = [];
             if (CS.filtroDataSistema) avisos.push(`<span class="cs-aviso">Usando a data do filtro do sistema (${esc(CS.filtroDataSistema)})</span>`);
             if (CS.truncado) avisos.push(`<span class="cs-aviso">Mostrando ${MAX_PAGINAS * POR_PAGINA} de ${CS.totalPeriodo}; reduza o período</span>`);
@@ -8236,7 +8404,7 @@
                 + (CS.duracaoCarga != null ? `Última atualização da lista levou ${seg(CS.duracaoCarga)} s. ` : '');
             barra.innerHTML = `
                 <span class="cs-grupo"><b>Período:</b>${periodos}</span>
-                <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', 'Todos', todosAtivo)}${pediatriaHtml}${historicoHtml}</span>
+                <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', 'Todos', todosAtivo)}${pediatriaHtml}${emMedHtml}${historicoHtml}</span>
                 ${resumoHtml}
                 ${avisos.join('')}
                 <span class="cs-hora" title="${esc(tempoTitulo)}Ordem: VERMELHO → AMARELO → VERDE → AZUL; na mesma cor, mais antigo primeiro">atualizado ${hora}</span>`;

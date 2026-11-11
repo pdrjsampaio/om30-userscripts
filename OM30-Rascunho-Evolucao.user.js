@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Rascunho de Evolução
 // @namespace    om30-guaruja
-// @version      1.0.0
+// @version      1.1.0
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @description  Rascunho de evolução por paciente durante o atendimento (fila e ficha): anotações com horário e medicação; no final envia para a ficha certa (Motivo do atendimento + seção Medicamentos) e apaga o rascunho ao salvar.
@@ -389,6 +389,9 @@
     identificarMedico,
     instalar(painelApi) { api = painelApi; limparPacsAntigos(); instalarFila(); instalarFicha(); },
     paginaRelevante: () => ehFila() || ehFicha(),
+    naFila: () => ehFila(),
+    selecionar(p) { try { sessionStorage.setItem(SEL, JSON.stringify(p)); } catch {} },
+    limparSelecao() { try { sessionStorage.removeItem(SEL); } catch {} },
     // Só o formulário da própria ficha conta como "salvar a ficha"
     ehFormularioFicha: f => /prontuario/i.test((f.id || '') + ' ' + (f.getAttribute('action') || '')) && !!localizarCampoTexto() && f.contains(localizarCampoTexto().el),
     // Depois de salvar com sucesso, o Saúde Simples sempre leva para uma destas telas
@@ -598,6 +601,24 @@
     .bolha:hover .rem { opacity: 1; }
     .rem:hover { background: #fbeaea; color: #b23f3f; }
 
+    /* lista "Meus rascunhos" */
+    .outros { cursor: pointer; }
+    .outros:hover { color: #123f68; }
+    .lista-topo { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .lista-topo .t { flex: 1; font-size: 14px; font-weight: 700; color: #16324a; }
+    .voltar { border: 0; background: #eef2f5; color: #3d5a70; border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 600; }
+    .voltar:hover { background: #e2e9ee; }
+    .rasc { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 10px; padding: 8px 8px 8px 0; margin-bottom: 6px;
+      box-shadow: 0 1px 3px rgba(18,40,56,.07); overflow: hidden; }
+    .rasc .fx { width: 5px; align-self: stretch; flex: none; }
+    .rasc .info { flex: 1; min-width: 0; }
+    .rasc .info b { display: block; font-size: 13px; color: #16324a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rasc .info .resumo { display: block; font-size: 11.5px; color: #6c808c; }
+    .mini { border: 0; border-radius: 7px; padding: 5px 9px; font-size: 12px; font-weight: 600; background: #e8eff5; color: #123f68; white-space: nowrap; }
+    .mini:hover { background: #d6e3ee; }
+    .mini.lixo { background: transparent; color: #a34d4d; padding: 5px 7px; }
+    .mini.lixo:hover { background: #fbeaea; }
+
     /* escolher rascunho na ficha */
     .escolha { background: #fff; border-radius: 12px; padding: 10px; box-shadow: 0 1px 4px rgba(18,40,56,.08); }
     .esc-tit { font-size: 13px; font-weight: 700; color: #16324a; margin-bottom: 2px; }
@@ -703,6 +724,7 @@
       <button class="ico" id="btnRecolher" title="Recolher">›</button>
     </div>
     <div class="menu" id="menu">
+      <button id="mLista">📋 Meus rascunhos</button>
       <button id="mDiag">🔍 Diagnóstico (para suporte)</button>
       <button id="mRecolher">Recolher painel</button>
     </div>
@@ -942,6 +964,8 @@
     $('lingN').textContent = String(meus().length);
 
     const tempo = $('tempo');
+    // lista "Meus rascunhos": pedida pelo médico, ou na fila sem paciente escolhido
+    if (medico && (modoLista || (!temPac && meus().length))) { renderLista(tempo, temPac); return; }
     if (!temPac) {
       tempo.innerHTML = medico
         ? '<div class="vazio">Clique em <b>📝</b> ao lado do nome do paciente na fila<br>ou abra a ficha dele.</div>'
@@ -1053,9 +1077,55 @@
     const el = $('outros');
     el.classList.toggle('on', outros.length > 0);
     el.innerHTML = `Outros rascunhos: <b>${outros.length}</b> · ${esc(outros.join(' · '))}`;
-    el.title = outros.join('\n');
+    el.title = 'Ver todos os seus rascunhos';
     $('lingN').textContent = String(meus().length);
   }
+
+  // ---------- lista "Meus rascunhos": abrir ou apagar qualquer um, mesmo sem o paciente na fila ----------
+  let modoLista = false;
+
+  function renderLista(tempo, temPac) {
+    $('card').classList.add('esconde'); $('editor').classList.add('esconde');
+    $('avisoFila').classList.remove('on'); $('outros').classList.remove('on');
+    const naTelaFila = !!(C.naFila && C.naFila());
+    const itens = meus().map(([k, v]) => ({ k, v })).sort((a, b) => b.v.atualizadoEm - a.v.atualizadoEm);
+    tempo.innerHTML = '';
+    const topo = document.createElement('div');
+    topo.className = 'lista-topo';
+    topo.innerHTML = `<span class="t">Meus rascunhos (${itens.length})</span>${temPac ? '<button class="voltar">← Voltar</button>' : ''}`;
+    topo.querySelector('.voltar')?.addEventListener('click', () => { modoLista = false; render(); atualizarOutros(); });
+    tempo.appendChild(topo);
+    if (!itens.length) { tempo.insertAdjacentHTML('beforeend', '<div class="vazio">Nenhum rascunho aberto.</div>'); return; }
+    for (const it of itens) {
+      const p = it.v.paciente;
+      const n = it.v.entradas?.length || 0;
+      const ult = n ? ordenar(it.v.entradas)[n - 1].hora : '';
+      const d = document.createElement('div');
+      d.className = 'rasc';
+      d.innerHTML = `<div class="fx" style="background:${corDe(p)}"></div><div class="info"><b></b><span class="resumo"></span></div>` +
+        (naTelaFila ? '<button class="mini abrir">Abrir</button>' : '') + '<button class="mini lixo" title="Apagar rascunho">🗑</button>';
+      d.querySelector('b').textContent = nomeExibido(p);
+      d.querySelector('.resumo').textContent = [p.senha, `${n} ${n === 1 ? 'anotação' : 'anotações'}`, ult && 'última ' + ult].filter(Boolean).join(' · ');
+      d.querySelector('.abrir')?.addEventListener('click', () => { C.selecionar?.(p); modoLista = false; verificarPaciente(true); });
+      d.querySelector('.lixo').addEventListener('click', () => apagarDaLista(it));
+      tempo.appendChild(d);
+    }
+  }
+
+  async function apagarDaLista(it) {
+    const nao = (it.v.entradas || []).filter(e => !e.enviadoEvolucao).length;
+    const corpo = pacHtml(it.v.paciente) +
+      (nao ? `<div class="dlg-aviso">⚠ ${nao} ${nao === 1 ? 'anotação ainda não foi' : 'anotações ainda não foram'} para a ficha.</div>` : '');
+    if (!await perguntar({ titulo: 'Apagar rascunho?', corpo, sim: 'Apagar', nao: 'Cancelar', tipo: 'perigo' })) return;
+    store.del(it.k);
+    C.esquecerPaciente?.(it.v.paciente.atendimento);
+    if (rascunho && paciente && chaveDe(rascunho.paciente) === it.k) { rascunho = novoRascunho(paciente); $('nota').value = ''; }
+    msg('Rascunho apagado.', 'ok');
+    render(); atualizarOutros();
+  }
+
+  $('mLista').onclick = () => { $('menu').classList.remove('on'); recolher(false); modoLista = true; render(); };
+  $('outros').onclick = () => { modoLista = true; render(); };
 
   // ---------- troca de paciente ----------
   let ultimoId = null;

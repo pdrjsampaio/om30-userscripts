@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.67
+// @version      3.0.72
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,15 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.67
+    /* OM30 - CONTROLE DE SALAS v3.0.72
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.72: "Coletar todos" dos Exames pela API do sistema: todas as consultas de faturamento saem juntas e os exames ficam coletados de uma vez (sem clicar um por um, sem a espera de 500 ms). Continua sem salvar.
+     * v3.0.71: a alergia não aparece mais nas salas de Raio-X e Exames (continua na Medicação e na Enfermagem).
+     * v3.0.70: "Pediatria" na Medicação inclui as senhas PP (pediatria preferencial) além das PD.
+     * v3.0.69: sala de Medicação: botão "Pediatria" em "Mostrar:" (só senhas PD); fica marcado neste PC até trocar para Todos.
+     * v3.0.68: Guia SADT na ficha de Exames (bloco "OM30 GUIA SADT" no fim), no mesmo visual da ficha: quadro "Guia SADT" igual aos quadros Exames/Faturamento (Guia | Quantidade | Situação, Abrir guia / Baixar PDF da guia do atendimento exato: prontuário → documentos Ambulatorial::Sadt, nunca por nome); "Coletar todos (X)" no topo do quadro Exames, usando o Coletar do sistema, sem salvar; Salvar travado com exame sem coleta/cancelamento; aviso antes de salvar com guia não baixada (Baixar / Salvar mesmo assim). Janelas do próprio sistema. Na lista da sala de Exames, botão "Guia SADT" no estilo do "Dados do Munícipe". Situação mostra COLETADO na hora.
      * v3.0.67: depois de salvar a ficha, a tela de consulta (só Imprimir/Sair) é pulada e volta direto para a lista (SAIR_DIRETO_APOS_SALVAR); CPF/CNS num cartão com o número em destaque e cópia pelo ícone (vira ✓ ao copiar); sinais vitais do acolhimento (PA, temperatura, FC, FR, glicemia, saturação, peso) aparecem embaixo do risco de cada paciente na fila, em caixa compacta; o nome do munícipe fica em negrito com a faixa da cor do risco; o aviso "Encaminhamento concluído" fecha sozinho depois de salvar a ficha e o próximo destino aparece como aviso na página seguinte (PULAR_POPUP_CONCLUSAO); no Histórico da Medicação aparece a hora de cada cancelamento (com quem cancelou e o motivo) e de cada aplicação (lida da ficha de medicação; HORARIO_HISTORICO = 'sem_pdf' desliga e mostra só a hora da chamada).
      * v3.0.66: na ficha de Exames/Raio-X/Enfermagem, a Situação muda na hora para REALIZADO (verde) ou CANCELADO (vermelho) ao clicar em Realizar/Cancelar; antes ficava PENDENTE até salvar.
      * v3.0.65: o aviso "Senha perdida" do sistema (janela .swal2-modal) agora é reconhecido; na 3.0.64 ele passava despercebido.
@@ -945,7 +950,7 @@
         const c = lerJSON(CHAVE_CONFIG, {});
         return {
             periodo: (N.PERIODOS[c.periodo] || c.periodo === 'datas') ? c.periodo : 'hoje',
-            mostrar: ['todos', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
+            mostrar: ['todos', 'pediatria', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
             medicacoes: true,
             dataInicial: /^\d{4}-\d{2}-\d{2}$/.test(c.dataInicial || '') ? c.dataInicial : '',
             dataFinal: /^\d{4}-\d{2}-\d{2}$/.test(c.dataFinal || '') ? c.dataFinal : '',
@@ -4306,9 +4311,10 @@
             for (const item of document.querySelectorAll('.item-encaminhamento-controle-salas')) {
                 const span = textoSituacao(item);
                 if (!span) continue;
-                const feito = ehSim(item.querySelector('input[id$="_realizado"]'));
+                const inpFeito = item.querySelector('input[id$="_realizado"], input[id$="_coletado"]');
+                const feito = ehSim(inpFeito);
                 const cancel = ehSim(item.querySelector('input[id$="_cancelado"], input[id$="_cancelada"]'));
-                const txt = feito ? 'REALIZADO' : cancel ? 'CANCELADO' : span.dataset.orig;
+                const txt = feito ? (/_coletado$/.test(inpFeito.id) ? 'COLETADO' : 'REALIZADO') : cancel ? 'CANCELADO' : span.dataset.orig;
                 const cor = feito ? '#15803d' : cancel ? '#b91c1c' : '';
                 if (span.textContent !== txt) span.textContent = txt;
                 if (span.style.color !== cor) { span.style.color = cor; span.style.fontWeight = cor ? '700' : ''; }
@@ -6895,7 +6901,9 @@
                 if (colNome >= 0 && tr.children[colNome]) {
                     destacarNome(tr.children[colNome], it);
                     if (!CS.historico) pedirAlergia(it, tr);
-                    trocarHtml(caixa(tr.children[colNome], 'cs-alerg-box'), CS.historico ? '' : htmlAlergia(it, tr));
+                    // Alergia não aparece no Raio-X nem nos Exames (a leitura continua: traz os sinais vitais).
+                    const semAlergia = CS.historico || setor.key === 'raio_x' || setor.key === 'exames';
+                    trocarHtml(caixa(tr.children[colNome], 'cs-alerg-box'), semAlergia ? '' : htmlAlergia(it, tr));
                     if (setor.key === 'medicacao') trocarHtml(caixa(tr.children[colNome], 'cs-hist-hora'), CS.historico ? htmlHoraHistorico(it) : '');
                     trocarHtml(caixa(tr.children[colNome], 'cs-doc-box', cliqueDocumentos), htmlDocumentos(it));
                 }
@@ -7312,7 +7320,12 @@
 
         function htmlDocumentos(it) {
             // Ficha só na sala de Raio-X; nas outras salas, o "Dados do Munícipe" de sempre.
-            if (!naSalaRaioX()) return htmlDocumentosOriginal(it);
+            if (!naSalaRaioX()) {
+                // Sala de Exames: atalho da Guia SADT do atendimento exato da linha (bloco OM30 GUIA SADT).
+                const sadt = (setorDaColecao(CS.colecao) || {}).key === 'exames' && /^Atendimento(?:Pa|Ambulatorial)#\d+$/i.test(String(it.atendimento_str || ''))
+                    ? `<br><button type="button" class="cs-doc-ver om30-sadt-lista" data-cs-sadt="${esc(it.atendimento_str)}" title="Abrir a Guia SADT deste atendimento"><span>Guia SADT</span></button>` : '';
+                return htmlDocumentosOriginal(it) + sadt;
+            }
             // CPF/CNS só aparecem quando já foram buscados (automático para medicação controlada).
             const id = idEncaminhamento(it.encaminhamento_id);
             const d = DOC.get(id);
@@ -7617,6 +7630,9 @@
 
             const historico = cfg.mostrar === 'historico' && !!setorDaColecao(vm);
             CS.historico = historico;
+            // Medicação: "Pediatria" mostra só as senhas PD (pediatria) e PP (pediatria preferencial).
+            const soPediatria = cfg.mostrar === 'pediatria' && (setorDaColecao(vm) || {}).key === 'medicacao';
+            const ehPediatria = it => /^P[DP]\d/i.test(String(it.senha || '').trim());
             if (vm.$el && vm.$el.classList) vm.$el.classList.toggle('cs-historico', historico);
 
             // Todas as páginas de uma consulta à lista; null se outra carga começou depois.
@@ -7675,7 +7691,7 @@
                 CS.totalPeriodo = total;
                 if (!historico) gravarJSON(CHAVE_ULTIMO_TOTAL, total);
                 CS.truncado = todos.length < CS.totalPeriodo;
-                const ativos = historico ? todos : todos.filter(it => it.status === 'Em Espera' || it.status === 'Em Andamento');
+                const ativos = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
                 const filtrados = N.filtrar(ativos, { minimo, soEspera: false });
                 const lista = historico ? N.ordenarHistorico(filtrados) : N.ordenar(filtrados);
                 const classes = historico ? N.classesHistorico(lista) : N.classesLinhas(lista);
@@ -7691,7 +7707,7 @@
                 if (contagemPadrao) {
                     const rp = await contagemPadrao;
                     if (seq !== CS.carga) return;
-                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento'));
+                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
                 }
                 CS.resumo = N.resumo(paraContar);
                 CS.resumoHist = historico ? {
@@ -8082,6 +8098,9 @@
             const historicoHtml = CS.colecao && setorDaColecao(CS.colecao)
                 ? bt('mostrar:historico', 'Histórico', cfg.mostrar === 'historico')
                 : '';
+            const naMedicacao = !!CS.colecao && (setorDaColecao(CS.colecao) || {}).key === 'medicacao';
+            const pediatriaHtml = naMedicacao ? bt('mostrar:pediatria', 'Pediatria', cfg.mostrar === 'pediatria') : '';
+            const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao);
             const avisos = [];
             if (CS.filtroDataSistema) avisos.push(`<span class="cs-aviso">Usando a data do filtro do sistema (${esc(CS.filtroDataSistema)})</span>`);
             if (CS.truncado) avisos.push(`<span class="cs-aviso">Mostrando ${MAX_PAGINAS * POR_PAGINA} de ${CS.totalPeriodo}; reduza o período</span>`);
@@ -8094,7 +8113,7 @@
                 + (CS.duracaoCarga != null ? `Última atualização da lista levou ${seg(CS.duracaoCarga)} s. ` : '');
             barra.innerHTML = `
                 <span class="cs-grupo"><b>Período:</b>${periodos}</span>
-                <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', 'Todos', cfg.mostrar === 'todos')}${historicoHtml}</span>
+                <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', 'Todos', todosAtivo)}${pediatriaHtml}${historicoHtml}</span>
                 ${resumoHtml}
                 ${avisos.join('')}
                 <span class="cs-hora" title="${esc(tempoTitulo)}Ordem: VERMELHO → AMARELO → VERDE → AZUL; na mesma cor, mais antigo primeiro">atualizado ${hora}</span>`;
@@ -8615,3 +8634,383 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - estado.ultimoCiclo > CICLO_MS) ciclo(); });
 })();
 // ===== FIM OM30 RAIO-X FATURAMENTO =====
+
+// ===== OM30 GUIA SADT (EXAMES) (bloco separado; para juntar com outra versão, copie daqui até o FIM) =====
+// Ficha de Exames: quadro "Guia SADT" no mesmo visual dos quadros Exames/Faturamento (abrir/baixar a guia do
+// atendimento exato), "Coletar todos", trava de salvar com exame pendente e aviso de guia não baixada.
+// Na lista do Controle de Salas (sala de Exames), botão "Guia SADT" em cada linha.
+// - A guia é achada pelo atendimento (AtendimentoPa/Ambulatorial) → prontuário → documentos assináveis
+//   do tipo Ambulatorial::Sadt. Nunca busca por nome.
+// - Nada abre, baixa ou salva sozinho. Janelas usam o SweetAlert do próprio sistema.
+// Suporte: OM30SADT.diagnostico()
+(() => {
+  'use strict';
+  if (window.__OM30_SADT__) return;
+  window.__OM30_SADT__ = true;
+
+  const caminho = location.pathname.replace(/\/+$/, '');
+  const mFicha = caminho.match(/^\/encaminhamentos_exames\/(\d+)(?:\/edit)?$/);
+  const naLista = /^\/aplicacoes_medicamentos$/.test(caminho);
+  if (!mFicha && !naLista) return;
+
+  const CACHE = 'om30-sadt:guias:v1', CACHE_MS = 10 * 60000;
+  const USO = 'om30-sadt:uso:v1', USO_MS = 7 * 86400000;
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const lerJ = (k, p) => { try { return JSON.parse(localStorage.getItem(k) || 'null') || p; } catch { return p; } };
+  const gravarJ = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+  const urlPdf = id => `/ambulatorial/sadts/${encodeURIComponent(id)}/imprimir.pdf`;
+
+  // ── Atendimento → guias ───────────────────────────────────────────────
+  function atendimentoNormal(str) {
+    const m = String(str || '').match(/^(AtendimentoPa|AtendimentoAmbulatorial)#(\d+)$/i);
+    if (!m) return null;
+    const tipo = /pa$/i.test(m[1]) ? 'AtendimentoPa' : 'AtendimentoAmbulatorial';
+    return { tipo, id: m[2], chave: `${tipo}#${m[2]}` };
+  }
+  async function buscarGuias(atend, forcar = false) {
+    const cache = lerJ(CACHE, {});
+    const c = cache[atend.chave];
+    if (!forcar && c && Date.now() - c.t < CACHE_MS) return c.ids;
+    const r = await fetch(`/prontuarios/new?prontuariavel_id=${encodeURIComponent(atend.id)}&prontuariavel_type=${atend.tipo}`, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html' } });
+    if (!r.ok) throw new Error(`prontuário HTTP ${r.status}`);
+    const pid = (r.url.match(/\/prontuarios\/(\d+)/) || [])[1] || ((await r.text()).match(/\/prontuarios\/(\d+)/) || [])[1];
+    if (!pid) throw new Error('prontuário não encontrado');
+    const r2 = await fetch(`/prontuarios/${pid}/listar_assinaveis`, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    if (!r2.ok) throw new Error(`documentos HTTP ${r2.status}`);
+    const doc = new DOMParser().parseFromString(await r2.text(), 'text/html');
+    const ids = [...new Set([...doc.querySelectorAll('[data-documento-type][data-documento-id]')]
+      .filter(e => /^Ambulatorial::Sadt$/i.test(e.dataset.documentoType)).map(e => String(e.dataset.documentoId)))];
+    const novo = lerJ(CACHE, {});
+    for (const k of Object.keys(novo)) if (Date.now() - novo[k].t > CACHE_MS) delete novo[k];
+    novo[atend.chave] = { ids, t: Date.now() };
+    gravarJ(CACHE, novo);
+    return ids;
+  }
+
+  // ── Uso (aberta / baixada) ────────────────────────────────────────────
+  function uso(atend, id) { return lerJ(USO, {})[`${atend.chave}|${id}`] || {}; }
+  function registrar(atend, id, acao) {
+    const u = lerJ(USO, {});
+    for (const k of Object.keys(u)) if (Date.now() - Math.max(u[k].aberta || 0, u[k].baixada || 0) > USO_MS) delete u[k];
+    const k = `${atend.chave}|${id}`;
+    u[k] = Object.assign(u[k] || {}, { [acao]: Date.now() });
+    gravarJ(USO, u);
+  }
+
+  // ── Janelas do próprio sistema (SweetAlert) ───────────────────────────
+  // Devolve { ok, valor, motivo }: ok=true no botão principal; motivo 'cancel' no botão secundário.
+  async function janela(op) {
+    if (typeof window.swal !== 'function') {
+      const ok = window.confirm([op.title, String(op.html || '').replace(/<[^>]+>/g, ' ')].filter(Boolean).join('\n\n'));
+      return ok ? { ok: true, valor: true } : { ok: false, motivo: 'cancel' };
+    }
+    try {
+      const r = await window.swal(op);
+      if (r && typeof r === 'object' && 'dismiss' in r) return { ok: false, motivo: r.dismiss };
+      if (r && typeof r === 'object' && 'value' in r) return { ok: true, valor: r.value };
+      return { ok: true, valor: r };
+    } catch (motivo) { return { ok: false, motivo: String(motivo || '') }; }
+  }
+  const avisar = (title, type = 'info') => janela({ type, title, timer: type === 'success' ? 1600 : undefined, showConfirmButton: type !== 'success' });
+  const lista = nomes => `<div style="text-align:left;max-height:220px;overflow:auto">${nomes.map(n => `• ${esc(n)}`).join('<br>')}</div>`;
+
+  async function escolherGuia(ids) {
+    if (ids.length <= 1) return ids[0] || null;
+    const opcoes = {};
+    for (const id of ids) opcoes[id] = `Guia ${id}`;
+    const r = await janela({ title: 'Guia SADT', input: 'select', inputOptions: opcoes, inputValue: ids[ids.length - 1], showCancelButton: true, confirmButtonText: 'Abrir', cancelButtonText: 'Voltar' });
+    return r.ok ? String(r.valor || '') || null : null;
+  }
+
+  function abrirGuia(atend, id) {
+    const w = window.open(urlPdf(id), `om30-sadt-${id}`);
+    if (!w) { avisar('Pop-up bloqueado', 'warning'); return false; }
+    registrar(atend, id, 'aberta');
+    return true;
+  }
+  async function baixarGuia(atend, id) {
+    const r = await fetch(urlPdf(id), { credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!/pdf/i.test(r.headers.get('content-type') || '')) throw new Error('resposta não é PDF');
+    const blob = await r.blob();
+    const ini = new TextDecoder().decode(await blob.slice(0, 5).arrayBuffer());
+    if (!blob.size || ini !== '%PDF-') throw new Error('PDF vazio');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `Guia-SADT-${id}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    registrar(atend, id, 'baixada');
+  }
+
+  function css() {
+    if (document.getElementById('om30-sadt-css')) return;
+    const st = document.createElement('style');
+    st.id = 'om30-sadt-css';
+    st.textContent = `
+      .om30-sadt .portlet-content li.text{list-style:none}
+      .om30-sadt select{max-width:100%}
+      .om30-sadt-coletar{text-align:right;padding:4px 0 8px;margin-bottom:6px;border-bottom:1px solid #e5e5e5}
+      .om30-sadt-pend{outline:3px solid #dc2626!important;outline-offset:2px;background:#fff7f7!important}
+      .om30-sadt-lista{margin-top:4px}
+    `;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  // ── Lista do Controle de Salas (sala de Exames) ───────────────────────
+  if (naLista) {
+    css();
+    document.addEventListener('click', async ev => {
+      const b = ev.target?.closest?.('.om30-sadt-lista');
+      if (!b) return;
+      ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.();
+      const atend = atendimentoNormal(b.dataset.csSadt);
+      if (!atend) return avisar('Atendimento não identificado', 'warning');
+      if (b.dataset.ocupado) return;
+      b.dataset.ocupado = '1';
+      const span = b.querySelector('span') || b;
+      const txt = span.textContent;
+      span.textContent = 'Buscando…';
+      try {
+        const ids = await buscarGuias(atend);
+        if (!ids.length) return avisar('Nenhuma Guia SADT', 'info');
+        const id = await escolherGuia(ids);
+        if (id) abrirGuia(atend, id);
+      } catch (e) {
+        avisar('Falha ao buscar a Guia SADT', 'error');
+        console.warn('[OM30 SADT]', e?.message || e);
+      } finally { delete b.dataset.ocupado; span.textContent = txt; }
+    }, true);
+    window.OM30SADT = { diagnostico: () => ({ tela: 'lista', cache: lerJ(CACHE, {}), uso: lerJ(USO, {}) }) };
+    return;
+  }
+
+  // ── Ficha de Exames ───────────────────────────────────────────────────
+  const encId = mFicha[1];
+  const E = { atend: null, ids: null, id: null, estado: 'carregando', erro: '', liberarSalvar: false, coletando: false };
+
+  async function descobrirAtendimento() {
+    const qs = new URLSearchParams(location.search);
+    const q = String(qs.get('om30_atendimento_pa') || '').replace(/\D/g, '');
+    if (q) return atendimentoNormal(`AtendimentoPa#${q}`);
+    // Pelo próprio encaminhamento (lista do sistema), nunca pelo nome.
+    try {
+      const r = await fetch('/encaminhamentos_exames?format=json', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+      const j = await r.json();
+      const arr = Array.isArray(j) ? j : (j.data || j.aaData || Object.values(j).find(Array.isArray) || []);
+      const it = arr.find(x => String(x.encaminhamento_id || '').replace(/\D/g, '') === encId);
+      const a = it && atendimentoNormal(it.atendimento_str);
+      if (a) return a;
+    } catch (e) { console.warn('[OM30 SADT] lista de exames', e?.message || e); }
+    const s = String(sessionStorage.getItem('om30-atendimento-pa-filho-v1') || '').replace(/\D/g, '');
+    return s ? atendimentoNormal(`AtendimentoPa#${s}`) : null;
+  }
+
+  const ehSim = el => !!el && /^(?:true|1)$/i.test(String(el.value || '').trim());
+  const itens = () => [...document.querySelectorAll('.encaminhamento-exame-aplicacao')];
+  const pendente = item => !ehSim(item.querySelector('input[id$="_coletado"]')) && !ehSim(item.querySelector('input[id$="_cancelado"]'));
+  const nomeExame = (item, i) => (String(item.textContent || '').replace(/\s+/g, ' ').match(/Exame\s+(.+?)\s+Quantidade/i) || [])[1] || `Exame ${i + 1}`;
+  const pendentes = () => itens().filter(pendente);
+
+  function situacao() {
+    if (E.estado === 'carregando') return { t: 'BUSCANDO…', cor: '' };
+    if (E.estado === 'erro') return { t: 'FALHA NA CONSULTA', cor: '#b91c1c' };
+    if (!E.ids || !E.ids.length) return { t: 'NENHUMA GUIA', cor: '' };
+    const u = uso(E.atend, E.id);
+    if (u.baixada) return { t: 'BAIXADA', cor: '#15803d' };
+    if (u.aberta) return { t: 'ABERTA', cor: '' };
+    return { t: 'NÃO ABERTA', cor: '' };
+  }
+
+  // Quadro no mesmo formato dos quadros "Exames" e "Faturamento" da ficha.
+  function quadro() {
+    let p = document.querySelector('.om30-sadt');
+    if (p) return p;
+    const portletExames = document.querySelector('#aplicacoes_exames_group')?.closest('.portlet');
+    if (!portletExames) return null;
+    p = document.createElement('div');
+    p.className = 'portlet ui-corner-all ui-helper-clearfix ui-widget ui-widget-content om30-sadt';
+    p.innerHTML = '<div class="portlet-header ui-widget-header">Guia SADT</div><div class="portlet-content"></div>';
+    portletExames.parentElement.insertBefore(p, portletExames);
+    return p;
+  }
+
+  function desenhar() {
+    css();
+    const p = quadro();
+    if (p) {
+      const st = situacao();
+      const temGuia = E.ids && E.ids.length;
+      const guia = !temGuia ? '—'
+        : E.ids.length > 1
+          ? `<select data-om30-sadt="escolher">${E.ids.map(id => `<option value="${esc(id)}"${id === E.id ? ' selected' : ''}>Guia ${esc(id)}</option>`).join('')}</select>`
+          : esc(E.id);
+      const botoes = temGuia
+        ? `<a class="btn btn-primary ml-0" data-om30-sadt="abrir">Abrir guia</a> <a class="btn btn-primary" data-om30-sadt="baixar">Baixar PDF</a>`
+        : (E.estado === 'carregando' ? '' : `<a class="btn btn-primary ml-0" data-om30-sadt="recarregar">Buscar de novo</a>`);
+      const html = `<div class="nested-fields">`
+        + `<div class="grid_7"><li class="text"><label>Guia</label>${guia}</li></div>`
+        + `<div class="grid_2"><li class="text"><label>Quantidade</label>${temGuia ? String(E.ids.length).padStart(2, '0') : '—'}</li></div>`
+        + `<div class="grid_3"><li class="text"><label>Situação</label><span${st.cor ? ` style="color:${st.cor};font-weight:700"` : ''}>${esc(st.t)}</span></li></div>`
+        + `<div class="acoes-aplicacao-container mt-2">${botoes}</div><div class="clear"></div></div>`;
+      const c = p.querySelector('.portlet-content');
+      if (c.dataset.html !== html) { c.dataset.html = html; c.innerHTML = html; }
+    }
+    // "Coletar todos" no topo do quadro Exames, com o botão do próprio sistema.
+    const grupo = document.querySelector('#aplicacoes_exames_group');
+    if (grupo) {
+      const n = pendentes().length;
+      let linha = grupo.querySelector(':scope > .om30-sadt-coletar');
+      if (!n) { linha?.remove(); return; }
+      if (!linha) { linha = document.createElement('div'); linha.className = 'om30-sadt-coletar'; grupo.prepend(linha); }
+      const html = `<a class="btn btn-primary" data-om30-sadt="coletar"${E.coletando ? ' disabled="disabled"' : ''}>${E.coletando ? 'Coletando…' : `Coletar todos (${n})`}</a>`;
+      if (linha.dataset.html !== html) { linha.dataset.html = html; linha.innerHTML = html; }
+    }
+  }
+
+  async function carregar(forcar = false) {
+    E.estado = 'carregando'; desenhar();
+    try {
+      if (!E.atend) E.atend = await descobrirAtendimento();
+      if (!E.atend) { E.estado = 'erro'; E.erro = 'Atendimento não identificado'; return desenhar(); }
+      E.ids = await buscarGuias(E.atend, forcar);
+      if (!E.ids.includes(E.id)) E.id = E.ids[E.ids.length - 1] || null;
+      E.estado = 'ok';
+    } catch (e) {
+      E.estado = 'erro'; E.erro = e?.message || String(e);
+      console.warn('[OM30 SADT]', E.erro);
+    }
+    desenhar();
+  }
+
+  async function baixarComAviso() {
+    try { await baixarGuia(E.atend, E.id); desenhar(); avisar('Guia SADT baixada', 'success'); return true; }
+    catch (e) { console.warn('[OM30 SADT] baixar', e?.message || e); avisar('Falha ao baixar a guia', 'error'); return false; }
+  }
+
+  document.addEventListener('click', ev => {
+    const b = ev.target?.closest?.('[data-om30-sadt]');
+    if (!b || b.tagName === 'SELECT') return;
+    ev.preventDefault(); ev.stopPropagation();
+    if (b.hasAttribute('disabled')) return;
+    const a = b.dataset.om30Sadt;
+    if (a === 'abrir') { abrirGuia(E.atend, E.id); desenhar(); }
+    else if (a === 'baixar') baixarComAviso();
+    else if (a === 'recarregar') carregar(true);
+    else if (a === 'coletar') coletarTodos();
+  }, true);
+  document.addEventListener('change', ev => {
+    if (ev.target?.matches?.('select[data-om30-sadt="escolher"]')) { E.id = ev.target.value; desenhar(); }
+  }, true);
+
+  // Coleta em lote pela API do sistema, sem clicar item a item:
+  // 1) todas as consultas /encaminhamentos_exames/buscar_procedimentos_faturamento saem juntas;
+  // 2) cada resposta é aplicada como o botão Coletar do sistema faz (procedimento no Faturamento
+  //    + coletado=true + botões), mas sem a espera de 500 ms entre um exame e outro.
+  // Não salva: a ficha continua aguardando o Salvar.
+  async function coletarPorApi(lst, falhas) {
+    const $ = window.jQuery;
+    const nativo = ['aplicarProcedimentoAutomaticoExame', 'enableBtnAplicacao', 'disableBtnAplicacao', 'limparJustificativaCancelamento', 'exibirObservacaoAplicacao']
+      .every(f => typeof window[f] === 'function');
+    if (!$ || !nativo) throw new Error('funções do Coletar não encontradas na página');
+    const alvos = lst.map((item, i) => ({ item, i, exameId: String(item.querySelector('input[id$="_exame_id"]')?.value || '').trim() }))
+      .filter(a => a.item.isConnected && pendente(a.item));
+    const respostas = await Promise.all(alvos.map(async a => {
+      if (!a.exameId) return { ok: false };
+      try {
+        const r = await fetch(`/encaminhamentos_exames/buscar_procedimentos_faturamento?exame_id=${encodeURIComponent(a.exameId)}`,
+          { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json, text/javascript, */*; q=0.01', 'X-Requested-With': 'XMLHttpRequest' } });
+        if (!r.ok) return { ok: false };
+        const txt = await r.text();
+        let j = null;
+        try { j = JSON.parse(txt || 'null'); } catch { return { ok: false }; }
+        return { ok: true, proc: j };
+      } catch { return { ok: false }; }
+    }));
+    let feitos = 0;
+    alvos.forEach((a, k) => {
+      const resp = respostas[k];
+      if (!resp.ok) { falhas.push(nomeExame(a.item, a.i)); return; }
+      const $o = $(a.item), $col = $o.find('.btn-coletar-exame'), $canc = $o.find('.btn-cancelar-exame');
+      try {
+        if (resp.proc && resp.proc.id != null) window.aplicarProcedimentoAutomaticoExame(resp.proc.id, resp.proc.procedimento_text);
+        if (!$canc.hasClass('desativado')) { window.enableBtnAplicacao($canc); window.limparJustificativaCancelamento($o); }
+        $o.find("input[id$='coletado']").val(true);
+        $o.find("input[id$='cancelado']").val(false);
+        window.disableBtnAplicacao($col);
+        $canc.removeClass('desativado');
+        window.enableBtnAplicacao($canc);
+        window.limparJustificativaCancelamento($o);
+        window.exibirObservacaoAplicacao($o);
+      } catch (e) { console.warn('[OM30 SADT] coletar', e?.message || e); }
+      if (ehSim(a.item.querySelector('input[id$="_coletado"]'))) feitos++; else falhas.push(nomeExame(a.item, a.i));
+    });
+    return feitos;
+  }
+
+  async function coletarTodos() {
+    const lst = pendentes();
+    if (!lst.length || E.coletando) return;
+    const r = await janela({ type: 'warning', title: `Coletar ${lst.length} exame(s)?`, html: lista(lst.map(nomeExame)),
+      showCancelButton: true, confirmButtonText: 'Sim', cancelButtonText: 'Não' });
+    if (!r.ok) return;
+    E.coletando = true; desenhar();
+    const falhas = [];
+    let feitos = 0;
+    try {
+      feitos = await coletarPorApi(lst, falhas);
+    } finally { E.coletando = false; desenhar(); }
+    await janela(falhas.length
+      ? { type: 'warning', title: `${feitos} de ${lst.length} coletado(s)`, html: lista(falhas) }
+      : { type: 'success', title: `${feitos} de ${lst.length} coletado(s)`, html: 'Confira e clique em <b>Salvar</b>.' });
+  }
+
+  // ── Antes de salvar ───────────────────────────────────────────────────
+  function marcarPendentes(lst) {
+    document.querySelectorAll('.om30-sadt-pend').forEach(e => e.classList.remove('om30-sadt-pend'));
+    lst.forEach(e => e.classList.add('om30-sadt-pend'));
+    try { lst[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+    setTimeout(() => lst.forEach(e => e.classList.remove('om30-sadt-pend')), 6500);
+  }
+  async function antesDeSalvar(ev, botao) {
+    if (E.liberarSalvar) { E.liberarSalvar = false; return; }
+    const lst = pendentes();
+    if (lst.length) {
+      ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+      const r = await janela({ type: 'warning', title: 'Exames sem coleta', html: lista(lst.map(nomeExame)),
+        showCancelButton: true, confirmButtonText: `Coletar todos (${lst.length})`, cancelButtonText: 'Voltar' });
+      if (r.ok) coletarTodos(); else marcarPendentes(lst);
+      return;
+    }
+    // Guia achada e ainda sem download registrado.
+    if (E.estado === 'ok' && E.ids && E.ids.length && E.id && !uso(E.atend, E.id).baixada) {
+      ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+      const r = await janela({ type: 'warning', title: 'Guia SADT não baixada', html: `Guia ${esc(E.id)}`,
+        showCancelButton: true, showCloseButton: true, confirmButtonText: 'Baixar Guia SADT', cancelButtonText: 'Salvar mesmo assim' });
+      if (r.ok) { await baixarComAviso(); return; }
+      if (r.motivo === 'cancel') { E.liberarSalvar = true; (botao && botao.isConnected ? botao : document.querySelector('.salvar-encaminhamento-controle-salas'))?.click(); }
+    }
+  }
+  document.addEventListener('click', ev => {
+    const b = ev.target?.closest?.('.salvar-encaminhamento-controle-salas');
+    if (b) antesDeSalvar(ev, b);
+  }, true);
+  document.addEventListener('submit', ev => {
+    const f = ev.target;
+    if (f instanceof HTMLFormElement && f.querySelector('.salvar-encaminhamento-controle-salas') && /encaminhamento_exame/.test(f.className + ' ' + f.id)) antesDeSalvar(ev, null);
+  }, true);
+
+  function iniciar() {
+    css();
+    carregar();
+    setInterval(desenhar, 700);   // acompanha Coletar/Cancelar feitos à mão
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar, { once: true }); else iniciar();
+
+  window.OM30SADT = {
+    diagnostico: () => ({ tela: 'ficha', encaminhamento: encId, atendimento: E.atend?.chave || null, guias: E.ids, guia: E.id, estado: E.estado, erro: E.erro || null,
+      uso: E.atend && E.id ? uso(E.atend, E.id) : null, pendentes: pendentes().length })
+  };
+})();
+// ===== FIM OM30 GUIA SADT (EXAMES) =====

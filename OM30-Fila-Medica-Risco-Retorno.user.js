@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.4
+// @version      2.15.7
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -1186,6 +1186,11 @@
 
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
+  // v2.15.7: "Ocultar emergência" só tira a EM que segue emergência (Vermelho/Laranja/sem classificação);
+  //          EM reclassificada como Amarelo/Verde/Azul continua na fila (atendida pelos médicos da porta).
+  // v2.15.6: botão "Ocultar emergência (N)" no filtro: marcado, as senhas EM saem da lista e das contagens
+  //          (fica guardado neste PC até desmarcar).
+  // v2.15.5: sai o card Emergência do filtro da fila médica (a Emergência tem script próprio).
   // v2.15.4:
   // - Junta a 2.15.2 do GitHub (card Emergência no filtro, senhas EM) com:
   //   ao clicar em "Chamar", a página sobe até o painel Confirmar atendimento / Paciente ausente / Chamar novamente;
@@ -1286,7 +1291,6 @@
 
   const FILTROS = [
     { key: 'TODAS',    label: 'Todas',    cor: '#6c757d' },
-    { key: 'EMERGENCIA', label: 'Emergência', cor: '#dc3545' },
     { key: 'VERMELHO', label: 'Vermelho', cor: '#dc3545' },
     { key: 'AMARELO',  label: 'Amarelo',  cor: '#ffc107' },
     { key: 'VERDE',    label: 'Verde',    cor: '#198754' },
@@ -1397,6 +1401,67 @@
   function itemEhEmergencia(item) {
     // Senhas de emergência são identificadas pelo prefixo EM seguido de número.
     return /^EM\d/i.test(clean(item?.senha));
+  }
+
+  // v2.15.6: opção "Ocultar emergência" no filtro: tira as senhas EM da lista e das contagens.
+  // Fica guardada neste PC até desmarcar.
+  const STORAGE_OCULTAR_EM = `${PREFIX}:ocultar-emergencia`;
+  let ocultarEmergencia = (() => { try { return localStorage.getItem(STORAGE_OCULTAR_EM) === '1'; } catch { return false; } })();
+  // Só some a senha EM que continua emergência. EM reclassificada como Amarelo/Verde/Azul
+  // vai para os médicos da porta e fica na fila.
+  function emergenciaParaOcultar(item) {
+    return itemEhEmergencia(item) && !['AMARELO', 'VERDE', 'AZUL'].includes(riscoItem(item));
+  }
+  function semEmergenciaSeOculta(itens) {
+    const lista = Array.isArray(itens) ? itens : [];
+    return ocultarEmergencia ? lista.filter(item => !emergenciaParaOcultar(item)) : lista;
+  }
+  function cssOcultarEm() {
+    if (document.getElementById(`${PREFIX}-ocultar-em-css`)) return;
+    const st = document.createElement('style');
+    st.id = `${PREFIX}-ocultar-em-css`;
+    st.textContent = `
+      .om30-ocultar-em{display:inline-flex;align-items:center;gap:6px;align-self:center;height:30px;padding:0 11px;border:1px solid #e3a1a8;border-radius:8px;background:#fff;color:#b02a37;font-size:11.5px;font-weight:800;cursor:pointer;white-space:nowrap;line-height:1}
+      .om30-ocultar-em:hover{background:#fff5f6}
+      .om30-ocultar-em .om30-ocultar-em-caixa{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border:1.5px solid #b02a37;border-radius:3px;font-size:11px;line-height:1}
+      .om30-ocultar-em.ativo{background:#fde8ea;border-color:#dc3545}
+    `;
+    (document.head || document.documentElement).appendChild(st);
+  }
+  function atualizarBotoesOcultarEm(fonte) {
+    const qtd = (Array.isArray(fonte) ? fonte : []).filter(emergenciaParaOcultar).length;
+    document.querySelectorAll('.om30-ocultar-em').forEach(b => {
+      b.classList.toggle('ativo', ocultarEmergencia);
+      b.setAttribute('aria-pressed', ocultarEmergencia ? 'true' : 'false');
+      const html = `<span class="om30-ocultar-em-caixa">${ocultarEmergencia ? '✓' : ''}</span>Ocultar emergência (${qtd})`;
+      if (b.innerHTML !== html) b.innerHTML = html;
+    });
+  }
+  function reaplicarFiltrosFila() {
+    try {
+      if (document.getElementById(MED_BAR_ID) && medVm) { medAssinaturaAplicada = ''; aplicarMedFonte(medVm, true); }
+    } catch (e) { warn('Ocultar emergência (barra):', e); }
+    try {
+      if (document.getElementById(`${PREFIX}-box`)) { const vm = acharVueFila(); if (vm) aplicarFiltroCustom(vm, false); }
+    } catch (e) { warn('Ocultar emergência (resumo):', e); }
+    try {
+      if (document.getElementById(VISUAL_ID)) { visualAssinaturaRender = ''; renderizarFilaVisual(true); }
+    } catch (e) { warn('Ocultar emergência (visual):', e); }
+  }
+  function criarBotaoOcultarEm() {
+    cssOcultarEm();
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'om30-ocultar-em';
+    b.title = 'Tira da fila as senhas EM que seguem na emergência. EM reclassificada Amarelo/Verde/Azul continua.';
+    b.addEventListener('click', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      ocultarEmergencia = !ocultarEmergencia;
+      try { localStorage.setItem(STORAGE_OCULTAR_EM, ocultarEmergencia ? '1' : '0'); } catch {}
+      atualizarBotoesOcultarEm([]);
+      reaplicarFiltrosFila();
+    });
+    return b;
   }
 
   function itemEhRetorno(item) {
@@ -1931,7 +1996,7 @@
   }
 
   function filtrarItens(itens, filtro) {
-    if (filtro === 'EMERGENCIA') return itens.filter(itemEhEmergencia);
+    itens = semEmergenciaSeOculta(itens);
     if (filtro === 'RETORNO') return itens.filter(itemEhRetorno);
     if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(filtro)) {
       return itens.filter(item => riscoItem(item) === filtro);
@@ -1964,7 +2029,7 @@
   }
 
   function mediaEspera(itens, filtroRisco = null, agora = Date.now()) {
-    const lista = (Array.isArray(itens) ? itens : []).filter(item => {
+    const lista = semEmergenciaSeOculta(itens).filter(item => {
       if (filtroRisco && riscoItem(item) !== filtroRisco) return false;
       return tempoEsperaMs(item, agora) >= 0;
     });
@@ -2006,16 +2071,14 @@
   function contarFila(itens) {
     const contagem = {
       TODAS: 0,
-      EMERGENCIA: 0,
       VERMELHO: 0,
       AMARELO: 0,
       VERDE: 0,
       AZUL: 0,
       RETORNO: 0
     };
-    for (const item of Array.isArray(itens) ? itens : []) {
+    for (const item of semEmergenciaSeOculta(itens)) {
       contagem.TODAS++;
-      if (itemEhEmergencia(item)) contagem.EMERGENCIA++;
       const risco = riscoItem(item);
       if (contagem[risco] != null) contagem[risco]++;
       if (itemEhRetorno(item)) contagem.RETORNO++;
@@ -2028,10 +2091,10 @@
     if (!box) return;
 
     const c = contarFila(itens);
+    atualizarBotoesOcultarEm(itens);
     const agora = Date.now();
     const dados = {
       TODAS:    { qtd: c.TODAS,    media: mediaEspera(itens, null, agora) },
-      EMERGENCIA: { qtd: c.EMERGENCIA, media: null },
       VERMELHO: { qtd: c.VERMELHO, media: mediaEspera(itens, 'VERMELHO', agora) },
       AMARELO:  { qtd: c.AMARELO,  media: mediaEspera(itens, 'AMARELO', agora) },
       VERDE:    { qtd: c.VERDE,    media: mediaEspera(itens, 'VERDE', agora) },
@@ -2051,8 +2114,6 @@
       if (media) {
         if (key === 'RETORNO') {
           media.textContent = `${info.qtd === 1 ? 'retorno' : 'retornos'} na fila`;
-        } else if (key === 'EMERGENCIA') {
-          media.textContent = `${info.qtd === 1 ? 'senha' : 'senhas'} EM na fila`;
         } else if ((info.qtd ?? 0) > 0) {
           media.innerHTML = `Tempo Médio <strong>${formatarTempoEspera(info.media)}</strong>`;
         } else {
@@ -2374,7 +2435,7 @@
     status.className = 'om30-status-fila';
     status.textContent = 'Lendo fila...';
 
-    cabecalho.append(blocoTitulo, status);
+    cabecalho.append(blocoTitulo, criarBotaoOcultarEm(), status);
     box.appendChild(cabecalho);
 
     const resumo = document.createElement('div');
@@ -5436,6 +5497,7 @@
       });
       resumo.appendChild(btn);
     }
+    resumo.appendChild(criarBotaoOcultarEm());
 
     return host;
   }
@@ -5444,6 +5506,7 @@
     const host = document.getElementById(VISUAL_ID);
     if (!host) return;
     const contagem = contarFila(visualItens);
+    atualizarBotoesOcultarEm(visualItens);
     const agora = Date.now();
 
     const medias = {
@@ -6658,6 +6721,7 @@
         });
         bar.appendChild(b);
       }
+      bar.appendChild(criarBotaoOcultarEm());
       const at = document.createElement('span');
       at.className = 'om30m-atualizado';
       at.textContent = `🕒 ${horarioCurtoAgora()}`;
@@ -6673,13 +6737,15 @@
     const bar = document.getElementById(MED_BAR_ID);
     if (!bar) return;
     const agora = Date.now();
+    atualizarBotoesOcultarEm(medFonte);
+    const fonte = semEmergenciaSeOculta(medFonte);
     const contagem = {
-      TODAS: medFonte.length,
-      VERMELHO: medFonte.filter(x => riscoItem(x) === 'VERMELHO').length,
-      AMARELO: medFonte.filter(x => riscoItem(x) === 'AMARELO').length,
-      VERDE: medFonte.filter(x => riscoItem(x) === 'VERDE').length,
-      AZUL: medFonte.filter(x => riscoItem(x) === 'AZUL').length,
-      RETORNO: medFonte.filter(itemEhRetorno).length,
+      TODAS: fonte.length,
+      VERMELHO: fonte.filter(x => riscoItem(x) === 'VERMELHO').length,
+      AMARELO: fonte.filter(x => riscoItem(x) === 'AMARELO').length,
+      VERDE: fonte.filter(x => riscoItem(x) === 'VERDE').length,
+      AZUL: fonte.filter(x => riscoItem(x) === 'AZUL').length,
+      RETORNO: fonte.filter(itemEhRetorno).length,
     };
     const medias = {
       TODAS: mediaEspera(medFonte, null, agora),

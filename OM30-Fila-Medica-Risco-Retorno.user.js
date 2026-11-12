@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.7
+// @version      2.15.8
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -16,6 +16,22 @@
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
+
+// ===== OM30 • ABA DE LOGIN DO SENHA SIMPLES PRESA (v2.15.8) =====
+// A página nativa de retorno do login (senha*.saudesimples.net/usuarios/auth/.../callback)
+// só faz: window.opener.postMessage(token) e window.close(). Quando a aba chega sem
+// "opener", a 1ª linha dá erro, o window.close() nunca roda e a aba fica aberta;
+// como o token não chegou, a próxima tela abre outra. Aqui só fechamos essa aba presa.
+// Não lê nem guarda o token; com opener presente o fluxo nativo segue intocado.
+(() => {
+  try {
+    if (!/^senha[a-z0-9-]*\.saudesimples\.net$/i.test(location.hostname)) return;
+    if (!/\/usuarios\/auth\/[^/]+\/callback\/?$/.test(location.pathname)) return;
+    if (window.opener && !window.opener.closed) return;
+    console.info('[OM30] Aba de login do Senha Simples sem janela de origem: fechando.');
+    window.close();
+  } catch (_) {}
+})();
 
 // ===== OM30 AUSÊNCIAS D1 — coletor V5 (idêntico nos dois scripts) =====
 // Grava no Cloudflare D1 em qual setor (MEDICO / ACOLHIMENTO) o paciente foi ausentado,
@@ -1470,6 +1486,13 @@
     return norm(item?.senha).startsWith('RT');
   }
 
+  // v2.15.8: o filtro/contagem "Retorno" também mostra as senhas com a tag Retorno
+  // nativa (prontuario_com_retorno), além das RT. O fluxo RT de 36h e o contexto
+  // de retorno continuam usando só itemEhRetorno (senha RT).
+  function itemNaFilaRetorno(item) {
+    return itemEhRetorno(item) || itemEhRetornoNativo(item);
+  }
+
   function riscoItem(item) {
     const risco = norm(item?.nome_grau_risco);
     if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(risco)) return risco;
@@ -1997,7 +2020,7 @@
 
   function filtrarItens(itens, filtro) {
     itens = semEmergenciaSeOculta(itens);
-    if (filtro === 'RETORNO') return itens.filter(itemEhRetorno);
+    if (filtro === 'RETORNO') return itens.filter(itemNaFilaRetorno);
     if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(filtro)) {
       return itens.filter(item => riscoItem(item) === filtro);
     }
@@ -2081,7 +2104,7 @@
       contagem.TODAS++;
       const risco = riscoItem(item);
       if (contagem[risco] != null) contagem[risco]++;
-      if (itemEhRetorno(item)) contagem.RETORNO++;
+      if (itemNaFilaRetorno(item)) contagem.RETORNO++;
     }
     return contagem;
   }
@@ -3612,7 +3635,7 @@
   function linhaPertenceAoFiltro(row, vm) {
     const item = itemDaLinha(row, vm);
     if (!item) return false;
-    if (filtroSelecionado === 'RETORNO') return itemEhRetorno(item);
+    if (filtroSelecionado === 'RETORNO') return itemNaFilaRetorno(item);
     if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(filtroSelecionado)) {
       return riscoItem(item) === filtroSelecionado;
     }
@@ -6745,7 +6768,7 @@
       AMARELO: fonte.filter(x => riscoItem(x) === 'AMARELO').length,
       VERDE: fonte.filter(x => riscoItem(x) === 'VERDE').length,
       AZUL: fonte.filter(x => riscoItem(x) === 'AZUL').length,
-      RETORNO: fonte.filter(itemEhRetorno).length,
+      RETORNO: fonte.filter(itemNaFilaRetorno).length,
     };
     const medias = {
       TODAS: mediaEspera(medFonte, null, agora),

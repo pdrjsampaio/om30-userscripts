@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.91
+// @version      3.0.92
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,8 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.91
+    /* OM30 - CONTROLE DE SALAS v3.0.92
+     * v3.0.92: token do Senha Simples compartilhado entre as abas deste navegador (apagado na tela de login/sair): aba nova não abre mais outra aba de login do Senha Simples.
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
@@ -80,7 +81,30 @@
     // interceptado no Vuex.Store (antes do store existir) e, se tarde, no próprio store.
     (function tokenSenhaSemJanela() {
         const vence = tk => { try { const p = JSON.parse(atob(String(tk).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); return p && p.exp ? p.exp * 1000 : 0; } catch (_) { return 0; } };
-        const tokenValido = () => { let tk = ''; try { tk = sessionStorage.getItem('senhaSimplesToken') || ''; } catch (_) {} return tk && vence(tk) - Date.now() > 5 * 60e3 ? tk : ''; };
+        // v3.0.92: o token ficava só na aba (sessionStorage). Cada aba nova (ou ficha
+        // aberta em outra aba) começava sem token e o sistema abria mais uma aba de
+        // login do Senha Simples. Agora a aba com token válido deixa uma cópia neste
+        // navegador (localStorage) e as abas novas usam essa cópia enquanto valer.
+        // A cópia é apagada na tela de login/sair, para não passar de um usuário a outro.
+        const CHAVE_TK = 'senhaSimplesToken', CHAVE_TK_COMP = 'om30SenhaSimplesTokenCompartilhado';
+        const valeAinda = tk => !!tk && vence(tk) - Date.now() > 5 * 60e3;
+        const lerSess = () => { try { return sessionStorage.getItem(CHAVE_TK) || ''; } catch (_) { return ''; } };
+        const lerComp = () => { try { return localStorage.getItem(CHAVE_TK_COMP) || ''; } catch (_) { return ''; } };
+        const gravarComp = tk => { try { if (lerComp() !== tk) localStorage.setItem(CHAVE_TK_COMP, tk); } catch (_) {} };
+        const apagarComp = () => { try { localStorage.removeItem(CHAVE_TK_COMP); } catch (_) {} };
+        if (/^\/(?:[a-z]{2}-[A-Z]{2}\/)?usuarios\/(?:login|sair|sign_in|sign_out)\b/.test(location.pathname)) apagarComp();
+        const tokenValido = () => {
+            const daAba = lerSess();
+            if (valeAinda(daAba)) { gravarComp(daAba); return daAba; }
+            const comp = lerComp();
+            if (valeAinda(comp)) { try { sessionStorage.setItem(CHAVE_TK, comp); } catch (_) {} return comp; }
+            if (comp) apagarComp();
+            return '';
+        };
+        // Espelha o token que o sistema grava na aba depois do login (sem rede, só leitura local).
+        tokenValido();
+        const espelho = setInterval(() => { const tk = lerSess(); if (valeAinda(tk)) gravarComp(tk); }, 15000);
+        window.addEventListener('pagehide', () => { clearInterval(espelho); const tk = lerSess(); if (valeAinda(tk)) gravarComp(tk); });
         function embrulhar(orig, fixo) {
             if (typeof orig !== 'function' || orig.__om30Token) return orig;
             const f = function (tipo) {

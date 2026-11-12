@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.92
+// @version      3.0.93
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,8 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.92
+    /* OM30 - CONTROLE DE SALAS v3.0.93
+     * v3.0.93: sala Exames com 'Sala: Todas / Coleta / Sutura (ECG)' salva neste PC. Coleta mostra só quem tem coleta pendente; Sutura mostra os eletrocardiogramas. Encaminhamento com os dois aparece nas duas. A contagem e o 'Chamar próximo (N)' seguem a sala escolhida.
      * v3.0.92: token do Senha Simples compartilhado entre as abas deste navegador (apagado na tela de login/sair): aba nova não abre mais outra aba de login do Senha Simples.
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
@@ -1043,6 +1044,8 @@
         return {
             periodo: (N.PERIODOS[c.periodo] || c.periodo === 'datas') ? c.periodo : 'hoje',
             mostrar: ['todos', 'pediatria', 'em_medicacao', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
+            // v3.0.93: sala física da fila de Exames neste PC (Coleta / Sutura com ECG).
+            salaExames: ['todas', 'coleta', 'sutura'].includes(c.salaExames) ? c.salaExames : 'todas',
             medicacoes: true,
             dataInicial: /^\d{4}-\d{2}-\d{2}$/.test(c.dataInicial || '') ? c.dataInicial : '',
             dataFinal: /^\d{4}-\d{2}-\d{2}$/.test(c.dataFinal || '') ? c.dataFinal : '',
@@ -6361,8 +6364,40 @@
             while (DET.ativos < DET.CONCORRENCIA && DET.fila.length) {
                 const t=DET.fila.shift(); DET.ativos++;
                 buscarDetalhesSetor(t.setor,t.id).catch(err=>DET.cache.set(t.chave,{em:Date.now(),itens:[],erro:String(err&&err.message||err)}))
-                    .finally(()=>{DET.ativos--;DET.emVoo.delete(t.chave);pintarMedicacoes();pedirDetalhesSetor(vm,[]);});
+                    .finally(()=>{DET.ativos--;DET.emVoo.delete(t.chave);pintarMedicacoes();pedirDetalhesSetor(vm,[]);refiltrarSalaExames(t.setor);});
             }
+        }
+
+        // ── v3.0.93: Exames separados por sala física ─────────────────────────
+        // Sala de Coleta: só os encaminhamentos com coleta pendente (sem os ECG).
+        // Sala de Sutura: os eletrocardiogramas pendentes.
+        // Encaminhamento com coleta + ECG aparece nas duas, cada sala faz a sua parte.
+        // Sem o detalhe carregado ainda (ou com erro), a linha aparece nas duas.
+        const ehECG = d => /ELETROCARDIOGRAMA|\bECG\b/.test(String(d || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase());
+        const itemExameFeito = s => /COLETAD|REALIZAD|CANCELAD|FINALIZAD/i.test(String(s || ''));
+        function classeExame(it, setor) {
+            const id = idGenerico(it, setor); if (!id) return null;
+            const c = DET.cache.get(`${setor.key}:${id}`);
+            if (!c || c.erro || !c.itens || !c.itens.length) return null;
+            const pend = c.itens.filter(x => !itemExameFeito(x.situacao));
+            const base = pend.length ? pend : c.itens;
+            return { ecg: base.some(x => ehECG(x.descricao)), coleta: base.some(x => !ehECG(x.descricao)) };
+        }
+        function exameDaSala(it, setor, sala) {
+            const k = classeExame(it, setor);
+            if (!k) return true;
+            return sala === 'sutura' ? k.ecg : k.coleta;
+        }
+        // Quando chega o detalhe de um exame, a lista é refeita (uma vez por lote).
+        let refiltroSalaTimer = null;
+        function refiltrarSalaExames(setor) {
+            if (!setor || setor.key !== 'exames' || CS.historico) return;
+            if (lerConfig().salaExames === 'todas') return;
+            clearTimeout(refiltroSalaTimer);
+            refiltroSalaTimer = setTimeout(() => {
+                const vm = CS.colecao;
+                if (vm && (setorDaColecao(vm) || {}).key === 'exames') { CS.ultimaAssinatura = ''; carregar(vm, { silencioso: true }); }
+            }, 700);
         }
 
         function htmlDetalhesSetor(it,setor) {
@@ -8099,6 +8134,10 @@
             const soEmMed = comEmMed && cfg.mostrar === 'em_medicacao';
             const marcadoEmMed = it => it.status === 'Em Espera' && emMedicacao(it);
             const filaEmMed = it => !comEmMed || (soEmMed ? marcadoEmMed(it) : !marcadoEmMed(it));
+            // Exames: Coleta / Sutura (ECG) conforme a sala escolhida neste PC.
+            const setorLista = setorDaColecao(vm) || {};
+            const salaEx = !historico && setorLista.key === 'exames' && cfg.salaExames !== 'todas' ? cfg.salaExames : '';
+            const filaSalaEx = it => !salaEx || exameDaSala(it, setorLista, salaEx);
             if (vm.$el && vm.$el.classList) vm.$el.classList.toggle('cs-historico', historico);
 
             // Todas as páginas de uma consulta à lista; null se outra carga começou depois.
@@ -8157,7 +8196,7 @@
                 CS.totalPeriodo = total;
                 if (!historico) gravarJSON(CHAVE_ULTIMO_TOTAL, total);
                 CS.truncado = todos.length < CS.totalPeriodo;
-                const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it));
+                const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it) && filaSalaEx(it));
                 const ativos = comEmMed ? ativosBase.filter(filaEmMed) : ativosBase;
                 const filtrados = N.filtrar(ativos, { minimo, soEspera: false });
                 const lista = historico ? N.ordenarHistorico(filtrados) : N.ordenar(filtrados);
@@ -8176,7 +8215,7 @@
                 if (contagemPadrao) {
                     const rp = await contagemPadrao;
                     if (seq !== CS.carga) return;
-                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it));
+                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it) && filaSalaEx(it));
                 }
                 if (comEmMed) paraContar = paraContar.filter(filaEmMed);
                 CS.resumo = N.resumo(paraContar, agoraParede);
@@ -8528,6 +8567,7 @@
                         cfg.periodo='hoje'; cfg.dataInicial=''; cfg.dataFinal='';
                     } else if (campo === 'periodo') cfg.periodo = valor;
                     if (campo === 'mostrar') cfg.mostrar = valor;
+                    if (campo === 'sala') cfg.salaExames = valor;
                     gravarJSON(CHAVE_CONFIG, cfg);
                     CS.ultimaAssinatura = '';
                     atualizarBarra();
@@ -8575,6 +8615,10 @@
             const qtdEmMed = (EMMED && EMMED.mapa.size) || 0;
             const emMedHtml = noRaioX ? bt('mostrar:em_medicacao', qtdEmMed ? `Em medicação (${qtdEmMed})` : 'Em medicação', cfg.mostrar === 'em_medicacao') : '';
             const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao) || (cfg.mostrar === 'em_medicacao' && !noRaioX);
+            const noExames = !!CS.colecao && (setorDaColecao(CS.colecao) || {}).key === 'exames' && cfg.mostrar !== 'historico';
+            const salaHtml = noExames
+                ? `<span class="cs-grupo" title="Sala deste computador: Coleta mostra só coletas; Sutura mostra os eletrocardiogramas"><b>Sala:</b>${bt('sala:todas', 'Todas', cfg.salaExames === 'todas')}${bt('sala:coleta', 'Coleta', cfg.salaExames === 'coleta')}${bt('sala:sutura', 'Sutura (ECG)', cfg.salaExames === 'sutura')}</span>`
+                : '';
             const avisos = [];
             if (CS.filtroDataSistema) avisos.push(`<span class="cs-aviso">Usando a data do filtro do sistema (${esc(CS.filtroDataSistema)})</span>`);
             if (CS.truncado) avisos.push(`<span class="cs-aviso">Mostrando ${MAX_PAGINAS * POR_PAGINA} de ${CS.totalPeriodo}; reduza o período</span>`);
@@ -8588,6 +8632,7 @@
             barra.innerHTML = `
                 <span class="cs-grupo"><b>Período:</b>${periodos}</span>
                 <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', naMedicacao ? 'Clínico' : 'Todos', todosAtivo)}${pediatriaHtml}${emMedHtml}${historicoHtml}</span>
+                ${salaHtml}
                 ${resumoHtml}
                 ${avisos.join('')}
                 <span class="cs-hora" title="${esc(tempoTitulo)}Ordem: VERMELHO → AMARELO → VERDE → AZUL; na mesma cor, mais antigo primeiro">atualizado ${hora}</span>`;

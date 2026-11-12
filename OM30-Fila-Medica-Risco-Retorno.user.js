@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.8
+// @version      2.15.9
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -2024,7 +2024,8 @@
     if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(filtro)) {
       return itens.filter(item => riscoItem(item) === filtro);
     }
-    return itens;
+    // v2.15.9: Todos = fila sem os retornos (eles ficam so em Retorno).
+    return itens.filter(item => !itemNaFilaRetorno(item));
   }
 
   function ordenarFilaMedica(itens) {
@@ -2054,6 +2055,7 @@
   function mediaEspera(itens, filtroRisco = null, agora = Date.now()) {
     const lista = semEmergenciaSeOculta(itens).filter(item => {
       if (filtroRisco && riscoItem(item) !== filtroRisco) return false;
+      if (!filtroRisco && itemNaFilaRetorno(item)) return false; // Todos sem retornos
       return tempoEsperaMs(item, agora) >= 0;
     });
     if (!lista.length) return 0;
@@ -2101,7 +2103,7 @@
       RETORNO: 0
     };
     for (const item of semEmergenciaSeOculta(itens)) {
-      contagem.TODAS++;
+      if (!itemNaFilaRetorno(item)) contagem.TODAS++;
       const risco = riscoItem(item);
       if (contagem[risco] != null) contagem[risco]++;
       if (itemNaFilaRetorno(item)) contagem.RETORNO++;
@@ -3639,11 +3641,12 @@
     if (['VERMELHO', 'AMARELO', 'VERDE', 'AZUL'].includes(filtroSelecionado)) {
       return riscoItem(item) === filtroSelecionado;
     }
-    return true;
+    return !itemNaFilaRetorno(item); // Todos sem retornos
   }
 
   function ocultarIntrusosDoFiltro(vm = acharVueFila()) {
-    if (!vm || filtroSelecionado === 'TODAS') {
+    // v2.15.9: em Todos também esconde (os retornos ficam só em Retorno).
+    if (!vm) {
       linhasFila().forEach(row => row.classList.remove(`${PREFIX}-intruso`));
       return;
     }
@@ -6669,7 +6672,9 @@
   }
 
   function filtrarItensMedicos(itens, filtro = filtroSelecionado, termo = medPesquisaTermo) {
-    return filtrarItens(itens, filtro).filter(item => itemCombinaPesquisaMedica(item, termo));
+    // Com pesquisa digitada em Todos, os retornos também são encontrados.
+    const base = (String(termo || '').trim() && (filtro === 'TODAS' || !filtro)) ? semEmergenciaSeOculta(itens) : filtrarItens(itens, filtro);
+    return base.filter(item => itemCombinaPesquisaMedica(item, termo));
   }
 
   function instalarPesquisaMedica(vm = medVm) {
@@ -6763,7 +6768,7 @@
     atualizarBotoesOcultarEm(medFonte);
     const fonte = semEmergenciaSeOculta(medFonte);
     const contagem = {
-      TODAS: fonte.length,
+      TODAS: fonte.filter(x => !itemNaFilaRetorno(x)).length,
       VERMELHO: fonte.filter(x => riscoItem(x) === 'VERMELHO').length,
       AMARELO: fonte.filter(x => riscoItem(x) === 'AMARELO').length,
       VERDE: fonte.filter(x => riscoItem(x) === 'VERDE').length,

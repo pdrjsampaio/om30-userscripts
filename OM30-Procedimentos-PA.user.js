@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.0.2
-// @description  Procedimentos PA com favoritos pessoais por médico pré-carregados após o login + fluxo real do Controle de Salas.
+// @version      2.3.0
+// @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -301,6 +301,39 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     {type:'procedimento',group:'enfermagem',code:'0301100284',name:'CURATIVO SIMPLES',query:'0301100284'},
     {type:'procedimento',group:'enfermagem',code:'0401010066',name:'EXCISÃO E/OU SUTURA SIMPLES DE PEQUENAS LESÕES / FERIMENTOS DE PELE / ANEXOS E MUCOSA',query:'0401010066'}
   ];
+
+
+  // ============================================================
+  // GRUPOS RÁPIDOS DE EXAMES • CONTROLE DE SALAS > EXAMES
+  // ------------------------------------------------------------
+  // O grupo usa os mesmos exames internos e o mesmo fluxo nativo
+  // já utilizado pelo Procedimentos PA. Não cria SADT externa.
+  // ============================================================
+  const gruposExamesPA=[
+    {
+      id:'sadt-clinico-porta',
+      nome:'CLÍNICO PORTA',
+      descricao:'9 procedimentos do cadastro original • quantidade 1 por exame.',
+      codigos:[
+        '0202020380', // HEMOGRAMA COMPLETO
+        '0202010317', // CREATININA
+        '0202010694', // UREIA
+        '0202010651', // TGP
+        '0202010643', // TGO
+        '0202030202', // PCR
+        '0202050017', // URINA
+        '0202010635', // SODIO
+        '0202010600'  // POTASSIO
+      ]
+    }
+  ];
+
+  function definicaoExamePadrao(codigo){
+    const alvo=digits(codigo);
+    return favoritosPadraoPA.find(x=>
+      x.type==='exame' && x.group==='exames' && digits(x.code)===alvo
+    )||null;
+  }
 
   const favoritosUnidade={
     'UNIDADE TESTE GUARUJA':favoritosPadraoPA
@@ -1073,6 +1106,18 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   .searchbtn{width:29px;height:29px;border:0;border-radius:50%;background:#123f68;color:#fff;cursor:pointer;font-size:0;padding:0;position:relative;flex:none}
   .searchbtn:before{content:"⌕";font-size:17px;line-height:29px}
   .sect{margin-top:7px}
+  .examgroups{display:none}
+  .examgroups.show{display:block}
+  .examgroups .examgroup-list{display:grid;grid-template-columns:1fr;gap:5px}
+  .examgroups .examgroup-card{display:flex;align-items:center;gap:8px;border:1px solid #d9e4ea;background:#f8fbfc;border-radius:10px;padding:8px 9px}
+  .examgroups .examgroup-main{min-width:0;flex:1}
+  .examgroups .examgroup-name{font-size:10px;font-weight:800;color:#24495d;line-height:1.2}
+  .examgroups .examgroup-desc{margin-top:2px;font-size:8px;color:#7d8c94;line-height:1.3}
+  .examgroups .examgroup-count{margin-top:3px;font-size:8px;font-weight:750;color:#59737f}
+  .examgroups .examgroup-use{border:0;background:#123f68;color:#fff;border-radius:7px;padding:6px 9px;font-size:8.5px;font-weight:800;cursor:pointer;white-space:nowrap;min-width:94px}
+  .examgroups .examgroup-use:hover{background:#0e3558}
+  .examgroups .examgroup-use[disabled]{opacity:.55;cursor:default;background:#788a93}
+  .examgroups .examgroup-card.running{border-color:#b8cddd;background:#f3f8fb}
   .stitle{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:9px;font-weight:750;color:#50636d;margin-bottom:4px}
   .muted{font-weight:500;color:#a0aaaf;font-size:8px}
   .rxpick{position:relative}
@@ -1191,7 +1236,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   </div>
   <div class="obody">
     <div class="searchrow"><input class="search" placeholder="Buscar radiografia..."><button class="searchclear" title="Limpar pesquisa" aria-label="Limpar pesquisa">×</button><button class="searchbtn" title="Pesquisar">Pesquisar</button></div>
-    <div class="rx sect"></div><div class="sel sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
+    <div class="examgroups sect"></div><div class="rx sect"></div><div class="sel sect"></div><div class="uf sect"></div><div class="lf sect"></div><div class="medc sect"></div><div class="res sect"></div><div class="status"></div>
   </div>
   <div class="settings">
     <div class="shead"><div class="stxt">Favoritos da unidade</div><button class="sclose">×</button></div>
@@ -1205,7 +1250,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
         <input class="sfile" type="file" accept=".txt,text/plain" multiple hidden>
       </div>
       <textarea class="stextarea" placeholder="[RAIO X]&#10;0204030153 | RADIOGRAFIA DE TORAX (PA E PERFIL)&#10;&#10;[EXAMES]&#10;0202020380 | HEMOGRAMA COMPLETO&#10;&#10;[ENFERMAGEM]&#10;0214010015 | GLICEMIA CAPILAR"></textarea>
-      <div class="sfoot">v1.9.7 · Os favoritos importados ficam vinculados à unidade identificada nesta máquina.</div>
+      <div class="sfoot">v2.1.0 TESTE · Grupos rápidos de exames integrados ao Controle de Salas.</div>
     </div>
   </div>`;
   // O painel NÃO possui mais modo flutuante.
@@ -1479,7 +1524,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     timerRemontagem=setTimeout(garantirControleSalas,80);
   });
   observerProntuario.observe(document.documentElement,{childList:true,subtree:true});
-  const E={s:q('.search',panel),clear:q('.searchclear',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
+  const E={s:q('.search',panel),clear:q('.searchclear',panel),r:q('.res',panel),sel:q('.sel',panel),uf:q('.uf',panel),lf:q('.lf',panel),rx:q('.rx',panel),eg:q('.examgroups',panel),mc:q('.medc',panel),st:q('.status',panel),settings:q('.settings',panel),sta:q('.stextarea',panel),file:q('.sfile',panel)};
   let tipo='raiox',timer,rxRegiaoAtual=null;
 
   function status(t,k=''){E.st.textContent=t;E.st.className='status'+(k?' '+k:'')}
@@ -1648,6 +1693,9 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
         }
       });
     });
+
+
+    if(tipo==='exames') renderGruposExames();
   }
 
   let timerSelecionados=null;
@@ -1796,6 +1844,298 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     }catch(e){
       console.error(e);
       status(e.message||String(e),'err');
+    }
+  }
+
+
+  let executandoGrupoExames=false;
+
+  function estadoGrupoExames(grupo){
+    const total=grupo.codigos.length;
+    const selecionados=grupo.codigos.filter(cd=>codigoSelecionado('exames',cd)).length;
+    return {total,selecionados,completo:total>0&&selecionados===total};
+  }
+
+  function renderGruposExames(){
+    if(!E?.eg) return;
+
+    if(tipo!=='exames'){
+      E.eg.classList.remove('show');
+      E.eg.innerHTML='';
+      return;
+    }
+
+    E.eg.classList.add('show');
+    E.eg.innerHTML=
+      '<div class="stitle"><span>Grupos de exames</span></div>'+ 
+      '<div class="examgroup-list">'+
+      gruposExamesPA.map((grupo,i)=>{
+        const e=estadoGrupoExames(grupo);
+        const running=executandoGrupoExames?' running':'';
+        const disabled=executandoGrupoExames||e.completo;
+        const texto=e.completo?'Já incluído ✓':(executandoGrupoExames?'Preparando pacote...':'Incluir pacote completo');
+        return '<div class="examgroup-card'+running+'" data-i="'+i+'">'+
+          '<div class="examgroup-main">'+
+            '<div class="examgroup-name">'+esc(grupo.nome)+'</div>'+
+            '<div class="examgroup-desc">'+esc(grupo.descricao||'')+'</div>'+
+            '<div class="examgroup-count">Pacote único • '+e.total+' exames internos</div>'+ 
+          '</div>'+
+          '<button type="button" class="examgroup-use" '+(disabled?'disabled':'')+'>'+texto+'</button>'+
+        '</div>';
+      }).join('')+
+      '</div>';
+
+    qa('.examgroup-card',E.eg).forEach(card=>{
+      const grupo=gruposExamesPA[Number(card.dataset.i)];
+      const btn=q('.examgroup-use',card);
+      if(!grupo||!btn||btn.disabled) return;
+      btn.onclick=()=>selecionarGrupoExames(grupo);
+    });
+  }
+
+  // =============================================================
+  // LOTE NATIVO • SADT CLÍNICO PORTA (v2.2.1)
+  // =============================================================
+  // A versão anterior aguardava a inclusão individual de cada exame.
+  // Esta versão usa o HTML de linha que o *próprio Saúde Simples*
+  // declara no botão nativo + Incluir. Valida todos os exames
+  // antecipadamente, monta todas as linhas em memória e registra
+  // as linhas em uma única alteração de DOM (DocumentFragment).
+  // Não faz POST, não salva prontuário, não cria SADT externa.
+  //
+  // Regras de segurança: sem identificador nativo ou sem template
+  // nativo não inclui NENHUM exame; sem sucessos parciais ocultos.
+  // =============================================================
+  function templateNativoLinhaExame(){
+    const botao=botaoIncluirExame();
+    const js=botao?.getAttribute('onclick')||'';
+    if(!js.includes('add_prontuarios_exames_fields')){
+      throw new Error('O modelo nativo de exame não foi encontrado. Nada foi alterado.');
+    }
+
+    // Lê apenas o terceiro argumento literal do onclick nativo;
+    // NÃO executa texto do atributo, eval ou Function.
+    const inicio=js.indexOf('"<tr');
+    if(inicio<0){
+      throw new Error('O modelo de linha nativa mudou. Nada foi alterado.');
+    }
+    let html='';
+    let fechado=false;
+    for(let i=inicio+1;i<js.length;i++){
+      const c=js[i];
+      if(c==='"') { fechado=true; break; }
+      if(c!=='\\'){ html+=c; continue; }
+      i++;
+      const proximo=js[i];
+      if(proximo===undefined) break;
+      html+=proximo==='n'?'\n':proximo==='r'?'\r':proximo==='t'?'\t':proximo;
+    }
+    if(!fechado || !html.includes('new_prontuarios_exames') ||
+       !html.includes('prontuario-exame-row') || !html.includes('[exame_id]')){
+      throw new Error('Estrutura do exame incompatível com o lote. Nada foi alterado.');
+    }
+    return html;
+  }
+
+  // O Saúde Simples pode apresentar EXAMES com a tabela vazia ou sem
+  // <tbody> inicial. A versão anterior só procurava um tbody pronto e
+  // rejeitava um prontuário inteiramente novo (0 exames).
+  // O parâmetro criar é usado SOMENTE depois da validação de TODOS os
+  // procedimentos, evitando alterar a página em caso de falha na API.
+  function corpoTabelaNativaExames(form=null,criar=false){
+    const area=q('#prontuarios_exames');
+    const noFormulario=el=>!!el&&(!form||form.contains(el));
+    if(noFormulario(area)){
+      if(area.tagName==='TBODY') return area;
+      if(area.tagName==='TABLE'){
+        if(area.tBodies[0]) return area.tBodies[0];
+        return criar?area.createTBody():null;
+      }
+      const tb=q('tbody',area);
+      if(tb) return tb;
+      if(!criar) return null;
+      const tabela=document.createElement('table');
+      tabela.className='table table-striped om30-pa-lote-tabela';
+      const novo=document.createElement('tbody');
+      tabela.appendChild(novo);
+      area.appendChild(tabela);
+      return novo;
+    }
+    // Aceita uma tabela nativa já preenchida, desde que seja filha do
+    // formulário do prontuário (não do painel lateral ou de outro form).
+    const existente=qa('tr.prontuario-exame-row').find(r=>noFormulario(r));
+    if(existente?.parentElement?.tagName==='TBODY')return existente.parentElement;
+    if(!criar || !form) return null;
+
+    // Fallback: o Saúde Simples não criou o contêiner quando a lista
+    // estava vazia. Criamos a MESMA estrutura de linhas, dentro do form,
+    // sem clicar nove vezes no botão + Incluir e sem salvar a ficha.
+    const tabela=document.createElement('table');
+    tabela.id='om30-pa-lote-tabela';
+    tabela.className='table table-striped om30-pa-lote-tabela';
+    const tb=document.createElement('tbody');
+    if(!area) tb.id='prontuarios_exames';
+    tabela.appendChild(tb);
+    const incluir=botaoIncluirExame();
+    const referencia=incluir && form.contains(incluir)
+      ? (incluir.closest('#addFieldsButton')||incluir) : null;
+    if(referencia){
+      referencia.insertAdjacentElement('afterend',tabela);
+    }else{
+      // Inserção no formulário, nunca em área global fora dele.
+      form.appendChild(tabela);
+    }
+    return tb;
+  }
+
+  function montarLinhaExameDeTemplate(modelo,exame,chave,personalizacaoId){
+    // Nome e ID de cada nested attribute distintos para Rails aceitar
+    // os 9 exames no MESMO envio posterior do formulário.
+    const html=modelo.replace(/new_prontuarios_exames/g,chave);
+    const tabela=document.createElement('table');
+    const tbody=document.createElement('tbody');
+    tabela.appendChild(tbody);
+    tbody.innerHTML=html;
+    const row=tbody.querySelector('tr.prontuario-exame-row');
+    if(!row || tbody.children.length!==1){
+      throw new Error('Falha ao preparar linha nativa para '+exame.codigo+'.');
+    }
+    const campo=(suffix)=>q('input[name$="['+suffix+']"]',row);
+    const idExame=campo('exame_id');
+    const externo=campo('externo');
+    const codigo=campo('exame_token_codigo');
+    const nome=campo('exame_token_nome');
+    const pers=campo('personalizacao_prontuario_id');
+    const tokenExterno=campo('externo_token');
+    const destroy=campo('_destroy');
+    if(!idExame || !externo || !codigo || !nome || !pers || !destroy){
+      throw new Error('Campos nativos ausentes no exame '+exame.codigo+'.');
+    }
+    idExame.value=String(exame.id);
+    externo.value='false';
+    codigo.value=exame.codigo;
+    nome.value=exame.nome;
+    pers.value=personalizacaoId;
+    if(tokenExterno)tokenExterno.value='NÃO';
+    destroy.value='false';
+    row.dataset.om30Grupo='exames';
+    row.dataset.om30Codigo=exame.codigo;
+    row.dataset.om30Nome=exame.nome;
+    row.dataset.om30SadtLote='1';
+    return row;
+  }
+
+  async function selecionarGrupoExames(grupo){
+    if(executandoGrupoExames||tipo!=='exames')return;
+    executandoGrupoExames=true;
+    renderGruposExames();
+
+    let incluidos=0;
+    let existentes=0;
+    try{
+      const atual=new Set(selecionadosNativos('exames').map(x=>digits(x.codigo)));
+      const faltantes=grupo.codigos.filter(cd=>!atual.has(digits(cd)));
+      existentes=grupo.codigos.length-faltantes.length;
+      if(!faltantes.length){
+        status(grupo.nome+': todos os exames já estão no prontuário.','ok');
+        return;
+      }
+      // Pré-validar TODOS antes de inserir qualquer linha.
+      const modelo=templateNativoLinhaExame();
+      const campoPers=q('#exame_personalizacao_prontuario_id');
+      const personalizacaoId=clean(campoPers?.value||'');
+      const form=formProntuarioAtual() || q('#prontuario_exame_token')?.closest('form');
+      if(!form || !form.querySelector('#prontuario_exame_token')){
+        throw new Error('Formulário do prontuário ou campo nativo EXAMES não encontrado. Nenhum exame incluído.');
+      }
+      const corpoOriginal=corpoTabelaNativaExames(form,false);
+      if(tokenGet('#prontuario_exame_token').length){
+        throw new Error('Existe um exame em edição no campo nativo. Conclua ou limpe antes de aplicar o grupo.');
+      }
+      const interno=q('#prontuario_exame_externo_false');
+      if(!interno){
+        throw new Error('Opção Exame Interno não encontrada. Nenhum exame incluído.');
+      }
+
+      status('Preparando o pacote '+grupo.nome+' — nenhuma linha será incluída separadamente...');
+      const resultados=await Promise.all(faltantes.map(async codigo=>{
+        const regra=validarVigenciaSigtap(codigo);
+        if(!regra.ok)throw new Error(codigo+': '+regra.mensagem);
+        const xs=await buscar('exame',codigo);
+        const item=xs.find(x=>digits(code('exame',x))===digits(codigo));
+        if(!item || item.revogado===true){
+          throw new Error(codigo+' não está disponível como exame interno nesta tela.');
+        }
+        const id=String(item.id??'').trim();
+        if(!/^(?:\d+|[A-Za-z][A-Za-z0-9_:]*#\d+)$/.test(id)){
+          throw new Error(codigo+': ID nativo do exame inválido: '+id);
+        }
+        return {id,codigo,nome:name('exame',item)};
+      }));
+
+      // Repete a checagem após as consultas assíncronas: não sobrescreve
+      // mudanças que outro operador tenha feito durante a validação.
+      if(form!==formProntuarioAtual() && form!==q('#prontuario_exame_token')?.closest('form')){
+        throw new Error('O formulário foi substituído durante a validação. Nenhum exame incluído.');
+      }
+      if(corpoOriginal && (!corpoOriginal.isConnected ||
+         corpoOriginal!==corpoTabelaNativaExames(form,false))){
+        throw new Error('A tabela nativa foi alterada durante a consulta. Tente novamente.');
+      }
+      const jaNovos=new Set(selecionadosNativos('exames').map(x=>digits(x.codigo)));
+      const inserir=resultados.filter(x=>!jaNovos.has(x.codigo));
+      existentes=grupo.codigos.length-inserir.length;
+      if(!inserir.length){
+        status(grupo.nome+': todos já constam no prontuário.','ok');
+        return;
+      }
+
+      // Monta tudo fora da árvore DOM. Só no final anexa, uma vez.
+      const fragmento=document.createDocumentFragment();
+      const linhas=[];
+      const chaveBase='om30sadt'+Date.now().toString(36);
+      for(let i=0;i<inserir.length;i++){
+        const row=montarLinhaExameDeTemplate(
+          modelo,inserir[i],chaveBase+'_'+i,personalizacaoId
+        );
+        fragmento.appendChild(row);
+        linhas.push(row);
+      }
+      if(linhas.length!==inserir.length){
+        throw new Error('Não foi possível preparar o lote completo. Nenhum exame incluído.');
+      }
+
+      // O corpo pode não existir quando nenhum exame foi incluído ainda.
+      // Só o criamos após a preparação e validação completa do pacote.
+      const corpo=corpoTabelaNativaExames(form,true);
+      if(!corpo || !form.contains(corpo)){
+        throw new Error('Não foi possível preparar o destino nativo dos exames. Nenhum exame incluído.');
+      }
+      // Uma única alteração com as 9 linhas prontas, sem cliques de inclusão.
+      interno.checked=true;
+      interno.dispatchEvent(new Event('change',{bubbles:true}));
+      corpo.appendChild(fragmento);
+      incluidos=linhas.length;
+
+      if(linhas.some(r=>!r.isConnected || !r.querySelector('input[name$="[exame_id]"]')?.value)){
+        linhas.forEach(r=>r.remove());
+        incluidos=0;
+        throw new Error('O formulário rejeitou uma linha do lote; inclusão revertida.');
+      }
+      renderSelecionados();
+      try{window.OM30_PA_DUPLA_SADT?.sincronizar?.();}catch(ex){console.warn('[OM30 PA Dupla SADT] Sincronização:',ex);}
+      status(grupo.nome+': pacote completo de '+incluidos+' exames incluído no formulário'+
+        (existentes?' • '+existentes+' já existiam':'')+'. Revise antes de salvar.','ok');
+      console.info('[OM30 PA] Grupo de exames inserido em lote nativo:',{
+        grupo:grupo.nome, incluidos, existentes, codigos:inserir.map(x=>x.codigo)
+      });
+    }catch(e){
+      console.error('[OM30 PA] Lote de exames não concluído:',e);
+      status(e?.message||String(e),'err');
+    }finally{
+      executandoGrupoExames=false;
+      renderGruposExames();
+      renderFavs();
     }
   }
 
@@ -2176,6 +2516,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     E.rx.innerHTML='';
     E.mc.innerHTML='';
     renderSelecionados();
+    renderGruposExames();
     renderFavs();
     updatePlaceholder();
     if(tipo==='raiox') renderRX();
@@ -2218,11 +2559,12 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   launch.onclick=()=>{};
 
   atualizarBotaoLimparBusca();
+  renderGruposExames();
   renderFavs();
   renderRX();
   updatePlaceholder();
   status('');
-  console.info('[OM30 PA] v1.9.5 carregada para',UNIT);
+  console.info('[OM30 PA] v2.1.2 TESTE carregada para',UNIT,'• grupo SADT CLÍNICO PORTA integrado em Exames');
 })();
 }
 
@@ -2640,6 +2982,20 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       cloudFlowState.lastSource = source;
       cloudFlowState.lastSaudeStatus = Number(status || 0) || null;
       persistCloudFlowState();
+
+      // Fonte local de verdade para o painel de saída: só marca como encaminhado
+      // depois de o próprio Saúde Simples confirmar HTTP 2xx no POST real.
+      try {
+        sessionStorage.setItem('OM30_PA_ENCAMINHAMENTO_CONFIRMADO_V1', JSON.stringify({
+          prontuario: String(flow.prontuario || ''),
+          atendimento: String(flow.atendimento || ''),
+          status: Number(status || 0) || null,
+          em: Date.now()
+        }));
+        window.dispatchEvent(new CustomEvent('om30:controle-salas-confirmado', {
+          detail: { prontuario: String(flow.prontuario || ''), em: Date.now() }
+        }));
+      } catch (_) {}
 
       console.info(
         '[OM30 PA FLUXO] Saúde Simples confirmou o fluxo. Enviando ao Cloudflare.',
@@ -5994,3 +6350,1135 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   console.info('[OM30 PA TESTE] OM30 Procedimentos PA v2.0.0 carregado; favoritos pessoais por médico no om30-preferencias + fluxo real do Controle de Salas no om30-fluxo-ordens no Worker om30-fluxo-ordens + padrão da unidade + ocultação permanente por unidade/grupo/código + salvamento de favoritos 3s após a última alteração + edição sem piscar + vias filtradas + Salvar e Sair sempre bloqueado + revisão obrigatória + aviso estilo ChatGPT ao salvar sem retorno médico + popup de sucesso nativo preservado + observação sem traço + outras vias no editar; GitHub não foi alterado.');
 })();
 }
+
+/* ============================================================
+   OM30 • EXAMES EM DUPLO REGISTRO (TESTE LOCAL v2.2.1)
+   - QUALQUER exame da aba Exames: mantém INTERNO e acrescenta
+     procedimento a UMA solicitação SADT EXTERNA nativa.
+   - Radiografias (aba Raio X) não entram neste espelhamento.
+   - Não inventa documento, não assina, não envia HTTP POST.
+   - SADT externa só é submetida ao salvar o prontuário normalmente.
+   - Não remove nem sobrescreve SADTs lançadas manualmente.
+   - Nunca envia dados de pacientes a servidores externos.
+   ============================================================ */
+(() => {
+  'use strict';
+  if (!/^\/prontuarios\/(?:new|\d+(?:\/|$))/.test(location.pathname)) return;
+  if (window.__OM30_PA_DUAL_SADT_V220__) return;
+  window.__OM30_PA_DUAL_SADT_V220__ = true;
+
+  const TAG='[OM30 PA • Dupla SADT]';
+  const q=(s,r=document)=>r.querySelector(s);
+  const qa=(s,r=document)=>Array.from(r.querySelectorAll(s));
+  const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
+  const digits=v=>String(v??'').replace(/\D/g,'');
+  const sleep=t=>new Promise(resolve=>setTimeout(resolve,t));
+  const cache=new Map();
+  let autoPrefix='';
+  let busy=false;
+  let queued=false;
+  let timer=null;
+  let syncedSignature='';
+  let last={state:'idle',message:'Aguardando exames internos.',codes:[],quantity:0};
+
+  function formProntuario(){
+    return q('form#new_prontuario') || q('form[id^="new_prontuario"]') ||
+      qa('form').find(f=>/\/(?:prontuarios)(?:\?|$)/.test(f.getAttribute('action')||'')) || null;
+  }
+  function ativo(row){
+    if (!row) return false;
+    if (['1','true'].includes(clean(q('input[name$="[_destroy]"]',row)?.value).toLowerCase())) return false;
+    return getComputedStyle(row).display!=='none';
+  }
+  function codigoLinha(row){
+    const campos=[row?.dataset?.om30Codigo,q('.codigo_exame',row)?.value,
+      q('input[name*="[exame_token_codigo]"]',row)?.value];
+    for(const v of campos){ const d=digits(v); if(d.length===10)return d; }
+    for(const el of qa('input',row)){
+      const d=digits(el.value); if(d.length===10)return d;
+    }
+    return '';
+  }
+  function nomeLinha(row){
+    return clean(row?.dataset?.om30Nome || q('input[name*="[exame_token_nome]"]',row)?.value || q('.nome_exame',row)?.value || '');
+  }
+  function radioX(row){
+    const g=clean(row.dataset.om30Grupo).toLowerCase();
+    if(g==='raiox'||row.classList.contains('radiografia'))return true;
+    return /\bRADIOGRAFIA\b|RAIO\s*-?\s*X\b/i.test(nomeLinha(row));
+  }
+  function exames(){
+    const map=new Map();
+    for(const row of qa('tr.prontuario-exame-row')){
+      if(!ativo(row)||radioX(row))continue;
+      const codigo=codigoLinha(row);
+      if(!/^\d{10}$/.test(codigo))continue;
+      if(!map.has(codigo))map.set(codigo,{codigo,nome:nomeLinha(row)});
+    }
+    return Array.from(map.values());
+  }
+  function assinatura(items=exames()){
+    return items.map(x=>x.codigo).sort().join('|');
+  }
+  function campoExato(nome,root=document){
+    return qa('[name]',root).find(el=>el.getAttribute('name')===nome)||null;
+  }
+  function prefixosSadt(){
+    const re=/^(prontuario\[prontuariavel_attributes\]\[sadts_attributes\]\[[^\]]+\])\[municipe_id\]$/;
+    return [...new Set(qa('input[name*="[sadts_attributes]"][name$="[municipe_id]"]')
+      .map(el=>(el.name.match(re)||[])[1]).filter(Boolean))];
+  }
+  function prefixExiste(prefix){ return !!prefix&&!!campoExato(prefix+'[municipe_id]'); }
+  function marcarAtiva(prefix,ativar){
+    const d=campoExato(prefix+'[_destroy]');
+    if (!d) throw new Error('A SADT nativa está sem o campo de ativação.');
+    d.value=ativar?'false':'1';
+    d.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+  function limparCamposAuto(){qa('input[data-om30-dual-auto="item"]').forEach(el=>el.remove());}
+  function hidden(form,nome,valor){
+    const el=document.createElement('input'); el.type='hidden';el.name=nome;el.value=String(valor);
+    el.dataset.om30DualAuto='item';form.appendChild(el);return el;
+  }
+  function camposProcedimentos(prefix){
+    return qa('[name]').filter(el=>(el.name||'').startsWith(prefix+'[sadts_procedimentos_attributes]')&&el.name.endsWith('[exame_id_str]'));
+  }
+  function refsManuais(prefix){
+    return new Set(camposProcedimentos(prefix)
+      .filter(el=>el.dataset.om30DualAuto!=='item' && clean(el.value))
+      .filter(el=>{
+        const base=el.name.slice(0,-'[exame_id_str]'.length);
+        return !['1','true'].includes(clean(campoExato(base+'[_destroy]')?.value).toLowerCase());
+      })
+      .map(el=>clean(el.value)));
+  }
+  function desativarLinhasNativasEmBranco(prefix){
+    // O botão "Novo SADT" cria uma linha de procedimento vazia por padrão.
+    // Sem neutralizá-la, o backend pode recusar a solicitação como incompleta.
+    for(const el of camposProcedimentos(prefix)){
+      if(el.dataset.om30DualAuto==='item'||clean(el.value))continue;
+      const base=el.name.slice(0,-'[exame_id_str]'.length);
+      const destroy=campoExato(base+'[_destroy]');
+      if(!destroy)throw new Error('A linha vazia da SADT não tem campo de cancelamento nativo.');
+      destroy.value='1';
+      destroy.dispatchEvent(new Event('change',{bubbles:true}));
+    }
+  }
+  async function buscarCodigo(codigo){
+    if(cache.has(codigo))return cache.get(codigo);
+    const task=(async()=>{
+      const url='/procedimentos/search.json?exame=1&q='+encodeURIComponent(codigo);
+      const r=await fetch(url,{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json, text/javascript, */*; q=0.01','X-Requested-With':'XMLHttpRequest'}});
+      if(!r.ok)throw new Error('Consulta do exame '+codigo+' retornou HTTP '+r.status);
+      const data=await r.json();
+      const list=Array.isArray(data)?data:(Array.isArray(data?.results)?data.results:[]);
+      const item=list.find(x=>digits(x.codigo||x.codigo_externo).slice(0,10)===codigo);
+      if(!item)throw new Error('Exame '+codigo+' não encontrado na API nativa.');
+      const ref=clean(item.id??item.procedimento_id??'');
+      if(!/^(?:Procedimento#)?\d+$/.test(ref)){
+        throw new Error('ID de procedimento não reconhecido para '+codigo+'.');
+      }
+      return {codigo,ref:ref.startsWith('Procedimento#')?ref:'Procedimento#'+ref,nome:clean(item.nome||item.descricao)};
+    })();
+    cache.set(codigo,task);
+    try{return await task;}catch(e){cache.delete(codigo);throw e;}
+  }
+  async function esperar(cond,ms=3500){
+    const ini=Date.now();while(Date.now()-ini<ms){if(cond())return true;await sleep(60);}return !!cond();
+  }
+  async function garantirSadt(){
+    if(prefixExiste(autoPrefix))return autoPrefix;
+    // Recupera a identificação de uma SADT que o próprio script criou nesta página.
+    const anchor=q('input[data-om30-dual-created="1"]');
+    if(anchor){const m=(anchor.name||'').match(/^(.*)\[municipe_id\]$/);if(m&&prefixExiste(m[1]))return autoPrefix=m[1];}
+    const botao=q('a.adicionar-sadt,button.adicionar-sadt');
+    if(!botao)throw new Error('Botão nativo Novo SADT não está disponível neste prontuário.');
+    const antes=new Set(prefixosSadt());
+    botao.click();
+    const surgiu=await esperar(()=>prefixosSadt().some(p=>!antes.has(p)));
+    if(!surgiu)throw new Error('Não foi possível criar a solicitação SADT pela interface nativa.');
+    const prefix=prefixosSadt().find(p=>!antes.has(p));
+    const a=campoExato(prefix+'[municipe_id]');
+    if(!a)throw new Error('Estrutura da SADT não reconhecida.');
+    a.dataset.om30DualCreated='1';
+    autoPrefix=prefix;
+    return prefix;
+  }
+  function sinalizar(state,message,codes=[]){
+    last={state,message,codes:[...codes],quantity:codes.length};
+    const p=q('#om30pa');
+    if(!p)return;
+    let banner=q('#om30-dual-sadt-status',p);
+
+    // A sincronização é silenciosa. O sucesso pode ser consultado pelo
+    // diagnóstico OM30_PA_DUPLA_SADT.status(), sem avisos na aba Exames.
+    // Erros permanecem visíveis para não bloquear o salvamento sem explicação.
+    if(state!=='error'){
+      banner?.remove();
+      return;
+    }
+    if(!banner){
+      const target=q('.obody',p);
+      if(!target)return;
+      banner=document.createElement('div');
+      banner.id='om30-dual-sadt-status';
+      banner.setAttribute('role','alert');
+      banner.style.cssText='margin:4px 0;padding:7px 9px;background:#fff6f3;border:1px solid #e8b7b3;border-radius:7px;color:#8a241c;font:600 10px Segoe UI,Arial';
+      target.insertBefore(banner,target.firstChild);
+    }
+    banner.textContent='Erro na solicitação SADT: '+message;
+    banner.style.display=p.querySelector('.tab[data-t="exames"]')?.classList.contains('on')?'block':'none';
+  }
+  function agendar(delay=180){
+    clearTimeout(timer);
+    timer=setTimeout(()=>{void sincronizar();},delay);
+  }
+  async function sincronizar(){
+    if(busy){queued=true;return;}
+    busy=true;
+    try{
+      const form=formProntuario();
+      if(!form)return;
+      const current=exames();
+      const sig=assinatura(current);
+      if(!current.length){
+        limparCamposAuto();
+        if(prefixExiste(autoPrefix)) marcarAtiva(autoPrefix,false);
+        syncedSignature='';
+        sinalizar('idle','nenhum exame interno na aba Exames.');
+        return;
+      }
+      if(sig===syncedSignature && prefixExiste(autoPrefix)){
+        sinalizar('ready',current.length+' procedimento(s) sincronizado(s). Documento nativo disponível após salvar.',current.map(x=>x.codigo));
+        return;
+      }
+      sinalizar('busy','preparando '+current.length+' exame(s)...',current.map(x=>x.codigo));
+      // Consulta apenas a API do próprio Saúde Simples, antes de alterar qualquer solicitação.
+      const refs=await Promise.all(current.map(x=>buscarCodigo(x.codigo)));
+      if(sig!==assinatura()){
+        queued=true;return;
+      }
+      const prefix=await garantirSadt();
+      if(sig!==assinatura()){
+        queued=true;return;
+      }
+      if(form!==formProntuario())throw new Error('Formulário foi recarregado; tente novamente.');
+      desativarLinhasNativasEmBranco(prefix);
+      const manuais=refsManuais(prefix);
+      const children=[];
+      const baseIndex='om30dual'+Date.now().toString(36);
+      refs.forEach((ref,i)=>{
+        if(manuais.has(ref.ref))return;
+        const nome=prefix+'[sadts_procedimentos_attributes]['+baseIndex+'_'+i+']';
+        children.push([nome+'[exame_id_str]',ref.ref],[nome+'[quantidade]','1'],[nome+'[_destroy]','false']);
+      });
+      const saved=qa('input[data-om30-dual-auto="item"]');
+      const frag=document.createDocumentFragment();
+      for(const [nome,valor] of children){
+        const inp=document.createElement('input');inp.type='hidden';inp.name=nome;inp.value=valor;
+        inp.dataset.om30DualAuto='item';frag.appendChild(inp);
+      }
+      // Troca todos os procedimentos de uma única vez; preserva os campos manuais.
+      marcarAtiva(prefix,true);
+      form.appendChild(frag);
+      saved.forEach(el=>el.remove());
+      syncedSignature=sig;
+      sinalizar('ready',current.length+' procedimento(s) espelhado(s) em uma solicitação SADT nativa.',current.map(x=>x.codigo));
+    }catch(e){
+      syncedSignature='';
+      sinalizar('error',e?.message||String(e),exames().map(x=>x.codigo));
+      console.warn(TAG,'Falha ao preparar SADT externa:',e);
+    }finally{
+      busy=false;
+      if(queued){queued=false;agendar(60);}
+    }
+  }
+
+  function mutacaoEmExame(muts){
+    return muts.some(m=>{
+      const row=m.target?.nodeType===1?m.target.closest?.('tr.prontuario-exame-row'):null;
+      if(row)return true;
+      return [...m.addedNodes,...m.removedNodes].some(n=>n.nodeType===1&&
+        (n.matches?.('tr.prontuario-exame-row')||n.querySelector?.('tr.prontuario-exame-row')));
+    });
+  }
+  function registrar(){
+    const area=q('#prontuarios_exames')||q('tr.prontuario-exame-row')?.parentElement;
+    if(!area)return false;
+    const ob=new MutationObserver(m=>{if(mutacaoEmExame(m))agendar(120);});
+    ob.observe(area,{subtree:true,childList:true,attributes:true,attributeFilter:['style']});
+    document.addEventListener('change',e=>{
+      if(e.target?.closest?.('tr.prontuario-exame-row'))agendar(90);
+    },true);
+    document.addEventListener('click',e=>{
+      if(e.target.closest?.('#om30pa .tab')){
+        setTimeout(()=>sinalizar(last.state,last.message,last.codes),0);
+      }
+    },true);
+    const form=formProntuario();
+    if(form){
+      // Garantia: não deixar salvar um prontuário incompleto entre inclusão
+      // interna e preparação da SADT externa. O profissional pode aguardar
+      // a sinalização de conclusão ou verificar a mensagem de erro.
+      form.addEventListener('submit',e=>{
+        const xs=exames();
+        if(!xs.length)return;
+        if(busy||assinatura(xs)!==syncedSignature||last.state!=='ready'||!prefixExiste(autoPrefix)){
+          e.preventDefault(); e.stopImmediatePropagation();
+          sinalizar('error','Aguarde a preparação da SADT externa antes de salvar. Se houver erro, revise a mensagem e tente novamente.',xs.map(x=>x.codigo));
+          agendar(0);
+        }
+      },true);
+    }
+    agendar(200);
+    return true;
+  }
+  // Só inicializa se a tela nativa de exames estiver presente. Não há
+  // intercepção global de fetch/XHR nem timer recorrente permanente.
+  if(!registrar()){
+    const obs=new MutationObserver((_,observer)=>{if(registrar())observer.disconnect();});
+    obs.observe(document.documentElement,{childList:true,subtree:true});
+    setTimeout(()=>obs.disconnect(),15000);
+  }
+  window.OM30_PA_DUPLA_SADT={
+    sincronizar:()=>agendar(0),
+    status:()=>({...last}),
+    exames:()=>exames().map(x=>({codigo:x.codigo,nome:x.nome}))
+  };
+  console.info(TAG,'Teste universal de exames internos + solicitação SADT externa nativa carregado.');
+})();
+
+
+
+/* ============================================================
+   OM30 PA v2.2.15 TESTE • FINALIZAÇÃO + ESTADO REAL DO CONTROLE DE SALAS
+   ------------------------------------------------------------
+   - Um painel OM30 para a pergunta NATIVA de encaminhamento.
+   - 'Encaminhar' executa o SIM ORIGINAL do Saúde Simples.
+   - 'Assinar e encaminhar' usa o assinador NATIVO e só segue
+     se /listar_assinaveis confirmar que não há pendências.
+   - Assinatura de um clique: modal nativo fica visualmente recolhido
+     durante a operação. Em erro, reaparece para correção manual.
+   - Nenhum endpoint de escrita é criado pelo script.
+   - beforeunload apenas para saída involuntária com pendências;
+   - Navegações confirmadas pela interface OM30 têm bypass temporário.
+   - Nenhum popup de sucesso técnico ao encaminhar.
+   ============================================================ */
+(() => {
+  'use strict';
+  const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
+  if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
+  window.__OM30_PA_FLUXO_V229_TEST__ = true;
+  const V='2.2.18-test', novo=rota[1]==='new', id=novo?'':rota[1];
+  const TAG='[OM30 PA Fluxo]';
+  const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
+  const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];
+  const normal=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toUpperCase();
+  const esperar=ms=>new Promise(r=>setTimeout(r,ms));
+  const estado={assinatura:'ociosa',quantidade:0,ultimoErro:'',encaminhamento:'indefinido',modo:'',ultimoGET:null,rodando:false};
+  let painel=null,observador=null,checkPromise=null,modalOriginal=null,processoAssinatura=null,ignorarNativo=false,relatorioAtual=null,ultimoModalAcionado=null;
+  let alteracoesNaoSalvas=false;
+  let protegerFechamentoAte=0;
+  let bypassFechamentoAte=0;
+  let assinaturaPendenteConhecida=false;
+  let acompanhamentoEncaminhamento=null;
+  let pendenciaEncaminhamentoDesde=0;
+  const ENC_CONFIRM_KEY='OM30_PA_ENCAMINHAMENTO_CONFIRMADO_V1';
+  function encaminhamentoConfirmadoReal(){
+    if(novo||!id)return null;
+    try{
+      const r=JSON.parse(sessionStorage.getItem(ENC_CONFIRM_KEY)||'null');
+      if(!r||String(r.prontuario||'')!==String(id)||!(Number(r.status)>=200&&Number(r.status)<300))return null;
+      return r;
+    }catch(_){return null;}
+  }
+  window.addEventListener('om30:controle-salas-confirmado',e=>{
+    if(String(e?.detail?.prontuario||'')!==String(id))return;
+    estado.encaminhamento='processado_pela_interface';
+  });
+  function permitirNavegacao(ms=6500){bypassFechamentoAte=Date.now()+ms;}
+  function revogarNavegacao(){bypassFechamentoAte=0;}
+  function possuiPendenciaAntesDeFechar(){
+    if(Date.now()<bypassFechamentoAte)return false;
+    if(estado.rodando||alteracoesNaoSalvas||assinaturaPendenteConhecida)return true;
+    if(['aguardando','solicitado'].includes(estado.encaminhamento))return true;
+    if(painel||assinaturaVisivel(modalAssinatura()))return true;
+    return novo && Date.now()<protegerFechamentoAte;
+  }
+  // Navegadores só permitem o aviso PADRÃO ao fechar a aba/X ou atualizar.
+  // Nunca tenta criar uma caixa customizada dentro do beforeunload.
+  window.addEventListener('beforeunload',e=>{
+    if(!possuiPendenciaAntesDeFechar())return;
+    e.preventDefault();e.returnValue='';
+  });
+  // A edição real do prontuário deve avisar ao fechar a aba. Cliques simulados
+  // de assinatura e marcações no assinador não contam como edição.
+  function observarEdicao(e){
+    if(e.isTrusted===false || !e.target?.closest?.('form'))return;
+    if(e.target.closest('.modal,[role="dialog"],.ui-dialog,#om30-pa-fluxo-v229,#om30pa'))return;
+    const form=e.target.closest('form');
+    if(!/prontuario/i.test([form?.id,form?.getAttribute('action')].join(' ')))return;
+    alteracoesNaoSalvas=true;
+    protegerFechamentoAte=Date.now()+3600000;
+  }
+  document.addEventListener('input',observarEdicao,true);
+  document.addEventListener('change',observarEdicao,true);
+  // Ao submeter o prontuário, a navegação foi solicitada pelo profissional.
+  // O beforeunload deve proteger X/fechar/atualizar, não o botão Finalizar.
+  document.addEventListener('submit',e=>{
+    const f=e.target;
+    if(!f?.matches?.('form') || !/prontuario/i.test([f.id,f.getAttribute('action')].join(' ')))return;
+    permitirNavegacao(30000);
+  },false);
+  function ehFinalizacaoIntencional(b){
+    if(!b)return false;
+    const meta=normal([b.innerText,b.textContent,b.value,b.id,b.name,b.className,b.getAttribute('title'),b.getAttribute('aria-label')].filter(Boolean).join(' '));
+    return /SALVAR.*(?:REVISAR|SAIR|VOLTAR)|FINALIZAR|CONCLUIR.*ATENDIMENTO/.test(meta);
+  }
+  // Alguns layouts finalizam por JS e só navegam depois de validações/modais.
+  // Só libera se outro módulo não tiver bloqueado o clique.
+  document.addEventListener('click',e=>{
+    const b=e.target?.closest?.('button,a,input[type="submit"],input[type="button"]');
+    if(!b || b.closest('#om30-pa-fluxo-v229,.modal,.ui-dialog') || !ehFinalizacaoIntencional(b))return;
+    setTimeout(()=>{if(!e.defaultPrevented)permitirNavegacao(30000);},0);
+  },true);
+  const ignorarClickSaida=new WeakSet();
+  const CSS_ID='om30-pa-fluxo-v229-css';
+
+  function instalarEstilos(){
+    if(q('#'+CSS_ID))return;
+    const css=document.createElement('style');css.id=CSS_ID;
+    css.textContent=`
+      #om30-pa-fluxo-v229{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:18px;background:rgba(9,32,48,.51);backdrop-filter:blur(3px);font-family:Inter,'Segoe UI',Arial,sans-serif;color:#183c50;box-sizing:border-box;}
+      #om30-pa-fluxo-v229 *{box-sizing:border-box;}
+      #om30-pa-fluxo-v229 .om30-f-card{width:100%;max-width:484px;max-height:calc(100vh - 30px);overflow:auto;background:#fff;border:1px solid #dae6ed;border-radius:14px;box-shadow:0 18px 60px rgba(9,37,55,.27);}
+      #om30-pa-fluxo-v229 .om30-f-top{padding:22px 24px 13px;display:flex;align-items:flex-start;gap:12px;}
+      #om30-pa-fluxo-v229 .om30-f-ico{flex:0 0 39px;height:39px;width:39px;border-radius:11px;background:#e6f4f5;color:#087d88;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;}
+      #om30-pa-fluxo-v229 h2{font:750 20px/1.22 Inter,'Segoe UI',Arial,sans-serif;letter-spacing:-.4px;color:#163b4e;margin:3px 0 0;}
+      #om30-pa-fluxo-v229 .om30-f-conteudo{padding:5px 24px 21px;}
+      #om30-pa-fluxo-v229 .om30-f-resumo{font:500 12px/1.45 'Segoe UI',Arial,sans-serif;color:#5d7989;min-height:22px;display:grid;gap:6px;margin:0 0 14px 2px;}
+      #om30-pa-fluxo-v229 .om30-f-resumo:before{display:none;}
+      #om30-pa-fluxo-v229 .om30-f-resumo-item{display:flex;align-items:flex-start;gap:8px;}
+      #om30-pa-fluxo-v229 .om30-f-resumo-item:before{content:'';display:inline-block;width:7px;height:7px;margin-top:5px;border-radius:50%;background:#10a5a1;flex:0 0 7px;}
+      #om30-pa-fluxo-v229 .om30-f-resumo-item.alerta:before{background:#e59b24;}
+      #om30-pa-fluxo-v229 .om30-f-op{appearance:none;width:100%;text-align:left;cursor:pointer;border:1px solid #d9e7ed;border-radius:10px;background:#fff;padding:12px 14px;display:flex;align-items:center;gap:12px;transition:background .14s,border .14s,box-shadow .14s;margin:9px 0;color:#244359;}
+      #om30-pa-fluxo-v229 .om30-f-op:hover:not(:disabled){border-color:#65baba;background:#f6fcfc;box-shadow:0 2px 10px rgba(12,69,90,.06);}
+      #om30-pa-fluxo-v229 .om30-f-op:focus-visible,#om30-pa-fluxo-v229 .om30-f-link:focus-visible{outline:2px solid #119f9c;outline-offset:2px;}
+      #om30-pa-fluxo-v229 .om30-f-op:disabled{opacity:.5;cursor:not-allowed;}
+      #om30-pa-fluxo-v229 .om30-f-op.principal{background:#087f87;color:#fff;border-color:#087f87;}
+      #om30-pa-fluxo-v229 .om30-f-op.principal:hover:not(:disabled){background:#066f77;border-color:#066f77;}
+      #om30-pa-fluxo-v229 .om30-f-op.principal .om30-f-op-sub{color:#daf2f3;}
+      #om30-pa-fluxo-v229 .om30-f-op-ico{flex:0 0 34px;height:34px;display:grid;place-items:center;background:#edf6f7;border-radius:9px;color:#20727a;font-size:18px;}
+      #om30-pa-fluxo-v229 .principal .om30-f-op-ico{background:rgba(255,255,255,.15);color:#fff;}
+      #om30-pa-fluxo-v229 .om30-f-op-texto{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;}
+      #om30-pa-fluxo-v229 .om30-f-op-titulo{font:700 13px/1.35 Inter,'Segoe UI',Arial,sans-serif;}
+      #om30-pa-fluxo-v229 .om30-f-op-sub{font:400 11px/1.3 'Segoe UI',Arial,sans-serif;color:#668091;}
+      #om30-pa-fluxo-v229 .om30-f-arrow{font-size:21px;line-height:1;opacity:.7;}
+      #om30-pa-fluxo-v229 .om30-f-rodape{border-top:1px solid #e8eff2;margin-top:19px;padding-top:12px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;}
+      #om30-pa-fluxo-v229 .om30-f-link{border:0;background:none;color:#4d7183;font:600 12px 'Segoe UI',Arial,sans-serif;cursor:pointer;padding:7px 0;}
+      #om30-pa-fluxo-v229 .om30-f-link:hover{color:#087f87;text-decoration:underline;}
+      #om30-pa-fluxo-v229 .om30-f-link.danger{color:#b45357;}
+      #om30-pa-fluxo-v229 .om30-f-estado{margin:10px 0 0;padding:10px 11px;background:#edf6f9;color:#245d75;border:1px solid #d7eaf0;border-radius:8px;font-size:12px;line-height:1.45;display:none;white-space:pre-line;}
+      #om30-pa-fluxo-v229 .om30-f-estado.erro{background:#fff4ee;color:#874e33;border-color:#f2d5c1;}
+      #om30-pa-fluxo-v229 .om30-f-estado.sucesso{background:#eef9f4;color:#137150;border-color:#d2eddf;}
+      .om30-pa-native-oculto{opacity:0!important;pointer-events:none!important;}
+      body.om30-pa-painel-nativo .sweet-overlay{opacity:0!important;pointer-events:none!important;}
+      body.om30-pa-assinando .modal:has(#assinar_documentos),body.om30-pa-assinando .ui-dialog:has(#assinar_documentos){opacity:0!important;pointer-events:none!important;}
+      body.om30-pa-assinando .modal-backdrop{opacity:0!important;pointer-events:none!important;}
+      #om30-pa-toast-v229{position:fixed;right:22px;bottom:23px;z-index:2147482999;max-width:355px;display:flex;align-items:flex-start;gap:11px;background:#123d4c;color:#fff;border-radius:12px;padding:14px 17px;box-shadow:0 14px 37px rgba(13,49,67,.30);font:600 12px/1.55 'Segoe UI',Arial,sans-serif;}
+      #om30-pa-fluxo-v229 [hidden]{display:none!important;}
+      #om30-pa-toast-v229[hidden]{display:none!important;}
+      #om30-pa-toast-v229 .om30-t-simbolo{font-size:17px;color:#4cddd0;}
+      @media(max-width:540px){#om30-pa-fluxo-v229{padding:10px}#om30-pa-fluxo-v229 .om30-f-card{border-radius:12px}#om30-pa-fluxo-v229 .om30-f-top{padding:18px 17px 12px}#om30-pa-fluxo-v229 .om30-f-conteudo{padding:4px 17px 18px}#om30-pa-fluxo-v229 h2{font-size:18px}}
+    `;
+    document.head.appendChild(css);
+  }
+
+  function info(mensagem,tipo='info'){
+    const el=q('#om30-f-estado',painel);if(!el)return;
+    el.style.display='block';el.className='om30-f-estado'+(tipo==='erro'?' erro':tipo==='sucesso'?' sucesso':'');
+    el.textContent=mensagem;
+  }
+  function toast(msg,ms=4400){
+    instalarEstilos();let el=q('#om30-pa-toast-v229');
+    if(!el){el=document.createElement('div');el.id='om30-pa-toast-v229';document.body.appendChild(el);}
+    el.hidden=false;el.innerHTML='<span class="om30-t-simbolo">◈</span><span></span>';
+    el.querySelector('span:last-child').textContent=msg;
+    const seq=Date.now();el.dataset.seq=String(seq);
+    setTimeout(()=>{if(el.dataset.seq===String(seq))el.hidden=true;},ms);
+  }
+  function botoesAtivos(ativo){
+    qa('button[data-om30-acao]',painel).forEach(b=>b.disabled=!ativo);
+  }
+  function fecharPainel(reexibirNativo=false){
+    if(reexibirNativo && modalOriginal)ultimoModalAcionado=modalOriginal;
+    painel?.remove();painel=null;estado.modo='';
+    exibirNativo(); // nunca deixar o popup nativo oculto se o OM30 fechar
+  }
+  function encaminhamentoPendenteParaSaida(){
+    // Modal nativo visível é evidência atual de pendência e sempre vence cache.
+    if(modalDeEncaminhamento())return true;
+
+    // Se o POST real do Controle de Salas já foi confirmado pelo Saúde Simples
+    // para ESTE prontuário, não mostrar pendência falsa. Uma pendência detectada
+    // depois dessa confirmação continua válida até novo encaminhamento.
+    const confirmado=encaminhamentoConfirmadoReal();
+    const confirmadoEm=Number(confirmado?.em||0);
+    if(confirmado && (!pendenciaEncaminhamentoDesde || confirmadoEm>=pendenciaEncaminhamentoDesde)){
+      estado.encaminhamento='processado_pela_interface';
+      return false;
+    }
+    return ['aguardando','solicitado','dispensado'].includes(estado.encaminhamento);
+  }
+  function mostrarPainel(modo='encaminhamento'){
+    instalarEstilos();if(painel){estado.modo=modo;void exibirContagem();return painel;}
+    estado.modo=modo;
+    if(modo==='encaminhamento'){estado.encaminhamento='aguardando';if(!pendenciaEncaminhamentoDesde)pendenciaEncaminhamentoDesde=Date.now();}
+    protegerFechamentoAte=Date.now()+3600000;
+    painel=document.createElement('div');painel.id='om30-pa-fluxo-v229';
+    painel.innerHTML=`<section class="om30-f-card" role="dialog" aria-modal="true" aria-labelledby="om30-f-titulo" aria-describedby="om30-f-docs">
+      <header class="om30-f-top"><div class="om30-f-ico" aria-hidden="true">↗</div><div>
+      <h2 id="om30-f-titulo">${modo==='encaminhamento'?'Encaminhar ao Controle de Salas':'Antes de sair do prontuário'}</h2>
+      </div></header>
+      <div class="om30-f-conteudo">
+      <div class="om30-f-resumo" id="om30-f-docs"><span class="om30-f-resumo-item">Verificando assinaturas…</span></div>
+      <button type="button" class="om30-f-op principal" data-om30-acao="assinar"><span class="om30-f-op-ico" aria-hidden="true">✍</span><span class="om30-f-op-texto"><span class="om30-f-op-titulo" id="om30-f-op-assinar">${modo==='encaminhamento'?'Assinar digitalmente e encaminhar':'Assinar documentos pendentes'}</span><span class="om30-f-op-sub" id="om30-f-op-assinar-sub">${modo==='encaminhamento'?'Assinar todos os documentos antes de encaminhar':'Assinar todos os documentos disponíveis'}</span></span><span class="om30-f-arrow" aria-hidden="true">›</span></button>
+      <button type="button" class="om30-f-op" data-om30-acao="encaminhar"><span class="om30-f-op-ico" aria-hidden="true">➜</span><span class="om30-f-op-texto"><span class="om30-f-op-titulo" id="om30-f-op-encaminhar">Somente encaminhar ao Controle de Salas</span><span class="om30-f-op-sub" id="om30-f-op-encaminhar-sub">Prosseguir sem assinar agora</span></span><span class="om30-f-arrow" aria-hidden="true">›</span></button>
+      <div class="om30-f-estado" id="om30-f-estado" role="status" aria-live="polite"></div>
+      <div class="om30-f-rodape"><button type="button" class="om30-f-link" data-om30-acao="voltar" ${modo==='saida'?'':'hidden'}>Voltar ao prontuário</button><button type="button" class="om30-f-link danger" data-om30-acao="dispensar" ${modo==='encaminhamento'?'':'hidden'}>Não encaminhar</button><button type="button" class="om30-f-link danger" data-om30-acao="sair" ${modo==='saida'?'':'hidden'}>Sair mesmo assim</button></div></div>
+    </section>`;
+    document.body.appendChild(painel);
+    painel.addEventListener('click',e=>{
+      const b=e.target?.closest?.('button[data-om30-acao]');if(!b)return;
+      e.preventDefault();e.stopPropagation();
+      const acao=b.dataset.om30Acao;
+      if(estado.rodando)return;
+      if(acao==='voltar'){
+        const m=modalOriginal?.isConnected?modalOriginal:modalDeEncaminhamento();
+        if(m){void dispensarPeloNativo();return;}
+        fecharPainel(false);return;
+      }
+      if(acao==='dispensar'){void dispensarPeloNativo();return;}
+      if(acao==='sair'){void sairMesmoAssim();return;}
+      if(acao==='encaminhar'){void confirmarEncaminhamento();return;}
+      if(acao==='assinar'){void assinarPeloPainel();}
+    });
+    void exibirContagem();
+    q('button[data-om30-acao="assinar"]',painel)?.focus();
+    return painel;
+  }
+
+  function modalDeEncaminhamento(){
+    return qa('.swal2-popup,.swal-modal,.sweet-alert,.swal2-modal').find(m=>{
+      const texto=normal(m.textContent);
+      return /MUNICIPE POSSUI PENDENCIAS DE ENCAMINHAMENTOS/.test(texto) && /CONTROLE DE SALA/.test(texto) && !!m.getClientRects().length && window.getComputedStyle(m).display!=='none';
+    })||null;
+  }
+  function ocultarNativo(m){
+    if(!m)return;
+    modalOriginal=m;
+    if(!m.classList.contains('om30-pa-native-oculto'))m.classList.add('om30-pa-native-oculto');
+    const parent=m.closest('.swal2-container,.swal-overlay');
+    if(parent&&!parent.classList.contains('om30-pa-native-oculto'))parent.classList.add('om30-pa-native-oculto');
+    if(!document.body.classList.contains('om30-pa-painel-nativo'))document.body.classList.add('om30-pa-painel-nativo');
+  }
+  function exibirNativo(){
+    modalOriginal?.classList.remove('om30-pa-native-oculto');
+    modalOriginal?.closest('.swal2-container,.swal-overlay')?.classList.remove('om30-pa-native-oculto');
+    document.body.classList.remove('om30-pa-painel-nativo');
+    modalOriginal=null;
+  }
+  function botaoNativoSim(modal){
+    return qa('button,input[type="button"],a,[role="button"]',modal).find(b=>{
+      const t=normal(b.innerText||b.textContent||b.value||b.getAttribute('aria-label'));
+      return /^(SIM|CONFIRMAR|ENCAMINHAR)$/.test(t) && !b.disabled && !b.matches('[aria-disabled="true"],.disabled');
+    })||null;
+  }
+  function botaoNativoNao(modal){
+    return qa('button,input[type="button"],a,[role="button"]',modal).find(b=>{
+      const t=normal(b.innerText||b.textContent||b.value||b.getAttribute('aria-label'));
+      return /^(NAO|FECHAR|CANCELAR|IGNORAR|AGORA NAO|NAO ENCAMINHAR)$/.test(t) && !b.disabled;
+    })||null;
+  }
+  function executarNativo(tipo){
+    const modal=modalOriginal?.isConnected?modalOriginal:modalDeEncaminhamento();
+    const botao=modal && (tipo==='sim'?botaoNativoSim(modal):botaoNativoNao(modal));
+    if(!botao)return false;
+    ignorarNativo=true;
+    // A confirmação nativa pode navegar. Libera SOMENTE essa navegação temporária,
+    // sem desarmar a proteção para o X enquanto a confirmação está pendente.
+    if(tipo==='sim')permitirNavegacao(6500);
+    try{botao.click();ultimoModalAcionado=modal;estado.encaminhamento=tipo==='sim'?'solicitado':'dispensado';return true;}
+    catch(e){revogarNavegacao();console.warn(TAG,'Falha ao acionar controle nativo:',e);return false;}
+    finally{ignorarNativo=false;}
+  }
+  function nativoJaFechou(m){
+    if(!m?.isConnected)return true;
+    const c=m.closest('.swal2-container,.swal-overlay');
+    if(window.getComputedStyle(m).display==='none'||window.getComputedStyle(m).visibility==='hidden')return true;
+    if(c&&(window.getComputedStyle(c).display==='none'||window.getComputedStyle(c).visibility==='hidden'))return true;
+    if(m.getAttribute('aria-hidden')==='true'||m.classList.contains('swal2-hide'))return true;
+    return false;
+  }
+  async function aguardarFechamentoNativo(modal,limite=5500){
+    const ate=Date.now()+limite;
+    while(Date.now()<ate){
+      if(nativoJaFechou(modal))return true;
+      await esperar(140);
+    }
+    return nativoJaFechou(modal);
+  }
+  async function confirmarEncaminhamento(){
+    if(estado.rodando)return;
+    estado.rodando=true;botoesAtivos(false);
+    const modal=modalOriginal?.isConnected?modalOriginal:modalDeEncaminhamento();
+    if(!executarNativo('sim')){
+      estado.rodando=false;botoesAtivos(true);
+      info('Não foi possível iniciar o encaminhamento. Volte ao prontuário e tente novamente.','erro');return;
+    }
+    // Sem mensagem técnica de 'Sim enviado'. O painel apenas aguarda a
+    // pergunta original ser fechada pelo fluxo do próprio Saúde Simples.
+    const terminou=await aguardarFechamentoNativo(modal);
+    estado.rodando=false;
+    if(terminou){
+      estado.encaminhamento='processado_pela_interface';
+      fecharPainel(false);
+    }else{
+      revogarNavegacao();botoesAtivos(true);
+      info('O encaminhamento ainda não foi concluído. Confira a tela e tente novamente.','erro');
+    }
+  }
+  async function dispensarPeloNativo(){
+    if(!executarNativo('nao')){info('Não foi possível fechar a pergunta original. Volte ao prontuário para decidir.','erro');return;}
+    fecharPainel(false);
+  }
+  function modalAssinatura(){
+    const b=q('#assinar_documentos');
+    return b?.closest('.modal,[role="dialog"],.ui-dialog')||qa('.modal,[role="dialog"],.ui-dialog').find(m=>m.contains(b))||null;
+  }
+  function assinaturaVisivel(m){return !!m?.isConnected && !!m.getClientRects().length && window.getComputedStyle(m).display!=='none';}
+  function ehCheckboxMaster(cb){
+    const p=cb.closest('label,th,div.form-check,.form-group')||cb.parentElement;
+    const text=normal([cb.id,cb.name,cb.className,cb.getAttribute('aria-label'),p?.textContent].join(' '));
+    return /(?:SELECIONAR|MARCAR|ASSINALAR)\s+(?:TUDO|TODOS|TODAS)|TODOS\s+OS\s+DOCUMENTOS|SELECT[_\s-]*ALL|CHECK[_\s-]*ALL|\bTODOS\b/.test(text);
+  }
+  function documentosModal(m){
+    if(!m)return[];
+    const footer=q('.modal-footer,.ui-dialog-buttonpane',m);
+    return qa('input[type="checkbox"]',m).filter(cb=>{
+      if(cb.disabled||footer?.contains(cb)||ehCheckboxMaster(cb))return false;
+      const nome=normal([cb.id,cb.name,cb.className].join(' '));
+      if(/(TERMO|ACEITE|ACEITAR|CONSENTIMENTO|LGPD|CONCORDO)/.test(nome))return false;
+      const row=cb.closest('tr,li,label,.documento,.document-row,.form-check')||cb.parentElement;
+      return !/JA ASSINADO|ASSINADO DIGITALMENTE|ASSINATURA CONCLUIDA/.test(normal(row?.textContent));
+    });
+  }
+  function assinarHabilitado(b){return !!b?.isConnected&&!b.disabled&&!b.matches(':disabled,[aria-disabled="true"],.disabled');}
+  // v2.2.18: análise baseada na estrutura REAL capturada em 11/11/2026:
+  //   .documentos-assinaveis > tbody.documentos-container > tr > input[data-documento-id][data-documento-type]
+  //   botão #assinar_documentos[data-exibivel-nome-civil]
+  // Na 2.2.17 uma lista vazia virava 'unknown' (nunca 'clear'), por isso a
+  // confirmação jamais acontecia mesmo que a assinatura tivesse funcionado.
+  function identificarAssinaveis(html){
+    const vazio={state:'unknown',quantity:0,documentos:[],linhasSemControle:0,exigeNativo:false};
+    if(typeof html!=='string')return vazio;
+    let doc;
+    try{doc=new DOMParser().parseFromString(html,'text/html');}catch(_){return vazio;}
+    const documentos=extrairAssinaveisDiretos(html);
+    const btn=doc.querySelector('#assinar_documentos');
+    const exibivelNomeCivil=String(btn?.getAttribute('data-exibivel-nome-civil')||'').toLowerCase()==='true';
+    const exigeNativo=exibivelNomeCivil || documentos.some(d=>d.comprador);
+    if(documentos.length)return {state:'pending',quantity:documentos.length,documentos,linhasSemControle:0,exigeNativo};
+    const container=doc.querySelector('.documentos-assinaveis .documentos-container, tbody.documentos-container');
+    if(container){
+      // Tabela nativa presente e sem nenhum documento assinável.
+      const linhas=[...container.querySelectorAll('tr')].filter(tr=>normal(tr.textContent));
+      if(!linhas.length)return {state:'clear',quantity:0,documentos:[],linhasSemControle:0,exigeNativo:false};
+      // Há linhas mas nenhuma com checkbox: não sabemos o motivo, não chutar.
+      return {state:'unknown',quantity:0,documentos:[],linhasSemControle:linhas.length,exigeNativo:false};
+    }
+    const t=normal(doc.body?.textContent);
+    if(/NAO HA (DOCUMENTOS|ARQUIVOS).*ASSIN|NENHUM DOCUMENTO.*ASSIN|TODOS OS DOCUMENTOS.*ASSINAD/.test(t))return {state:'clear',quantity:0,documentos:[],linhasSemControle:0,exigeNativo:false};
+    return vazio;
+  }
+  async function consultarAssinaturas(){
+    if(novo)return {state:'unsaved',quantity:0};
+    if(checkPromise)return checkPromise;
+    checkPromise=(async()=>{
+      const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),7000);
+      try{
+        const resp=await fetch(`/prontuarios/${encodeURIComponent(id)}/listar_assinaveis`,{
+          method:'GET',credentials:'same-origin',cache:'no-store',signal:ctrl.signal,
+          headers:{'X-Requested-With':'XMLHttpRequest','Accept':'text/html, */*;q=0.01'}
+        });
+        if(!resp.ok)throw Error('HTTP '+resp.status);
+        if(resp.redirected)throw Error('Redirecionado (sessão expirada?)');
+        const status=identificarAssinaveis(await resp.text());
+        estado.ultimoGET={state:status.state,quantity:status.quantity,at:Date.now()};return status;
+      }catch(e){estado.ultimoGET={state:'unknown',error:String(e.message||e),at:Date.now()};return {state:'unknown',quantity:0};}
+      finally{clearTimeout(timer);}
+    })();
+    try{return await checkPromise;}finally{checkPromise=null;}
+  }
+  function botaoNativoAssinatura(){
+    return q('.exibir-modal-assinar-documentos.assinar-prontuario,.exibir-modal-assinar-documentos');
+  }
+  async function exibirContagem(){
+    const conteudo=painel;if(!conteudo)return;
+    const modoAtual=estado.modo;
+    const r=await consultarAssinaturas();
+    if(conteudo!==painel)return;
+    const assinaturaDisponivel=!!botaoNativoAssinatura();
+    const ignorarAssinaturaNaSaida=modoAtual==='saida' && !assinaturaDisponivel;
+    const encPendente=modoAtual==='encaminhamento' || (modoAtual==='saida' && encaminhamentoPendenteParaSaida());
+    const el=q('#om30-f-docs',conteudo);
+    if(el){
+      const itens=[];
+      if(r.state==='pending' && !ignorarAssinaturaNaSaida){
+        itens.push(`<span class="om30-f-resumo-item">${r.quantity} documento${r.quantity===1?'':'s'} pendente${r.quantity===1?'':'s'} de assinatura</span>`);
+        if(modoAtual==='encaminhamento' && !assinaturaDisponivel)itens.push('<span class="om30-f-resumo-item alerta">Assinatura digital não disponível para este usuário/perfil</span>');
+      }
+      else if(r.state==='unsaved' && !ignorarAssinaturaNaSaida)itens.push('<span class="om30-f-resumo-item alerta">Salve o prontuário para assinar os documentos</span>');
+      else if(r.state==='unknown' && !ignorarAssinaturaNaSaida)itens.push('<span class="om30-f-resumo-item alerta">Documentos pendentes de assinatura</span>');
+      if(encPendente)itens.push('<span class="om30-f-resumo-item alerta">Encaminhamento ao Controle de Salas pendente</span>');
+      if(!itens.length)itens.push('<span class="om30-f-resumo-item">Sem pendências identificadas</span>');
+      el.innerHTML=itens.join('');
+    }
+    if(r.state==='pending')assinaturaPendenteConhecida=!ignorarAssinaturaNaSaida;
+    if(r.state==='clear')assinaturaPendenteConhecida=false;
+
+    const bAssinar=q('button[data-om30-acao="assinar"]',conteudo);
+    const tAssinar=q('#om30-f-op-assinar',conteudo);
+    const sAssinar=q('#om30-f-op-assinar-sub',conteudo);
+    const bEnc=q('button[data-om30-acao="encaminhar"]',conteudo);
+    const tEnc=q('#om30-f-op-encaminhar',conteudo);
+    const sEnc=q('#om30-f-op-encaminhar-sub',conteudo);
+
+    if(modoAtual==='encaminhamento'){
+      if(tAssinar)tAssinar.textContent='Assinar digitalmente e encaminhar';
+      if(sAssinar)sAssinar.textContent='Assinar todos os documentos antes de encaminhar';
+      if(bEnc)bEnc.hidden=false;
+      if(tEnc)tEnc.textContent='Somente encaminhar ao Controle de Salas';
+      if(sEnc)sEnc.textContent='Prosseguir sem assinar agora';
+    }else{
+      if(encPendente && !ignorarAssinaturaNaSaida && r.state!=='clear'){
+        if(tAssinar)tAssinar.textContent='Assinar documentos e encaminhar';
+        if(sAssinar)sAssinar.textContent='Resolver as duas pendências antes de sair';
+      }else{
+        if(tAssinar)tAssinar.textContent='Assinar documentos pendentes';
+        if(sAssinar)sAssinar.textContent='Assinar todos os documentos disponíveis';
+      }
+      if(bEnc)bEnc.hidden=!encPendente;
+      if(encPendente){
+        if(ignorarAssinaturaNaSaida){
+          if(tEnc)tEnc.textContent='Encaminhar ao Controle de Salas';
+          if(sEnc)sEnc.textContent='Concluir o encaminhamento antes de sair';
+        }else{
+          if(tEnc)tEnc.textContent=r.state==='clear'?'Encaminhar ao Controle de Salas':'Somente encaminhar ao Controle de Salas';
+          if(sEnc)sEnc.textContent=r.state==='clear'?'Concluir o encaminhamento antes de sair':'Prosseguir sem assinar agora';
+        }
+      }
+    }
+
+    if(r.state==='pending' && !assinaturaDisponivel && modoAtual==='encaminhamento'){
+      if(tAssinar)tAssinar.textContent='Assinatura digital indisponível';
+      if(sAssinar)sAssinar.textContent='Este usuário não possui a ação de assinatura nesta tela';
+      if(encPendente && sEnc)sEnc.textContent='Encaminhar ao Controle de Salas sem assinatura digital';
+    }
+
+    if(bAssinar){
+      if(ignorarAssinaturaNaSaida){
+        bAssinar.disabled=true;
+        bAssinar.style.setProperty('display','none','important');
+      }else{
+        bAssinar.style.removeProperty('display');
+        bAssinar.disabled=false;bAssinar.title='';
+        if(novo){bAssinar.disabled=true;bAssinar.title='Salve o prontuário antes de assinar digitalmente.';}
+        else if(r.state==='clear'){bAssinar.disabled=true;bAssinar.title='Não há documentos pendentes para assinatura.';}
+        else if(r.state==='pending' && !assinaturaDisponivel){bAssinar.disabled=true;bAssinar.title='A assinatura digital não está disponível para este usuário/perfil nesta tela.';}
+      }
+    }
+    if(bEnc){
+      bEnc.disabled=!encPendente;
+      if(!encPendente)bEnc.title='Não há encaminhamento pendente.';
+      else bEnc.title='';
+      if(encPendente && (ignorarAssinaturaNaSaida || r.state==='clear' || (r.state==='pending' && !assinaturaDisponivel))){
+        bEnc.classList.add('principal');
+      }else{
+        bEnc.classList.remove('principal');
+      }
+    }
+    // A verificação indisponível não gera um aviso técnico no painel.
+  }
+  async function confirmarAssinaturaNaOrigem(){
+    for(let tentativa=0;tentativa<7;tentativa++){
+      await esperar(tentativa===0?1200:1250);
+      const r=await consultarAssinaturas();
+      if(r.state==='clear')return {ok:true,estado:r};
+    }
+    return {ok:false,motivo:'O Saúde Simples não confirmou que todos os documentos foram assinados.',estado:estado.ultimoGET};
+  }
+  function modalAssinaturaRobusto(){
+    // O Saúde Simples já apresentou mais de uma estrutura para este modal.
+    // Primeiro procuramos um diálogo VISÍVEL cujo conteúdo seja claramente o assinador.
+    const dialogs=qa('.modal,[role="dialog"],.ui-dialog,.modal-dialog').filter(m=>{
+      if(!m?.isConnected||!m.getClientRects().length)return false;
+      const cs=window.getComputedStyle(m);
+      if(cs.display==='none'||cs.visibility==='hidden')return false;
+      const t=normal(m.textContent||'');
+      return /ASSINAR DOCUMENTOS/.test(t) || (!!q('#assinar_documentos',m) && /SELECIONAR TUDO|ASSINAR\?/.test(t));
+    });
+    if(dialogs.length)return dialogs[dialogs.length-1];
+    const botoes=qa('#assinar_documentos');
+    for(const b of botoes){
+      const m=b.closest('.modal,[role="dialog"],.ui-dialog,.modal-dialog')||qa('.modal,[role="dialog"],.ui-dialog,.modal-dialog').find(x=>x.contains(b));
+      if(m&&m.isConnected&&m.getClientRects().length)return m;
+    }
+    return modalAssinatura();
+  }
+  function textoControle(el){
+    return normal([el?.innerText,el?.textContent,el?.value,el?.id,el?.name,el?.className,el?.getAttribute?.('aria-label'),el?.getAttribute?.('title')].filter(Boolean).join(' '));
+  }
+  function controleSelecionarTudo(m){
+    if(!m)return null;
+    // Prefere o elemento cujo texto é exatamente "Selecionar tudo".
+    const candidatos=qa('label,button,a,[role="button"],[role="checkbox"],input[type="checkbox"],input[type="radio"],span,div',m);
+    let alvo=candidatos.find(el=>/^SELECIONAR\s+TUDO$/.test(textoControle(el)));
+    if(!alvo)alvo=candidatos.find(el=>/SELECIONAR\s+(?:TUDO|TODOS)|MARCAR\s+(?:TUDO|TODOS)|ASSINALAR\s+(?:TUDO|TODOS)/.test(textoControle(el)));
+    if(!alvo)return null;
+    // Quando o texto está num span/div, sobe até o controle clicável mais próximo.
+    return alvo.closest?.('label,button,a,[role="button"],[role="checkbox"]') || alvo;
+  }
+  function controleMarcado(el){
+    if(!el)return false;
+    if(el.matches?.('input[type="checkbox"],input[type="radio"]'))return !!el.checked;
+    const aria=String(el.getAttribute?.('aria-checked')||'').toLowerCase();
+    if(aria==='true')return true;
+    return /(?:^|\s)(?:checked|active|selected|on)(?:\s|$)/i.test(String(el.className||''));
+  }
+  function clicarControle(el){
+    if(!el||!el.isConnected)return false;
+    try{
+      if(el.matches?.('input[type="checkbox"],input[type="radio"]')){
+        if(!el.checked)el.click();
+      }else el.click();
+      return true;
+    }catch(_){return false;}
+  }
+  function controlesDocumentoRobustos(m){
+    if(!m)return[];
+    const todos=qa('input[type="checkbox"],input[type="radio"],[role="checkbox"]',m);
+    const master=controleSelecionarTudo(m);
+    return todos.filter(el=>{
+      if(el===master || master?.contains?.(el) || el.disabled)return false;
+      const campo=textoControle(el);
+      if(/TERMO|ACEITE|ACEITAR|CONSENTIMENTO|LGPD|CONCORDO/.test(campo))return false;
+      const row=el.closest('tr,li,label,.documento,.document-row,.form-check,.row')||el.parentElement;
+      const t=normal(row?.textContent||'');
+      if(/JA ASSINADO|ASSINADO DIGITALMENTE|ASSINATURA CONCLUIDA/.test(t))return false;
+      // Linhas reais do assinador costumam trazer o documento e/ou a coluna Assinar?.
+      return /ASSINAR\?|FOLHA DE ATENDIMENTO|GUIA SADT|DOCUMENTO|ATESTADO|RECEITA|DECLARACAO|RELATORIO|ENCAMINHAMENTO/.test(t) || !t;
+    });
+  }
+  function botaoAssinarRobusto(m){
+    const porId=(m&&q('#assinar_documentos',m))||q('#assinar_documentos');
+    if(porId)return porId;
+    return qa('button,input[type="button"],input[type="submit"],a,[role="button"]',m||document).find(b=>/^ASSINAR$/.test(textoControle(b)))||null;
+  }
+  function botaoAssinaturaPronto(btn,{controles=[],masterUsado=false}={}){
+    if(!btn?.isConnected||btn.disabled||btn.matches?.(':disabled,[aria-disabled="true"],.disabled'))return false;
+    // Evidência forte do layout do Saúde Simples: antes da seleção o botão é
+    // "btn float-right"; após a seleção ganha "btn-primary".
+    if(btn.classList?.contains('btn-primary'))return true;
+    // Outros layouts podem não alternar classe; neste caso exigimos seleção real.
+    if(controles.length && controles.every(controleMarcado))return true;
+    // Se só existe o "Selecionar tudo", não clicar no Assinar até o próprio
+    // Saúde Simples sinalizar que o botão ficou ativo.
+    if(masterUsado)return false;
+    return false;
+  }
+  async function confirmarAssinaturaNaOrigemRapido(esperados=0){
+    // Dá tempo para o assinador disparar as assinaturas individuais e então
+    // consulta a fonte nativa até ela confirmar que zerou a lista.
+    for(let tentativa=0;tentativa<9;tentativa++){
+      await esperar(tentativa===0?900:900);
+      const r=await consultarAssinaturas();
+      if(r.state==='clear')return {ok:true,estado:r};
+      if(r.state==='pending' && esperados && Number(r.quantity)<esperados)continue;
+    }
+    return {ok:false,motivo:'O Saúde Simples ainda não confirmou a assinatura de todos os documentos.',estado:estado.ultimoGET};
+  }
+  function extrairAssinaveisDiretos(html){
+    const bruto=String(html||'');
+    const unicos=new Map();
+    try{
+      const doc=new DOMParser().parseFromString(bruto,'text/html');
+      for(const el of doc.querySelectorAll('[data-documento-id][data-documento-type]')){
+        const documentoId=String(el.getAttribute('data-documento-id')||'').replace(/\D/g,'');
+        const documentoType=String(el.getAttribute('data-documento-type')||'').trim();
+        if(!documentoId||!documentoType)continue;
+        const comprador=String(el.getAttribute('data-verificar-exibicao-comprador')||'').toLowerCase()==='true';
+        unicos.set(`${documentoType}:${documentoId}`,{id:documentoId,type:documentoType,comprador});
+      }
+    }catch(_){}
+    // Fallback para respostas HTML/JS escapadas.
+    const pares=[
+      /data-documento-id=["']?(\d+)["']?[^>\n]{0,320}?data-documento-type=["']([^"']+)["']/gi,
+      /data-documento-type=["']([^"']+)["'][^>\n]{0,320}?data-documento-id=["']?(\d+)["']?/gi
+    ];
+    for(const m of bruto.matchAll(pares[0])){const k=`${m[2]}:${m[1]}`;if(!unicos.has(k))unicos.set(k,{id:m[1],type:m[2],comprador:false});}
+    for(const m of bruto.matchAll(pares[1])){const k=`${m[1]}:${m[2]}`;if(!unicos.has(k))unicos.set(k,{id:m[2],type:m[1],comprador:false});}
+    return [...unicos.values()];
+  }
+  async function listarAssinaveisDireto(){
+    const r=await fetch(`/prontuarios/${encodeURIComponent(id)}/listar_assinaveis`,{
+      method:'GET',credentials:'same-origin',cache:'no-store',
+      headers:{'X-Requested-With':'XMLHttpRequest','Accept':'text/html, */*;q=0.01'}
+    });
+    if(!r.ok)throw new Error(`Não foi possível consultar os documentos para assinatura (HTTP ${r.status}).`);
+    if(r.redirected)throw new Error('A consulta de documentos foi redirecionada (sessão expirada?). Recarregue a página.');
+    const html=await r.text();
+    const analise=identificarAssinaveis(html);
+    return {html,documentos:analise.documentos,analise};
+  }
+  function csrfToken(){
+    return q('meta[name="csrf-token"]')?.getAttribute('content')||'';
+  }
+  // Resposta capturada em 11/11/2026 (HTTP 200, text/javascript): wrapper
+  // CoffeeScript vazio "(function(){ }).call(this);". ATENÇÃO: a conta usada na
+  // captura NÃO conseguia assinar (dava erro), então isso NÃO é o padrão de
+  // sucesso. O formato da resposta não decide nada: só a lista decide.
+  function respostaAssinaturaVazia(js){
+    const sem=String(js||'')
+      .replace(/^\s*\(function\s*\(\)\s*\{/,'')
+      .replace(/\}\)\.call\(this\);?\s*$/,'');
+    return !sem.trim();
+  }
+  // Mesma chamada que o assinador nativo (getAssinarDocumentos) faz, UMA vez
+  // por documento. O nativo chegou a disparar 4 GETs iguais para 1 documento
+  // (handler duplicado); aqui é sempre exatamente 1.
+  // A resposta NÃO é executada com eval. Só HTTP de erro ou redirecionamento
+  // (sessão expirada) interrompem; o resto é registrado no console para
+  // diagnóstico e quem decide se assinou é listar_assinaveis.
+  async function assinarDocumentoDireto(doc){
+    const params=new URLSearchParams({
+      id:String(doc.id),
+      type:String(doc.type),
+      paginaAtual:'',
+      exibirNomeCivil:'false',
+      exibirInformacoesComprador:'false'
+    });
+    const url=`/ferramentas/documentos/assinaturas/assinar_documento?${params.toString()}`;
+    const headers={'X-Requested-With':'XMLHttpRequest','Accept':'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01'};
+    const token=csrfToken();if(token)headers['X-CSRF-Token']=token;
+    const r=await fetch(url,{method:'GET',credentials:'same-origin',cache:'no-store',headers});
+    const corpo=await r.text();
+    if(!r.ok)throw new Error(`O Saúde Simples recusou a assinatura (HTTP ${r.status}).`);
+    if(r.redirected)throw new Error('A assinatura foi redirecionada (sessão expirada?). Nada foi confirmado.');
+    const tipo=String(r.headers.get('content-type')||'');
+    const vazia=respostaAssinaturaVazia(corpo);
+    estado.ultimaRespostaAssinador={status:r.status,tipo,vazia,tamanho:corpo.length};
+    // Só o formato (sem conteúdo clínico) vai ao console.
+    console.info(TAG,'Resposta do assinador:',{status:r.status,tipo,vazia,tamanho:corpo.length});
+    return true;
+  }
+  // Confirmação real: cada documento enviado precisa SUMIR de listar_assinaveis.
+  // HTTP 200 sozinho não é considerado sucesso.
+  async function confirmarDocumentosAssinados(enviados){
+    const chaves=new Set(enviados.map(d=>`${d.type}:${d.id}`));
+    let ultimo={restantes:enviados.length,novos:0,state:'unknown'};
+    for(let tentativa=0;tentativa<6;tentativa++){
+      await esperar(tentativa===0?700:1100);
+      let lista;
+      try{lista=await listarAssinaveisDireto();}
+      catch(e){ultimo={...ultimo,erro:String(e?.message||e)};continue;}
+      const restantes=lista.documentos.filter(d=>chaves.has(`${d.type}:${d.id}`)).length;
+      const novos=lista.documentos.length-restantes;
+      ultimo={restantes,novos,state:lista.analise.state};
+      estado.ultimoGET={state:lista.analise.state,quantity:lista.analise.quantity,at:Date.now()};
+      if(lista.analise.state==='unknown')continue;
+      if(restantes===0)return {ok:true,confirmados:enviados.length,novosPendentes:novos};
+    }
+    const motivo=ultimo.erro
+      ? `Não foi possível reconsultar a lista de documentos (${ultimo.erro}). Assinatura NÃO confirmada.`
+      : `O Saúde Simples respondeu, mas ${ultimo.restantes} de ${enviados.length} documento(s) continuam na lista de pendentes. Assinatura NÃO confirmada.`;
+    return {ok:false,motivo,detalhe:ultimo};
+  }
+  async function executarAssinaturaUnica({limite=Infinity}={}){
+    if(processoAssinatura)return processoAssinatura;
+    processoAssinatura=(async()=>{
+      const inicial=await listarAssinaveisDireto();
+      if(inicial.analise.state==='unknown'){
+        estado.assinatura='falhou';
+        return {ok:false,motivo:'Não reconheci a lista de documentos do Saúde Simples. Use o botão nativo "Assinar Digitalmente".'};
+      }
+      if(inicial.analise.exigeNativo){
+        // Nome civil / dados do comprador exigem pergunta ao munícipe: o OM30
+        // não decide isso pelo profissional.
+        estado.assinatura='requer_nativo';
+        return {ok:false,requerNativo:true,motivo:'Há documento que exige pergunta ao munícipe (nome civil ou dados do comprador). Assine pelo botão nativo "Assinar Digitalmente".'};
+      }
+      const documentos=inicial.documentos.slice(0,limite);
+      estado.quantidade=documentos.length;
+      if(!documentos.length){
+        estado.assinatura='confirmada';
+        assinaturaPendenteConhecida=false;
+        return {ok:true,quantidade:0,confirmados:0,novosPendentes:0};
+      }
+
+      estado.assinatura='enviando';
+      const enviados=[];
+      for(let i=0;i<documentos.length;i++){
+        const doc=documentos[i];
+        if(painel)info(`Assinando documentos… ${i+1} de ${documentos.length}`);
+        try{
+          await assinarDocumentoDireto(doc);
+          enviados.push(doc);
+        }catch(e){
+          estado.assinatura='falhou';
+          console.warn(TAG,'Falha na assinatura direta (documento',i+1,'de',documentos.length+'):',String(e?.message||e));
+          // Mesmo com erro, confere o que já foi enviado para não mentir.
+          const parcial=enviados.length?await confirmarDocumentosAssinados(enviados):null;
+          const extra=parcial?.ok?` ${enviados.length} documento(s) anteriores foram confirmados.`:'';
+          return {ok:false,motivo:String(e?.message||e)+extra};
+        }
+        await esperar(250);
+      }
+
+      if(painel)info('Conferindo no Saúde Simples se os documentos ficaram assinados…');
+      const confirma=await confirmarDocumentosAssinados(enviados);
+      estado.assinatura=confirma.ok?'confirmada':'nao_confirmada';
+      if(confirma.ok)assinaturaPendenteConhecida=confirma.novosPendentes>0;
+      return {...confirma,quantidade:documentos.length};
+    })();
+    try{return await processoAssinatura;}
+    catch(e){estado.assinatura='falhou';return{ok:false,motivo:String(e?.message||e)};}
+    finally{processoAssinatura=null;}
+  }
+  async function iniciarAssinatura({retomarEncaminhamento=false,abrirModal=true}={}){
+    if(estado.rodando)return;
+    estado.rodando=true;
+    document.body.classList.add('om30-pa-assinando');
+    if(painel){botoesAtivos(false);info('Assinando todos os documentos pendentes…');}
+    else toast('Assinando todos os documentos pendentes…',9000);
+    try{
+      const result=await executarAssinaturaUnica();
+      if(!result.ok)throw Error(result.motivo);
+      document.body.classList.remove('om30-pa-assinando');
+      if(result.novosPendentes>0){
+        // Os enviados foram confirmados, mas surgiram outros documentos.
+        assinaturaPendenteConhecida=true;
+        info(`${result.confirmados} documento(s) assinados e confirmados. Ainda há ${result.novosPendentes} novo(s) documento(s) pendente(s).`,'erro');
+        void exibirContagem();
+        return;
+      }
+      assinaturaPendenteConhecida=false;
+      if(retomarEncaminhamento){
+        // Assinatura confirmada: só agora aciona o encaminhamento nativo.
+        // Sem painel extra de sucesso e sem relatar conclusão sem retorno real.
+        estado.rodando=false;
+        await confirmarEncaminhamento();
+      }else{
+        toast(result.confirmados?`${result.confirmados} documento(s) assinados — confirmado na lista do Saúde Simples.`:'Nenhum documento pendente de assinatura.',5200);
+        fecharPainel(!!modalOriginal);
+      }
+    }catch(e){
+      estado.ultimoErro=String(e.message||e);
+      console.warn(TAG,'Assinatura não concluída/confirmada:',estado.ultimoErro);
+      document.body.classList.remove('om30-pa-assinando');
+      const msg=`${estado.ultimoErro}${retomarEncaminhamento?'\nO encaminhamento não será feito até a assinatura ser confirmada.':''}`;
+      if(painel)info(msg,'erro');else toast(msg,9000);
+      void exibirContagem();
+    }finally{estado.rodando=false;botoesAtivos(true);}
+  }
+  async function assinarPeloPainel(){
+    if(novo){info('É necessário salvar o prontuário para assinar os arquivos.','erro');return;}
+    const deveEncaminhar=estado.modo==='encaminhamento' || (estado.modo==='saida' && encaminhamentoPendenteParaSaida());
+    void iniciarAssinatura({retomarEncaminhamento:deveEncaminhar});
+  }
+  function deixarPainelVisivelNoEncaminhamento(){
+    if(ignorarNativo||estado.rodando)return;
+    const m=modalDeEncaminhamento();
+    if(!m){ ultimoModalAcionado=null;return; } // nova exibição nativa poderá abrir novamente
+    if(m===ultimoModalAcionado)return; // o mesmo popup já recebeu Sim/Fechar
+    if(painel&&estado.modo==='encaminhamento'){ocultarNativo(m);return;}
+    if(painel&&estado.modo!=='encaminhamento')fecharPainel(false);
+    ocultarNativo(m);
+    estado.encaminhamento='aguardando';
+    pendenciaEncaminhamentoDesde=Date.now();
+    mostrarPainel('encaminhamento');
+  }
+  // Exame das alterações de popup do próprio site, sem timer eterno e sem
+  // disparar qualquer requisição na observação.
+  let agendado=false;
+  observador=new MutationObserver(()=>{
+    if(agendado)return;agendado=true;
+    queueMicrotask(()=>{agendado=false;deixarPainelVisivelNoEncaminhamento();});
+  });
+  observador.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','aria-hidden']});
+  deixarPainelVisivelNoEncaminhamento();
+
+  // v2.2.18: o botão nativo 'Assinar Digitalmente' volta a ser 100% nativo
+  // (abre o modal do Saúde Simples, o profissional escolhe e confirma).
+  // A 2.2.17 sequestrava esse clique e assinava tudo sem confirmação.
+  // A assinatura OM30 só acontece por clique explícito no painel OM30.
+
+  async function sairMesmoAssim(){
+    // Não força submissão: apenas deixa a decisão explícita do usuário
+    // passar pelo controle original que foi interceptado.
+    const el=relatorioAtual?.botao;
+    permitirNavegacao(6500);
+    fecharPainel(true);
+    if(el?.isConnected){ignorarClickSaida.add(el);try{el.click();}finally{ignorarClickSaida.delete(el);}}
+  }
+  function ehSaida(el){
+    if(!el||el.disabled||el.closest('#om30-pa-fluxo-v229,#om30pa,.modal,.ui-dialog,[role="dialog"]'))return false;
+    const t=normal(el.innerText||el.value||el.getAttribute('aria-label')||el.title);
+    return /^(SAIR|VOLTAR|SAIR DO PRONTUARIO|VOLTAR PARA (?:FILA|LISTA)|FECHAR PRONTUARIO)$/.test(t);
+  }
+  document.addEventListener('click',async e=>{
+    const btn=e.target?.closest?.('button,a,input[type="submit"],input[type="button"],[role="button"]');
+    if(!btn||ignorarClickSaida.has(btn)||!ehSaida(btn)||painel||modalDeEncaminhamento())return;
+    if(novo){
+      if(!alteracoesNaoSalvas && estado.encaminhamento!=='aguardando')return;
+      e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+      relatorioAtual={botao:btn};mostrarPainel('saida');return;
+    }
+    e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+    const r=await consultarAssinaturas();
+    const encPendente=encaminhamentoPendenteParaSaida();
+    const assinaturaDisponivel=!!botaoNativoAssinatura();
+    // Regra isolada: perfil sem ação de assinatura não recebe pendência de
+    // assinatura ao sair. O restante do fluxo permanece idêntico à v2.2.11.
+    if(!assinaturaDisponivel && !encPendente){
+      assinaturaPendenteConhecida=false;
+      ignorarClickSaida.add(btn);try{btn.click();}finally{ignorarClickSaida.delete(btn);}return;
+    }
+    if(r.state==='clear' && !encPendente){ignorarClickSaida.add(btn);try{btn.click();}finally{ignorarClickSaida.delete(btn);}return;}
+    relatorioAtual={botao:btn};
+    mostrarPainel('saida');
+    if(r.state==='unknown' && assinaturaDisponivel)info('Não foi possível verificar a assinatura no sistema. Confira antes de sair.');
+  },true);
+
+  // Estado para testes: sem expor nomes, prontuário ou informações clínicas.
+  window.OM30_PA_FLUXO_TESTE={
+    versao:V,
+    status:()=>({...estado,modalEncaminhamento:!!modalDeEncaminhamento(),modalAssinatura:!!modalAssinatura(),painel:!!painel}),
+    consultarDocumentos:async()=>{const r=await consultarAssinaturas();return {state:r.state,quantity:r.quantity,exigeNativo:!!r.exigeNativo,linhasSemControle:r.linhasSemControle||0};},
+    abrirPainel:()=>mostrarPainel('saida'),
+    // TESTE CONTROLADO: assina SÓ o primeiro documento pendente e confere se
+    // ele sumiu de listar_assinaveis. Não devolve IDs nem dados do paciente.
+    testeAssinarUmDocumento:async()=>{
+      if(novo)return {ok:false,motivo:'Prontuário ainda não salvo.'};
+      if(estado.rodando)return {ok:false,motivo:'Já existe uma operação em andamento.'};
+      estado.rodando=true;
+      try{
+        const antes=await consultarAssinaturas();
+        const r=await executarAssinaturaUnica({limite:1});
+        const depois=await consultarAssinaturas();
+        return {versao:V,antes:{state:antes.state,quantity:antes.quantity},resultado:{ok:!!r.ok,motivo:r.motivo||'',confirmados:r.confirmados||0},respostaAssinador:estado.ultimaRespostaAssinador||null,depois:{state:depois.state,quantity:depois.quantity}};
+      }finally{estado.rodando=false;}
+    }
+  };
+  console.info(TAG,'v2.2.18 TESTE ativo: assinatura pela rota nativa + confirmação real em listar_assinaveis + finalização protegida.');
+})();

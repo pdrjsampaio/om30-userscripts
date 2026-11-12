@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.78
+// @version      3.0.81
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,13 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.78
+    /* OM30 - CONTROLE DE SALAS v3.0.81
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.81: "Paciente ausente" do sistema escondido e bloqueado no Controle de Salas: ele cancelava o paciente em todas as salas (Medicação, Exames, Raio-X) e encerrava a senha, sem ir para fila nenhuma.
+     * v3.0.80: se a busca exata pela ficha falhar, o atendimento da memória da aba só é aceito quando as filas do sistema (buscadas pelo nome da ficha) têm encaminhamento dele; senão é descartado. O "próximo destino" do popup usa o mesmo atendimento confirmado pelo painel. Quadro do popup refeito: centralizado acima do OK, azul claro (âmbar para retorno ao consultório), sem a faixa roxa.
+     * v3.0.79: "Salas pendentes do munícipe" mostrava sala/retorno de OUTRO paciente (ex.: Raio-X que o médico não pediu): o painel pegava o atendimento da memória da aba/"último chamado" antes da própria ficha. Agora vem primeiro da ficha (número do encaminhamento → lista do sistema, também Em Andamento) e o destino pós-salvar de outro atendimento é ignorado.
      * v3.0.78: "Por Fulano" passa a ser gravado também quando a ficha de Exames/Raio-X/Enfermagem abre na mesma aba (Confirmar atendimento do topo, senha perdida, aba nova bloqueada). Antes só gravava na aba aberta pelo script. O paciente vem da lista do sistema pelo número do encaminhamento da ficha.
      * v3.0.77: Raio-X: "Em medicação" vira uma fila à parte (Mostrar: Todos | Em medicação (n) | Histórico), como a Pediatria. O botão "Em medicação" no Status manda o paciente para lá; ele sai da fila principal, da contagem e do tempo médio; lá aparece a etiqueta EM MEDICAÇÃO (quem marcou · há X min) e "Terminou" devolve à fila. Vale em todos os PCs (Worker de presença). Em atendimento, a espera para na chamada. "Por Fulano" também quando a ficha foi aberta sem o script: o nome vem de quem chamou a senha no Senha Simples.
      * v3.0.76: (não publicada) primeira versão do "Em medicação", que só jogava o paciente para o fim da fila.
@@ -2315,8 +2318,12 @@
     }
 
     async function obter(atendimento) {
-      const handoff = handoffDaPagina();
+      let handoff = handoffDaPagina();
       atendimento = String(atendimento || atendimentoDaPagina() || handoff?.atendimento || '').match(/\d+/)?.[0] || '';
+      // O destino pós-salvar fica 10 min na aba: se for de OUTRO atendimento (paciente
+      // anterior nesta mesma aba), não vale para este.
+      const handoffAt = String(handoff?.atendimento || '').match(/\d+/)?.[0] || '';
+      if (handoff && handoffAt && atendimento && handoffAt !== atendimento) handoff = null;
       const prontuario = await resolverProntuario(atendimento);
       const db = ler();
       const a = atendimento ? (db.porAtendimento[atendimento] || {}) : {};
@@ -2702,23 +2709,40 @@
       return String(path.match(mapas[salaAtual])?.[1] || '');
     }
 
+    // Resultado por encaminhamento: o painel redesenha várias vezes e o vínculo não muda.
+    const ATEND_EXATO_CACHE = new Map();
     async function resolverAtendimentoExatoDaFicha(salaAtual, identidade = {}) {
       const idEnc = idEncaminhamentoDaFicha(salaAtual);
       if (!idEnc || !salaAtual) return '';
       const sala = SALAS_EXATAS.find(x => x.key === salaAtual);
       if (!sala) return '';
+      const chaveCache = `${salaAtual}:${idEnc}`;
+      if (ATEND_EXATO_CACHE.has(chaveCache)) return ATEND_EXATO_CACHE.get(chaveCache);
       try {
-        const p = new URLSearchParams({ format:'json', per_page:'200' });
-        if (identidade?.nome) p.set('search', identidade.nome);
-        const r = await fetch(`${sala.endpoint}?${p.toString()}`, {
-          method:'GET', credentials:'same-origin', cache:'no-store', headers:{Accept:'application/json'}
-        });
-        if (!r.ok) return '';
-        const j = await r.json();
-        const arr = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
-        const item = arr.find(x => String(x?.encaminhamento_id ?? x?.id ?? '').replace(/\D/g,'') === String(idEnc));
+        const fmt = x => `${String(x.getDate()).padStart(2,'0')}/${String(x.getMonth()+1).padStart(2,'0')}/${x.getFullYear()}`;
+        const hoje = new Date(), ontem = new Date(hoje.getTime() - 864e5);
+        // 1) lista padrão com busca pelo nome; 2) Em Andamento e Em Espera de ontem/hoje
+        // (a ficha aberta fica Em Andamento e pode não vir na lista padrão).
+        const consultas = [new URLSearchParams({ format:'json', per_page:'200', ...(identidade?.nome ? { search: identidade.nome } : {}) })];
+        for (const st of ['2', '1']) {
+          const p = new URLSearchParams({ format:'json', sortable:'{}', page:'1', per_page:'100', profissional:'{}', status:st, grau_risco:'', dataInicial:fmt(ontem), dataFinal:fmt(hoje) });
+          if (identidade?.nome) p.set('search_term', identidade.nome);
+          consultas.push(p);
+        }
+        let item = null;
+        for (const p of consultas) {
+          const r = await fetch(`${sala.endpoint}?${p.toString()}`, {
+            method:'GET', credentials:'same-origin', cache:'no-store', headers:{Accept:'application/json'}
+          });
+          if (!r.ok) continue;
+          const j = await r.json().catch(() => null);
+          const arr = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+          item = arr.find(x => String(x?.encaminhamento_id ?? x?.id ?? '').replace(/\D/g,'') === String(idEnc));
+          if (item) break;
+        }
         const m = String(item?.atendimento_str || item?.atendimentoStr || '').match(/^AtendimentoPa#(\d+)$/i);
         if (!m) return '';
+        ATEND_EXATO_CACHE.set(chaveCache, m[1]);
         try { sessionStorage.setItem(CS_ATENDIMENTO_PA_FILHO, m[1]); } catch (_) {}
         try {
           localStorage.setItem(CS_ATENDIMENTO_CHAMADO, JSON.stringify({ atendimento:`AtendimentoPa#${m[1]}`, em:Date.now(), origem:'ficha_exata', encaminhamento:idEnc }));
@@ -3655,6 +3679,7 @@
           sinteticaPonteCentral: p?.sinteticaPonteCentral === true,
           sinteticaDestinoConfirmado: p?.sinteticaDestinoConfirmado === true
         })),
+        atendimento: String(fluxo?.atendimento || ''),
         retornoConhecido,
         retornoConfirmadoAgora,
         retornoLeituraFalhou,
@@ -3697,8 +3722,21 @@
           throw new Error('Não consegui identificar o munícipe e a data de nascimento nesta tela.');
         }
 
-        let atendimentoId = pageWindow.OM30FluxoControleSalas?.atendimentoDaPagina?.() || '';
-        if (!atendimentoId) atendimentoId = await resolverAtendimentoExatoDaFicha(salaAtual, identidade);
+        // Primeiro o vínculo EXATO da ficha (número do encaminhamento → lista do sistema).
+        // A memória da aba/"último chamado" pode ser de OUTRO paciente e mostrava salas
+        // e retorno que o médico não pediu; só é usada se a busca exata falhar.
+        let atendimentoId = await resolverAtendimentoExatoDaFicha(salaAtual, identidade);
+        if (!atendimentoId) {
+          // Memória só vale se for DESTE munícipe: as filas buscadas pelo nome da ficha
+          // precisam ter algum encaminhamento desse atendimento. Senão, descarta.
+          const memoria = pageWindow.OM30FluxoControleSalas?.atendimentoDaPagina?.() || '';
+          if (memoria && identidade.nome) {
+            const conf = await Promise.allSettled(SALAS_EXATAS.map(s => buscarSalaExata(s, memoria, identidade.nome)));
+            const linhas = conf.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+            if (linhas.length) atendimentoId = memoria;
+            else console.warn('[OM30 PENDÊNCIAS] atendimento da memória não é deste munícipe; ignorado.');
+          }
+        }
 
         let fluxo = {};
         try { fluxo = await pageWindow.OM30FluxoControleSalas?.obter?.(atendimentoId) || {}; } catch (_) {}
@@ -4120,7 +4158,8 @@
         let fluxo=null;
         try{
             const api=window.OM30FluxoControleSalas;
-            const id=api?.atendimentoDaPagina?.()||'';
+            // Mesmo atendimento que o painel confirmou pela ficha; a memória da aba só se o painel não tiver.
+            const id=String(window.OM30PendenciasControleSalas?.estado?.atendimento||'')||api?.atendimentoDaPagina?.()||'';
             fluxo=await api?.obter?.(id);
         }catch(_){}
 
@@ -4204,10 +4243,11 @@
         if(!box){
             box=document.createElement('div');
             box.className='cs-destino-sucesso';
-            const actions=modal.querySelector('.swal2-actions');
-            if(actions) modal.insertBefore(box,actions); else modal.appendChild(box);
+            // Sempre acima dos botões (no SweetAlert antigo eles ficam em .swal2-buttonswrapper).
+            const actions=modal.querySelector('.swal2-actions,.swal2-buttonswrapper')||modal.querySelector('.swal2-confirm')?.parentElement;
+            if(actions&&actions.parentElement) actions.parentElement.insertBefore(box,actions); else modal.appendChild(box);
         }
-        box.innerHTML='<div class="cs-destino-label">PRÓXIMO DESTINO</div><div class="cs-destino-valor">Identificando…</div>';
+        box.innerHTML='<div class="cs-destino-label">Próximo destino</div><div class="cs-destino-valor">…</div>';
         return box;
     }
 
@@ -4237,10 +4277,12 @@
             if(!modal.isConnected) continue;
 
             if(destino?.semRetorno){
-                box.innerHTML='<div class="cs-destino-label">RETORNO MÉDICO</div><div class="cs-destino-valor">SEM RETORNO AO CONSULTÓRIO MÉDICO</div>';
+                box.classList.add('cs-destino-neutro');
+                box.innerHTML='<div class="cs-destino-label">Retorno médico</div><div class="cs-destino-valor">Sem retorno</div>';
             }else if(destino?.nome){
                 const retorno=/^Retorno ao consultório médico$/i.test(destino.nome);
-                box.innerHTML=`<div class="cs-destino-label">${retorno?'PRÓXIMO DESTINO':'PRÓXIMA SALA'}</div><div class="cs-destino-valor">${retorno?'↩':'→'} ${esc(destino.nome).toUpperCase()}</div>`;
+                box.classList.toggle('cs-destino-retorno',retorno);
+                box.innerHTML=`<div class="cs-destino-label">${retorno?'Próximo destino':'Próxima sala'}</div><div class="cs-destino-valor">${retorno?'↩ Consultório médico':esc(destino.nome)}</div>`;
             }else{
                 // Sem destino confirmado, não inventa "retorno a confirmar".
                 // O popup nativo de sucesso permanece suficiente; a próxima sala
@@ -4317,10 +4359,14 @@
     }
     if(document.readyState!=='loading')csAoCarregarPagina();else document.addEventListener('DOMContentLoaded',csAoCarregarPagina,{once:true});
     estilo(`
-        .cs-destino-sucesso{margin:11px auto 12px;padding:10px 12px;width:min(330px,88%);box-sizing:border-box;border:1px solid #d8dee5;border-left:4px solid #7D09D5;border-radius:8px;background:#fafafa;color:#263238;text-align:left}
-        .cs-destino-label{font-size:10.5px;letter-spacing:.7px;font-weight:900;line-height:1.15;color:#6b7280}
+        .cs-destino-sucesso{display:table;margin:14px auto 16px;padding:9px 22px;max-width:88%;box-sizing:border-box;border:1px solid #cfe0f1;border-radius:10px;background:#f3f8fd;color:#1f3b57;text-align:center}
+        .cs-destino-sucesso.cs-destino-retorno{border-color:#f2d39b;background:#fff8ec}
+        .cs-destino-sucesso.cs-destino-neutro{border-color:#dfe4ea;background:#f7f8fa}
+        .cs-destino-label{font-size:11px;letter-spacing:.4px;font-weight:600;line-height:1.2;color:#6b7c8f;text-transform:uppercase}
         .cs-destino-msg{font-size:12px;color:#475569;line-height:1.35}
-        .cs-destino-valor{margin-top:4px;font-size:14px;line-height:1.2;font-weight:900;color:#4c1d95}
+        .cs-destino-valor{margin-top:3px;font-size:18px;line-height:1.2;font-weight:700;color:#1f4e79;text-transform:uppercase}
+        .cs-destino-retorno .cs-destino-valor{color:#8a5300}
+        .cs-destino-neutro .cs-destino-valor{color:#3d4a57}
         .cs-destino-ajuda{margin-top:4px;font-size:10.5px;line-height:1.25;font-weight:700;color:#7a8691}
     `);
     function csInstalarCapturaDestino(){
@@ -4564,6 +4610,34 @@
             }
         }
         return '';
+    }
+
+    // Controle de Salas: o "Paciente ausente" do sistema CANCELA o paciente em todas as salas
+    // (Medicação, Exames, Raio-X…) e encerra a senha, sem mandar para fila nenhuma — nem para a
+    // Lista de Ausentes nem de volta ao médico (testado na Unidade Teste em 12/11/2026).
+    // Nesta tela o botão fica escondido e o clique bloqueado.
+    if (caminho === '/aplicacoes_medicamentos') {
+        const ehAusente = el => /^(paciente ausente|ausente|ausentar)$/i.test(String(el && el.textContent || '').replace(/\s+/g, ' ').trim());
+        let agendado = false;
+        const esconderAusente = () => {
+            agendado = false;
+            for (const el of document.querySelectorAll('button, a.dropdown-item, .dropdown-item, [role="menuitem"]')) {
+                if (el.dataset.om30SemAusente === '1' || !ehAusente(el)) continue;
+                el.dataset.om30SemAusente = '1';
+                el.style.setProperty('display', 'none', 'important');
+                el.setAttribute('aria-hidden', 'true');
+            }
+        };
+        document.addEventListener('click', ev => {
+            const el = ev.target && ev.target.closest && ev.target.closest('button, a, .dropdown-item, [role="menuitem"]');
+            if (el && (el.dataset.om30SemAusente === '1' || ehAusente(el))) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); }
+        }, true);
+        const iniciarSemAusente = () => {
+            esconderAusente();
+            new MutationObserver(() => { if (!agendado) { agendado = true; requestAnimationFrame(esconderAusente); } })
+                .observe(document.body, { childList: true, subtree: true });
+        };
+        if (document.body) iniciarSemAusente(); else document.addEventListener('DOMContentLoaded', iniciarSemAusente);
     }
 
     if (caminho === '/aplicacoes_medicamentos') iniciarFila();

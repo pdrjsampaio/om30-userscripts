@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.3.1
+// @version      2.3.2
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -6602,11 +6602,39 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
         (n.matches?.('tr.prontuario-exame-row')||n.querySelector?.('tr.prontuario-exame-row')));
     });
   }
-  function registrar(){
-    const area=q('#prontuarios_exames')||q('tr.prontuario-exame-row')?.parentElement;
-    if(!area)return false;
+  // v2.3.2: exame com nome mas sem código SIGTAP de 10 dígitos não pode ser
+  // ignorado em silêncio (antes ficava só como interno, sem SADT).
+  function examesSemCodigo(){
+    return qa('tr.prontuario-exame-row').filter(row=>
+      ativo(row) && !radioX(row) && nomeLinha(row) && !/^\d{10}$/.test(codigoLinha(row))
+    ).map(row=>nomeLinha(row));
+  }
+  // Aviso fixo na tela: o banner do painel OM30 pode estar fechado/minimizado
+  // ou em outra aba, e o profissional ficaria clicando em Finalizar sem saber.
+  function avisoBloqueio(msg){
+    let el=q('#om30-dual-sadt-bloqueio');
+    if(!el){
+      el=document.createElement('div');el.id='om30-dual-sadt-bloqueio';el.setAttribute('role','alert');
+      el.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483001;max-width:min(560px,calc(100vw - 32px));background:#fff6f3;border:1px solid #e8b7b3;border-left:5px solid #c0392b;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:11px 15px;color:#7a2018;font:600 13px/1.45 Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+      document.body.appendChild(el);
+    }
+    el.textContent='Guia SADT: '+msg;
+    clearTimeout(el._t);el._t=setTimeout(()=>el.remove(),9000);
+  }
+  function ehFormProntuario(f){
+    return !!f?.matches?.('form#new_prontuario, form[id^="new_prontuario"]') || (!!f && f===formProntuario());
+  }
+  let instalado=false;
+  function instalar(){
+    if(instalado)return;
+    instalado=true;
+    // v2.3.2: antes o módulo só se registrava se a área de exames aparecesse
+    // nos primeiros 15 s. Num prontuário novo não existe linha de exame no
+    // carregamento (só o template no onclick), então o exame incluído depois
+    // de 15 s era salvo como INTERNO SEM SADT e sem nenhuma trava.
+    // Agora observador e trava ficam ativos o tempo todo, no documento.
     const ob=new MutationObserver(m=>{if(mutacaoEmExame(m))agendar(120);});
-    ob.observe(area,{subtree:true,childList:true,attributes:true,attributeFilter:['style']});
+    ob.observe(document.body||document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['style']});
     document.addEventListener('change',e=>{
       if(e.target?.closest?.('tr.prontuario-exame-row'))agendar(90);
     },true);
@@ -6615,31 +6643,33 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
         setTimeout(()=>sinalizar(last.state,last.message,last.codes),0);
       }
     },true);
-    const form=formProntuario();
-    if(form){
-      // Garantia: não deixar salvar um prontuário incompleto entre inclusão
-      // interna e preparação da SADT externa. O profissional pode aguardar
-      // a sinalização de conclusão ou verificar a mensagem de erro.
-      form.addEventListener('submit',e=>{
-        const xs=exames();
-        if(!xs.length)return;
-        if(busy||assinatura(xs)!==syncedSignature||last.state!=='ready'||!prefixExiste(autoPrefix)){
-          e.preventDefault(); e.stopImmediatePropagation();
-          sinalizar('error','Aguarde a preparação da SADT externa antes de salvar. Se houver erro, revise a mensagem e tente novamente.',xs.map(x=>x.codigo));
-          agendar(0);
-        }
-      },true);
-    }
+    // Garantia: não deixar salvar o prontuário com exame interno sem a SADT
+    // externa pronta. Captura no documento = roda antes do rails-ujs e
+    // continua valendo mesmo se o formulário for recriado.
+    document.addEventListener('submit',e=>{
+      if(!ehFormProntuario(e.target))return;
+      const semCodigo=examesSemCodigo();
+      if(semCodigo.length){
+        e.preventDefault(); e.stopImmediatePropagation();
+        const msg='exame sem código SIGTAP reconhecido ('+semCodigo.slice(0,3).join(', ')+(semCodigo.length>3?'…':'')+'). Selecione o exame pela busca antes de salvar.';
+        sinalizar('error',msg,exames().map(x=>x.codigo));avisoBloqueio(msg);
+        return;
+      }
+      const xs=exames();
+      if(!xs.length)return;
+      if(busy||assinatura(xs)!==syncedSignature||last.state!=='ready'||!prefixExiste(autoPrefix)){
+        e.preventDefault(); e.stopImmediatePropagation();
+        const msg=last.state==='error'&&last.message&&!/^aguarde|sem código SIGTAP|não foi salvo/i.test(last.message)
+          ? last.message+' — o prontuário não foi salvo.'
+          : 'aguarde a preparação da SADT externa (1–2 s) e clique em salvar de novo.';
+        sinalizar('error',msg,xs.map(x=>x.codigo));avisoBloqueio(msg);
+        agendar(0);
+      }
+    },true);
     agendar(200);
-    return true;
   }
-  // Só inicializa se a tela nativa de exames estiver presente. Não há
-  // intercepção global de fetch/XHR nem timer recorrente permanente.
-  if(!registrar()){
-    const obs=new MutationObserver((_,observer)=>{if(registrar())observer.disconnect();});
-    obs.observe(document.documentElement,{childList:true,subtree:true});
-    setTimeout(()=>obs.disconnect(),15000);
-  }
+  if(document.body)instalar();
+  else document.addEventListener('DOMContentLoaded',instalar,{once:true});
   window.OM30_PA_DUPLA_SADT={
     sincronizar:()=>agendar(0),
     status:()=>({...last}),
@@ -6669,7 +6699,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.3.1', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.3.2', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];
@@ -7498,16 +7528,18 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     document.body.appendChild(el);
   }
   async function verificarLembreteAssinatura(){
-    if(novo||!id||painel||estado.rodando||modalDeEncaminhamento())return;
+    if(novo||!id||painel||estado.rodando)return;
     if(!botaoNativoAssinatura())return; // perfil sem assinatura digital: sem aviso
     const r=await consultarAssinaturas();
-    if(painel||estado.rodando||modalDeEncaminhamento())return; // o fluxo completo assumiu
+    if(painel||estado.rodando)return; // o painel completo (encaminhamento) já assumiu
     if(r.state!=='pending')return;
     assinaturaPendenteConhecida=true;
     mostrarLembreteAssinatura(r);
   }
-  // Espera o Saúde Simples abrir (ou não) a pergunta de encaminhamento.
-  if(!novo)setTimeout(()=>void verificarLembreteAssinatura(),3000);
+  // v2.3.2: sem espera. Assim que a tela pós-Finalizar carrega, o aviso
+  // aparece — com ou sem Controle de Salas. Se em seguida o Saúde Simples
+  // abrir a pergunta de encaminhamento, o painel completo substitui o aviso.
+  if(!novo)void verificarLembreteAssinatura();
 
   // Estado para testes: sem expor nomes, prontuário ou informações clínicas.
   window.OM30_PA_FLUXO_TESTE={

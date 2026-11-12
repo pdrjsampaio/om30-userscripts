@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.81
+// @version      3.0.91
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,10 +16,20 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.81
+    /* OM30 - CONTROLE DE SALAS v3.0.91
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * v3.0.91: desfeito o "espera para na chamada" da 3.0.77: a espera volta a contar sempre do encaminhamento até agora, mesmo depois de chamar.
+     * v3.0.90: "Selecione a sala de atendimento" não mostra mais cada sala duas vezes (o componente do sistema somava a lista a cada carga).
+     * v3.0.89: "Chamar próximo (N)" mostra a quantidade da fila da tela (Clínico/Pediatria; Raio-X sem quem está Em medicação). Título da aba sem código HTML no nome social (fica só o nome social). "Por Fulano" da Medicação grava no paciente da ficha (lista do sistema pelo número da ficha), não na memória da aba.
+     * v3.0.88: espera "0 min" em PC com fuso/relógio do Windows errado: a espera, o tempo médio e o "Hoje" passam a usar a hora de São Paulo (corrigida pelo relógio do servidor), no mesmo formato das datas da lista.
+     * v3.0.87: "Salas pendentes" acha o atendimento da ficha também quando o nome da ficha não bate com a busca (nome social/abreviado): procura pelo número da ficha nas filas Em Andamento e Em Espera de ontem e hoje.
+     * v3.0.86: ficha de Exames/Raio-X/Enfermagem aberta na mesma aba mostrava no título o nome de OUTRO paciente (memória do PC) e podia travar a página ("Page Unresponsive") quando outro script disputava o título. Agora o título vem do nome da própria ficha (lista do sistema) e a correção do título desiste após 15 tentativas em 3 s.
+     * v3.0.85: o seletor de local não repete mais a sala ("SALA DE MEDICAÇÃO" duas vezes): a lista de locais do sistema é limpa de repetidos sempre que o vínculo automático da sala roda.
+     * v3.0.84: "Chamar próximo" segue a fila da tela: na Medicação/Exames (Clínico ou Pediatria) e no Raio-X com paciente Em medicação, chama o primeiro Em Espera da lista mostrada pelo Chamar da própria linha, em vez da ordem do Senha Simples.
+     * v3.0.83: Medicação e Exames com duas filas separadas: "Clínico" (padrão, sem as senhas PD/PP) e "Pediatria" (só PD/PP). A contagem e o tempo médio seguem a fila escolhida.
+     * v3.0.82: o popup de sucesso do sistema não é mais alterado (sem "Próxima sala"/"Próximo destino" e sem trocar título/texto); o aviso rápido depois de salvar diz só "Atendimento concluído". Filtro "Pediatria" (senhas PD/PP) também na sala de Exames.
      * v3.0.81: "Paciente ausente" do sistema escondido e bloqueado no Controle de Salas: ele cancelava o paciente em todas as salas (Medicação, Exames, Raio-X) e encerrava a senha, sem ir para fila nenhuma.
      * v3.0.80: se a busca exata pela ficha falhar, o atendimento da memória da aba só é aceito quando as filas do sistema (buscadas pelo nome da ficha) têm encaminhamento dele; senão é descartado. O "próximo destino" do popup usa o mesmo atendimento confirmado pelo painel. Quadro do popup refeito: centralizado acima do OK, azul claro (âmbar para retorno ao consultório), sem a faixa roxa.
      * v3.0.79: "Salas pendentes do munícipe" mostrava sala/retorno de OUTRO paciente (ex.: Raio-X que o médico não pediu): o painel pegava o atendimento da memória da aba/"último chamado" antes da própria ficha. Agora vem primeiro da ficha (número do encaminhamento → lista do sistema, também Em Andamento) e o destino pós-salvar de outro atendimento é ignorado.
@@ -339,7 +349,7 @@
                 .slice(0, max);
         }
 
-        function resumo(itens) {
+        function resumo(itens, agoraRef) {
             const r = {
                 espera: 0,
                 andamento: 0,
@@ -351,7 +361,7 @@
             let somaEsperaMs = 0, qtdEsperaComHora = 0;
             const somaCoresMs = [0, 0, 0, 0, 0, 0];
             const qtdCoresHora = [0, 0, 0, 0, 0, 0];
-            const agora = Date.now();
+            const agora = agoraRef instanceof Date ? agoraRef.getTime() : Date.now();
 
             for (const it of itens) {
                 if (it.status === 'Em Espera') {
@@ -1151,8 +1161,15 @@
         const vigiar = () => {
             const el = document.querySelector('head > title');
             if (!el || TITULO.vigia) return !!el;
+            // Trava de segurança: se outro script insistir em reescrever o <title>, as duas
+            // partes ficavam se corrigindo sem parar e o navegador acusava "Page Unresponsive".
+            // Mais de 15 correções em 3 s = desiste e deixa o título como o outro script quiser.
+            let correcoes = 0, desde = Date.now();
             TITULO.vigia = new MutationObserver(() => {
-                if (TITULO.atual && el.textContent !== TITULO.atual) escreverTitulo(TITULO.atual);
+                if (!TITULO.atual || el.textContent === TITULO.atual) return;
+                if (Date.now() - desde > 3000) { desde = Date.now(); correcoes = 0; }
+                if (++correcoes > 15) { TITULO.vigia.disconnect(); console.warn('[OM30] título: outro script disputa o <title>; deixei de corrigir.'); return; }
+                escreverTitulo(TITULO.atual);
             });
             TITULO.vigia.observe(el, { childList: true, characterData: true, subtree: true });
             return true;
@@ -1164,6 +1181,11 @@
         else document.title = t;
     }
     function definirTitulo(t) {
+        // O nome do munícipe pode vir com HTML do sistema ("Nome social: <strong>…</strong> (civil)"):
+        // no título fica só o texto, e com nome social, só ele.
+        t = String(t || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ')
+            .replace(/Nome social:\s*([^()·]+?)\s*\([^)]*\)/i, '$1').replace(/Nome social:\s*/i, '')
+            .replace(/\s+/g, ' ').trim();
         if (!t || (t === TITULO.atual && document.title === t)) return;
         TITULO.atual = t;
         escreverTitulo(t);
@@ -2729,6 +2751,13 @@
           if (identidade?.nome) p.set('search_term', identidade.nome);
           consultas.push(p);
         }
+        // Sem o nome (nome social/abreviado na ficha pode não bater com a busca): as filas
+        // Em Andamento e Em Espera inteiras de ontem/hoje, casando só o número da ficha.
+        for (const st of ['2', '1']) {
+          for (const page of ['1', '2', '3']) {
+            consultas.push(new URLSearchParams({ format:'json', sortable:'{}', page, per_page:'100', profissional:'{}', status:st, grau_risco:'', dataInicial:fmt(ontem), dataFinal:fmt(hoje) }));
+          }
+        }
         let item = null;
         for (const p of consultas) {
           const r = await fetch(`${sala.endpoint}?${p.toString()}`, {
@@ -4260,55 +4289,21 @@
             if(!/Encaminhamento atualizado com sucesso|Atendimento desta sala concluído com sucesso|encaminhamento.*sucesso/i.test(corpo)) continue;
             if(modal.dataset.om30DestinoProcessando==='1'||modal.dataset.om30DestinoResolvido==='1') continue;
 
-            modal.dataset.om30DestinoProcessando='1';
-            try{sessionStorage.setItem('cs-sair-pos-salvar',String(Date.now()));}catch(e){}
-            const box=csPrepararPopup(modal);
-
-            let destino=null;
-            // Backend/fila podem levar alguns instantes para refletir a transição.
-            const inicioDestino=Date.now();
-            for(let tentativa=0; tentativa<18 && modal.isConnected; tentativa++){
-                destino=await csResolverDestinoConfirmado();
-                if(destino?.nome) break;
-                if(PULAR_POPUP_CONCLUSAO && Date.now()-inicioDestino>=1500) break;
-                await csSleep(tentativa<6?180:320);
-            }
-
-            if(!modal.isConnected) continue;
-
-            if(destino?.semRetorno){
-                box.classList.add('cs-destino-neutro');
-                box.innerHTML='<div class="cs-destino-label">Retorno médico</div><div class="cs-destino-valor">Sem retorno</div>';
-            }else if(destino?.nome){
-                const retorno=/^Retorno ao consultório médico$/i.test(destino.nome);
-                box.classList.toggle('cs-destino-retorno',retorno);
-                box.innerHTML=`<div class="cs-destino-label">${retorno?'Próximo destino':'Próxima sala'}</div><div class="cs-destino-valor">${retorno?'↩ Consultório médico':esc(destino.nome)}</div>`;
-            }else{
-                // Sem destino confirmado, não inventa "retorno a confirmar".
-                // O popup nativo de sucesso permanece suficiente; a próxima sala
-                // será mostrada quando a resposta/fila do Saúde Simples confirmar.
-                box.remove();
-            }
-
-            modal.dataset.om30DestinoProcessando='0';
+            // v3.0.82: o popup do sistema fica como está (sem "próxima sala": a ficha já
+            // mostra para onde o paciente vai). Só marca a saída direta e, com
+            // PULAR_POPUP_CONCLUSAO, confirma o OK do próprio popup.
             modal.dataset.om30DestinoResolvido='1';
-
+            try{sessionStorage.setItem('cs-sair-pos-salvar',String(Date.now()));}catch(e){}
             if(PULAR_POPUP_CONCLUSAO){
-                // Guarda o destino para o aviso da próxima página e clica no OK do próprio
-                // popup: o .then() do sistema segue sozinho (concluir a senha e navegar).
-                let texto='Atendimento concluído';
-                if(destino?.semRetorno) texto+=' · Sem retorno ao consultório médico';
-                else if(destino?.nome) texto+=/^Retorno ao consultório médico$/i.test(destino.nome)?' · ↩ Retorno ao consultório médico':` · → PRÓXIMA SALA: ${destino.nome}`;
-                try{sessionStorage.setItem('cs-aviso-pos-conclusao',JSON.stringify({texto,em:Date.now()}));}catch(e){}
+                try{sessionStorage.setItem('cs-aviso-pos-conclusao',JSON.stringify({texto:'Atendimento concluído',em:Date.now()}));}catch(e){}
                 modal.querySelector('.swal2-confirm')?.click();
-                // Se o OK não trocar de página, o aviso aparece aqui mesmo.
                 setTimeout(csMostrarAvisoPosConclusao,1500);
             }
         }
     }
     // Aviso pós-conclusão (PULAR_POPUP_CONCLUSAO): toast não bloqueante no topo, 6 s.
     estilo(`
-        .cs-toast-conclusao{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483000;max-width:min(520px,92vw);box-sizing:border-box;padding:10px 14px;border:1px solid #d8dee5;border-left:4px solid #7D09D5;border-radius:8px;background:#f0fdf4;color:#263238;font:700 13px/1.3 system-ui,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,.18);cursor:pointer}
+        .cs-toast-conclusao{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483000;max-width:min(520px,92vw);box-sizing:border-box;padding:10px 14px;border:1px solid #bfe3c9;border-left:4px solid #2e7d32;border-radius:8px;background:#f0fdf4;color:#263238;font:700 13px/1.3 system-ui,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,.18);cursor:pointer}
     `);
     function csMostrarAvisoPosConclusao(){
         let dado=null;
@@ -4592,8 +4587,14 @@
 
     // AtendimentoPa da ficha de Exames/Raio-X/Enfermagem pela lista do sistema (Em Andamento,
     // depois Em Espera; ontem e hoje), casando o número do encaminhamento da URL.
+    var csNomeDaFicha = '';
     async function csAtendimentoDaFicha() {
-        const m = caminho.match(/^\/(encaminhamentos_(?:exames|radiografias|procedimentos_enfermagem))\/(\d+)\/edit$/);
+        let m = caminho.match(/^\/(encaminhamentos_(?:exames|radiografias|procedimentos_enfermagem))\/(\d+)\/edit$/);
+        if (!m && /^\/aplicacoes_medicamentos\/(?:new|create)$/.test(caminho)) {
+            // Ficha de Medicação: o número vem em ?encaminhamento_medicacao_id=
+            const idMed = (location.search.match(/encaminhamento_medicacao_id=(\d+)/) || [])[1];
+            if (idMed) m = [caminho, 'aplicacoes_medicamentos', idMed];
+        }
         if (!m) return '';
         const fmt = x => `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
         const hoje = new Date(), ontem = new Date(hoje.getTime() - 864e5);
@@ -4605,7 +4606,7 @@
                 const arr = await r.json().catch(() => []);
                 if (!Array.isArray(arr) || !arr.length) break;
                 const it = arr.find(x => String(x.encaminhamento_id || '').replace(/\D/g, '') === m[2]);
-                if (it && /^AtendimentoPa#\d+$/.test(String(it.atendimento_str || ''))) return String(it.atendimento_str);
+                if (it && /^AtendimentoPa#\d+$/.test(String(it.atendimento_str || ''))) { csNomeDaFicha = String(it.nome_municipe || '').trim(); return String(it.atendimento_str); }
                 if (arr.length < 100) break;
             }
         }
@@ -4647,20 +4648,26 @@
         // na sessionStorage da aba. Ficha aberta na MESMA aba (Confirmar atendimento do topo,
         // senha perdida, aba nova bloqueada): o AtendimentoPa vem da lista do próprio sistema
         // pelo número do encaminhamento da URL — nunca de cache, que pode ser de outro paciente.
+        const abaDoScript = /^cs-atendimento-/.test(window.name);
         (async () => {
             let info = {};
-            if (!/^cs-atendimento-/.test(window.name)) {
+            if (!abaDoScript) {
                 const a = await csAtendimentoDaFicha().catch(() => '');
                 if (!a) { console.warn('[OM30 PRESENÇA] ficha sem atendimento identificado na lista; presença não registrada'); return; }
                 try { sessionStorage.setItem(CS_ATENDIMENTO_PA_FILHO, a.replace(/\D/g, '')); } catch (_) {}
                 info = { atendimento: a };
+                // Título com o nome DESTA ficha (vindo da lista), nunca o da memória do PC.
+                if (csNomeDaFicha) definirTitulo(`${csNomeDaFicha} · Atendimento`);
             }
             await csRegistrarPresencaFilha(info);
         })().catch(e=>console.warn('[OM30 PRESENÇA] registro da sala não realizado:',e?.message||e));
-        try {
-            const seed=JSON.parse(localStorage.getItem('cs-presenca-seed')||'null');
-            definirTitulo(seed?.nome?`${seed.nome} · Atendimento`:'Atendimento');
-        } catch(_) { definirTitulo('Atendimento'); }
+        if (abaDoScript) {
+            // Aba aberta pelo Atender da fila: o seed acabou de ser gravado para este paciente.
+            try {
+                const seed=JSON.parse(localStorage.getItem('cs-presenca-seed')||'null');
+                definirTitulo(seed?.nome?`${seed.nome} · Atendimento`:'Atendimento');
+            } catch(_) { definirTitulo('Atendimento'); }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -6009,6 +6016,8 @@
         }
 
         function ehMedicacao(vm) { return /\/aplicacoes_medicamentos/.test(vm.url || ''); }
+        // Salas com o filtro "Pediatria" (senhas PD e PP). var: a barra pode ser montada antes desta linha.
+        var SALAS_PEDIATRIA = new Set(['medicacao', 'exames']);
 
         // "Sala" é sempre a sala atual: vira a coluna de espera. Com MOSTRAR_MEDICACOES
         // vira a coluna de medicações, data e hora de chegada ficam juntas e a hora vira "Espera".
@@ -6059,11 +6068,33 @@
                 autoSalaVisivel(vm?.$el)
             ) || null;
         }
+        // Recarregar a lista de locais (getCategoriaAtendimento) pode repetir salas no
+        // seletor do sistema ("SALA DE MEDICAÇÃO" duas vezes). Tira os repetidos no lugar.
+        function dedupLocaisGuiche(guiche) {
+            const l = guiche && guiche.locaisAtendimento;
+            if (!Array.isArray(l) || l.length < 2) return;
+            const vistos = new Set();
+            const unicos = l.filter(x => { const k = String(x && (x.id ?? x.nome) || ''); if (!k || vistos.has(k)) return !k; vistos.add(k); return true; });
+            if (unicos.length !== l.length) l.splice(0, l.length, ...unicos);
+        }
+        // "Selecione a sala de atendimento": o componente do sistema (selecao-sala) acrescenta as
+        // salas na lista a cada carga sem limpar, e elas aparecem duas vezes. Tira os repetidos.
+        setInterval(() => {
+            const sel = document.getElementById('sala_atendimento_select');
+            if (!sel) return;
+            const vm = sel.closest('.guiche-container') && sel.closest('.guiche-container').__vue__;
+            const l = vm && vm.salasAtendimento;
+            if (!Array.isArray(l) || l.length < 2) return;
+            const vistos = new Set();
+            const unicos = l.filter(x => { const k = String(x && (x.id ?? x.codigo) || ''); if (!k || vistos.has(k)) return !k; vistos.add(k); return true; });
+            if (unicos.length !== l.length) l.splice(0, l.length, ...unicos);
+        }, 400);
         function localMedicacaoStore(guiche) {
             try { return guiche?.$store?.getters?.localAtendimentoAtual?.controle_de_salas_medicacao || {}; }
             catch (_) { return {}; }
         }
         function salaMedicacaoNaLista(guiche) {
+            dedupLocaisGuiche(guiche);
             return (Array.isArray(guiche?.locaisAtendimento)?guiche.locaisAtendimento:[])
                 .find(l=>normalizarAutoSala(l?.nome)==='SALA DE MEDICACAO') || null;
         }
@@ -6120,6 +6151,7 @@
             }
             const guiche=guicheMedicacaoAtual();
             if(!guiche) return;
+            dedupLocaisGuiche(guiche);
             autoSalaEmCurso=true;
             try{
                 const atual=localMedicacaoStore(guiche);
@@ -6167,7 +6199,7 @@
             const sleep=ms=>new Promise(r=>setTimeout(r,ms));
             const estado=tipo=>{if(!estados.has(tipo))estados.set(tipo,{pausado:false,viuSem:false});return estados.get(tipo);};
             const chave=(g,t)=>`om30_controle_salas_local_${t}_${String(g?.categoriaId||'sem_categoria')}`;
-            const locais=g=>(Array.isArray(g?.locaisAtendimento)?g.locaisAtendimento:[]).filter((x,i,a)=>x?.id&&a.findIndex(y=>String(y?.id)===String(x.id))===i);
+            const locais=g=>(dedupLocaisGuiche(g),Array.isArray(g?.locaisAtendimento)?g.locaisAtendimento:[]).filter((x,i,a)=>x?.id&&a.findIndex(y=>String(y?.id)===String(x.id))===i);
             const storeLocal=(g,t)=>{try{return g?.$store?.getters?.localAtendimentoAtual?.[t]||{};}catch(_){return {};}};
             const achar=t=>autoSalaVMs().find(vm=>vm?.tipoParametrizacao===t&&typeof vm?.redirectFilaAtendimento==='function'&&typeof vm?.getCategoriaAtendimento==='function'&&autoSalaVisivel(vm?.$el))||null;
             const lerPref=(g,t)=>{try{return JSON.parse(localStorage.getItem(chave(g,t))||'null');}catch(_){return null;}};
@@ -6183,7 +6215,7 @@
                 const tipo=mapa[key]||'';
                 if(ultimoTipo&&tipo!==ultimoTipo&&TIPOS.has(ultimoTipo)){const st=estado(ultimoTipo);st.pausado=false;st.viuSem=false;}
                 ultimoTipo=tipo;if(!TIPOS.has(tipo))return;
-                const g=achar(tipo);if(!g)return;emCurso=true;
+                const g=achar(tipo);if(!g)return;dedupLocaisGuiche(g);emCurso=true;
                 try{
                     await carregar(g);const lista=locais(g), atual=atualValido(g,tipo), st=estado(tipo);
                     if(st.pausado){if(!atual){st.viuSem=true;return;}if(!st.viuSem)return;st.pausado=false;st.viuSem=false;salvarPref(g,tipo,atual);return;}
@@ -6486,6 +6518,43 @@
             b.disabled=true;
             alternarEmMed(it).catch(e=>swalSeguro({type:'error',title:'Não foi possível marcar',html:esc(e&&e.message||e)})).finally(()=>{ if(b.isConnected) b.disabled=false; });
         }
+
+        // ── "Chamar próximo" segue a fila da tela ─────────────────────────────
+        // O botão do sistema chama pela ordem do Senha Simples e ignora os filtros
+        // (Clínico/Pediatria, Em medicação no Raio-X). Com filtro, ele passa a chamar o
+        // primeiro paciente Em Espera da lista mostrada, pelo Chamar da própria linha.
+        document.addEventListener('click', ev => {
+            const b = ev.target && ev.target.closest && ev.target.closest('button');
+            if (!b || !/^\s*Chamar pr[oó]ximo/i.test(b.textContent || '')) return;
+            const vm = CS.colecao, setor = vm && setorDaColecao(vm);
+            if (!setor || CS.historico) return;
+            const filtra = SALAS_PEDIATRIA.has(setor.key) || (setor.key === 'raio_x' && EMMED && EMMED.mapa.size > 0);
+            if (!filtra) return;
+            ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+            const itens = vm.items || [];
+            const idx = itens.findIndex(it => it.status === 'Em Espera' && /\w/.test(String(it.senha || '').replace(/—/g, '')));
+            if (idx < 0) { aviso('Nenhum paciente em espera nesta fila.'); return; }
+            const linha = vm.$el.querySelectorAll('tbody > tr')[idx];
+            const chamar = linha && linha.querySelector('.botao-chamar');
+            if (!chamar) { aviso('Não consegui chamar: use o Chamar da linha.'); return; }
+            chamar.click();
+        }, true);
+        // O número do botão também segue a fila da tela (o do sistema conta a fila inteira).
+        function ajustarContagemChamarProximo() {
+            const b = [...document.querySelectorAll('button')].find(x => /^\s*Chamar pr[oó]ximo/i.test(x.textContent || ''));
+            const vm = CS.colecao, setor = vm && setorDaColecao(vm);
+            if (!b || !setor || CS.historico) return;
+            if (!(SALAS_PEDIATRIA.has(setor.key) || (setor.key === 'raio_x' && EMMED && EMMED.mapa.size > 0))) return;
+            const n = (vm.items || []).filter(it => it.status === 'Em Espera' && /\w/.test(String(it.senha || '').replace(/—/g, ''))).length;
+            const alvo = `Chamar próximo (${n})`;
+            const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
+            for (let t = w.nextNode(); t; t = w.nextNode()) {
+                if (!/Chamar pr[oó]ximo/i.test(t.nodeValue)) continue;
+                if (t.nodeValue.trim() !== alvo) t.nodeValue = alvo;
+                return;
+            }
+        }
+        setInterval(ajustarContagemChamarProximo, 1000);
 
         function cliqueDesvincular(ev){
             const b=ev.target.closest('button[data-cs-desv]'); if(!b) return;
@@ -7967,6 +8036,16 @@
 
             const cfg = lerConfig();
             const agora = new Date(Date.now() + (CS.desvioRelogio || 0));
+            // Hora de PAREDE de São Paulo no mesmo "formato" das datas da lista (que vêm como
+            // texto dd/mm hh:mm e são lidas no fuso do PC). Com o fuso do Windows errado, a espera
+            // dava "0 min" e o "Hoje" podia pedir outro dia.
+            const agoraParede = (() => {
+                try {
+                    const p = {};
+                    for (const x of new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(agora)) p[x.type] = x.value;
+                    return new Date(+p.year, +p.month - 1, +p.day, (+p.hour) % 24, +p.minute, +p.second);
+                } catch (_) { return agora; }
+            })();
             const inicioCarga = performance.now();
             let cond, minimo, filtroDataSistema;
             const condBase = Object.assign({}, vm.conditions || {});
@@ -7977,15 +8056,20 @@
                 minimo = null;
                 filtroDataSistema = false;
             } else {
-                ({ cond, minimo, filtroDataSistema } = N.aplicarPeriodo(condBase, cfg.periodo, agora));
+                ({ cond, minimo, filtroDataSistema } = N.aplicarPeriodo(condBase, cfg.periodo, agoraParede));
             }
             gravarJSON(CHAVE_ULTIMA_LISTA, vm.url);
 
             const historico = cfg.mostrar === 'historico' && !!setorDaColecao(vm);
             CS.historico = historico;
             // Medicação: "Pediatria" mostra só as senhas PD (pediatria) e PP (pediatria preferencial).
-            const soPediatria = cfg.mostrar === 'pediatria' && (setorDaColecao(vm) || {}).key === 'medicacao';
+            // Medicação e Exames: duas filas separadas. "Clínico" (padrão) sem as senhas PD/PP;
+            // "Pediatria" só PD (pediatria) e PP (pediatria preferencial).
+            const temPediatria = !historico && SALAS_PEDIATRIA.has((setorDaColecao(vm) || {}).key);
+            const soPediatria = temPediatria && cfg.mostrar === 'pediatria';
+            const soClinico = temPediatria && cfg.mostrar !== 'pediatria';
             const ehPediatria = it => /^P[DP]\d/i.test(String(it.senha || '').trim());
+            const filaPediatria = it => soPediatria ? ehPediatria(it) : (soClinico ? !ehPediatria(it) : true);
             // Raio-X: "Em medicação" é uma fila à parte; quem está marcado sai da fila principal.
             const comEmMed = !historico && setorEmMed(setorDaColecao(vm));
             const soEmMed = comEmMed && cfg.mostrar === 'em_medicacao';
@@ -8049,15 +8133,16 @@
                 CS.totalPeriodo = total;
                 if (!historico) gravarJSON(CHAVE_ULTIMO_TOTAL, total);
                 CS.truncado = todos.length < CS.totalPeriodo;
-                const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
+                const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it));
                 const ativos = comEmMed ? ativosBase.filter(filaEmMed) : ativosBase;
                 const filtrados = N.filtrar(ativos, { minimo, soEspera: false });
                 const lista = historico ? N.ordenarHistorico(filtrados) : N.ordenar(filtrados);
                 const classes = historico ? N.classesHistorico(lista) : N.classesLinhas(lista);
                 lista.forEach((it, i) => {
                     it.__csClasse = classes[i];
-                    // Em atendimento: a espera para na chamada que iniciou o atendimento nesta sala.
-                    it.cs_espera = historico ? '' : ((it.status === 'Em Andamento' && N.esperaAteChamada(it)) || N.espera(it, agora));
+                    // A espera conta sempre do encaminhamento para a sala até agora, também depois
+                    // de chamado/em atendimento (pedido do usuário: não mudar ao chamar).
+                    it.cs_espera = historico ? '' : N.espera(it, agoraParede);
                 });
 
                 CS.itens = new Map(todos.map(it => [it.encaminhamento_id, it]));
@@ -8067,10 +8152,10 @@
                 if (contagemPadrao) {
                     const rp = await contagemPadrao;
                     if (seq !== CS.carga) return;
-                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento') && (!soPediatria || ehPediatria(it)));
+                    if (rp) paraContar = N.juntarPaginas(rp.paginas).filter(it => !CANC.recentes.has(it.encaminhamento_id) && (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it));
                 }
                 if (comEmMed) paraContar = paraContar.filter(filaEmMed);
-                CS.resumo = N.resumo(paraContar);
+                CS.resumo = N.resumo(paraContar, agoraParede);
                 CS.resumoHist = historico ? {
                     cancelados: lista.filter(it => it.status === 'Cancelado').length,
                     finalizados: lista.filter(it => it.status !== 'Cancelado').length,
@@ -8460,7 +8545,7 @@
             const historicoHtml = CS.colecao && setorDaColecao(CS.colecao)
                 ? bt('mostrar:historico', 'Histórico', cfg.mostrar === 'historico')
                 : '';
-            const naMedicacao = !!CS.colecao && (setorDaColecao(CS.colecao) || {}).key === 'medicacao';
+            const naMedicacao = !!CS.colecao && SALAS_PEDIATRIA.has((setorDaColecao(CS.colecao) || {}).key);
             const pediatriaHtml = naMedicacao ? bt('mostrar:pediatria', 'Pediatria', cfg.mostrar === 'pediatria') : '';
             const noRaioX = !!CS.colecao && setorEmMed(setorDaColecao(CS.colecao));
             const qtdEmMed = (EMMED && EMMED.mapa.size) || 0;
@@ -8478,7 +8563,7 @@
                 + (CS.duracaoCarga != null ? `Última atualização da lista levou ${seg(CS.duracaoCarga)} s. ` : '');
             barra.innerHTML = `
                 <span class="cs-grupo"><b>Período:</b>${periodos}</span>
-                <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', 'Todos', todosAtivo)}${pediatriaHtml}${emMedHtml}${historicoHtml}</span>
+                <span class="cs-grupo"><b>Mostrar:</b>${bt('mostrar:todos', naMedicacao ? 'Clínico' : 'Todos', todosAtivo)}${pediatriaHtml}${emMedHtml}${historicoHtml}</span>
                 ${resumoHtml}
                 ${avisos.join('')}
                 <span class="cs-hora" title="${esc(tempoTitulo)}Ordem: VERMELHO → AMARELO → VERDE → AZUL; na mesma cor, mais antigo primeiro">atualizado ${hora}</span>`;
@@ -8492,23 +8577,19 @@
         // Cloudflare: registrar presença também na Medicação.
         // A v3.0.13 semeava o AtendimentoPa ao abrir a aba filha, mas não executava
         // o upsert nesta rota. Exames/Raio-X/Enfermagem já chamavam o registro.
-        try {
-            const qs = new URLSearchParams(location.search);
-            const pa = String(qs.get('om30_atendimento_pa') || sessionStorage.getItem(CS_ATENDIMENTO_PA_FILHO) || '').match(/\d+/)?.[0] || '';
-            let seed = null;
-            try { seed = JSON.parse(localStorage.getItem('cs-presenca-seed') || 'null'); } catch (_) {}
-            const recente = seed && Date.now() - Number(seed.em || 0) < 5 * 60 * 1000;
-            const seedPa = String(seed?.atendimento || '').match(/^AtendimentoPa#(\d+)$/i)?.[1] || '';
-            const info = recente && (!pa || !seedPa || seedPa === pa)
-                ? seed
-                : (pa ? { atendimento: `AtendimentoPa#${pa}`, sala: 'medicacao', nome: '', em: Date.now() } : null);
-            if (info?.atendimento) {
-                info.sala = 'medicacao';
-                csRegistrarPresencaFilha(info).catch(e => console.warn('[OM30 PRESENÇA] registro Medicação não realizado:', e?.message || e));
+        // v3.0.89: o paciente vem da lista do sistema pelo número da ficha
+        // (encaminhamento_medicacao_id). A memória da aba/seed podia ser de OUTRO paciente e
+        // gravava o "Por Fulano" na pessoa errada. Sem a lista, só vale o id do link do script.
+        (async () => {
+            let at = await csAtendimentoDaFicha().catch(() => '');
+            if (!at) {
+                const qpa = String(new URLSearchParams(location.search).get('om30_atendimento_pa') || '').match(/\d+/)?.[0] || '';
+                if (qpa) at = `AtendimentoPa#${qpa}`;
             }
-        } catch (e) {
-            console.warn('[OM30 PRESENÇA] falha ao preparar registro da Medicação:', e?.message || e);
-        }
+            if (!at) { console.warn('[OM30 PRESENÇA] Medicação: paciente da ficha não identificado; presença não registrada'); return; }
+            try { sessionStorage.setItem(CS_ATENDIMENTO_PA_FILHO, at.replace(/\D/g, '')); } catch (_) {}
+            await csRegistrarPresencaFilha({ atendimento: at, sala: 'medicacao', nome: csNomeDaFicha || '', em: Date.now() });
+        })().catch(e => console.warn('[OM30 PRESENÇA] registro Medicação não realizado:', e?.message || e));
 
         estilo(`
             .cs-alerg-ficha { margin:6px 0; padding:8px 12px; border-radius:6px; background:#fde8e8; color:#9b1c1c; border:1px solid #f5a3a3; font-weight:700; font-size:14px; }

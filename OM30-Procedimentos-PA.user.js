@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.3.0
+// @version      2.3.1
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -6669,7 +6669,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.2.18-test', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.3.1', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];
@@ -6789,6 +6789,12 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       #om30-pa-fluxo-v229 [hidden]{display:none!important;}
       #om30-pa-toast-v229[hidden]{display:none!important;}
       #om30-pa-toast-v229 .om30-t-simbolo{font-size:17px;color:#4cddd0;}
+      #om30-pa-lembrete-ass{position:fixed;right:22px;bottom:23px;z-index:2147482998;width:320px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #f0d9b5;border-left:5px solid #e59b24;border-radius:12px;box-shadow:0 14px 37px rgba(13,49,67,.22);padding:13px 15px;font:500 12px/1.45 'Segoe UI',Arial,sans-serif;color:#244359;box-sizing:border-box;}
+      #om30-pa-lembrete-ass b{display:block;font:700 13px/1.3 Inter,'Segoe UI',Arial,sans-serif;color:#8a5a12;margin-bottom:3px;}
+      #om30-pa-lembrete-ass .om30-l-acoes{display:flex;gap:8px;justify-content:flex-end;margin-top:10px;}
+      #om30-pa-lembrete-ass button{appearance:none;border-radius:8px;padding:6px 12px;font:700 12px 'Segoe UI',Arial,sans-serif;cursor:pointer;border:1px solid #d9e7ed;background:#fff;color:#4d7183;}
+      #om30-pa-lembrete-ass button[data-l="assinar"]{background:#087f87;border-color:#087f87;color:#fff;}
+      #om30-pa-lembrete-ass button:focus-visible{outline:2px solid #119f9c;outline-offset:2px;}
       @media(max-width:540px){#om30-pa-fluxo-v229{padding:10px}#om30-pa-fluxo-v229 .om30-f-card{border-radius:12px}#om30-pa-fluxo-v229 .om30-f-top{padding:18px 17px 12px}#om30-pa-fluxo-v229 .om30-f-conteudo{padding:4px 17px 18px}#om30-pa-fluxo-v229 h2{font-size:18px}}
     `;
     document.head.appendChild(css);
@@ -6831,6 +6837,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     return ['aguardando','solicitado','dispensado'].includes(estado.encaminhamento);
   }
   function mostrarPainel(modo='encaminhamento'){
+    q('#om30-pa-lembrete-ass')?.remove(); // o painel completo substitui o lembrete
     instalarEstilos();if(painel){estado.modo=modo;void exibirContagem();return painel;}
     estado.modo=modo;
     if(modo==='encaminhamento'){estado.encaminhamento='aguardando';if(!pendenciaEncaminhamentoDesde)pendenciaEncaminhamentoDesde=Date.now();}
@@ -7368,7 +7375,8 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       if(result.novosPendentes>0){
         // Os enviados foram confirmados, mas surgiram outros documentos.
         assinaturaPendenteConhecida=true;
-        info(`${result.confirmados} documento(s) assinados e confirmados. Ainda há ${result.novosPendentes} novo(s) documento(s) pendente(s).`,'erro');
+        const msgNovos=`${result.confirmados} documento(s) assinados e confirmados. Ainda há ${result.novosPendentes} novo(s) documento(s) pendente(s).`;
+        if(painel)info(msgNovos,'erro');else toast(msgNovos,9000);
         void exibirContagem();
         return;
       }
@@ -7460,6 +7468,47 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     if(r.state==='unknown' && assinaturaDisponivel)info('Não foi possível verificar a assinatura no sistema. Confira antes de sair.');
   },true);
 
+  // v2.3.1 • LEMBRETE DE ASSINATURA SEM ENCAMINHAMENTO
+  // Mesmo que o profissional não tenha solicitado nada no Controle de Salas
+  // (sem a pergunta nativa de encaminhamento), um prontuário salvo com
+  // documentos não assinados mostra um aviso discreto no canto da tela.
+  // Não bloqueia a tela nem o modal de impressão; nada é assinado sem clique.
+  function mostrarLembreteAssinatura(r){
+    if(painel||q('#om30-pa-lembrete-ass'))return;
+    instalarEstilos();
+    const qtd=Number(r.quantity)||0;
+    const el=document.createElement('div');
+    el.id='om30-pa-lembrete-ass';el.setAttribute('role','status');el.setAttribute('aria-live','polite');
+    el.innerHTML='<b>Assinatura digital pendente</b><span class="om30-l-txt"></span><div class="om30-l-acoes"><button type="button" data-l="depois">Depois</button><button type="button" data-l="assinar">Assinar agora</button></div>';
+    el.querySelector('.om30-l-txt').textContent=qtd
+      ? `${qtd} documento${qtd===1?'':'s'} deste prontuário ainda não ${qtd===1?'foi assinado':'foram assinados'}.`
+      : 'Há documentos deste prontuário ainda não assinados.';
+    el.addEventListener('click',e=>{
+      const b=e.target?.closest?.('button[data-l]');if(!b)return;
+      e.preventDefault();e.stopPropagation();
+      el.remove();
+      if(b.dataset.l!=='assinar')return;
+      if(r.exigeNativo){
+        // Pergunta de nome civil / comprador: decisão do profissional no modal nativo.
+        botaoNativoAssinatura()?.click();
+        return;
+      }
+      void iniciarAssinatura({retomarEncaminhamento:false});
+    });
+    document.body.appendChild(el);
+  }
+  async function verificarLembreteAssinatura(){
+    if(novo||!id||painel||estado.rodando||modalDeEncaminhamento())return;
+    if(!botaoNativoAssinatura())return; // perfil sem assinatura digital: sem aviso
+    const r=await consultarAssinaturas();
+    if(painel||estado.rodando||modalDeEncaminhamento())return; // o fluxo completo assumiu
+    if(r.state!=='pending')return;
+    assinaturaPendenteConhecida=true;
+    mostrarLembreteAssinatura(r);
+  }
+  // Espera o Saúde Simples abrir (ou não) a pergunta de encaminhamento.
+  if(!novo)setTimeout(()=>void verificarLembreteAssinatura(),3000);
+
   // Estado para testes: sem expor nomes, prontuário ou informações clínicas.
   window.OM30_PA_FLUXO_TESTE={
     versao:V,
@@ -7480,5 +7529,5 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       }finally{estado.rodando=false;}
     }
   };
-  console.info(TAG,'v2.2.18 TESTE ativo: assinatura pela rota nativa + confirmação real em listar_assinaveis + finalização protegida.');
+  console.info(TAG,'v2.3.1 ativo: assinatura pela rota nativa + confirmação real + lembrete de assinatura sem encaminhamento + finalização protegida.');
 })();

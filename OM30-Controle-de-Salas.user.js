@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.95
+// @version      3.0.96
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.0.95
+    /* OM30 - CONTROLE DE SALAS v3.0.96
+     * v3.0.96: 'ALERGIA A MEDICAMENTOS : N OTOSCOPIA: ...' (exame físico) também na leitura da evolução do atendimento: vira NEGA ALERGIA.
      * v3.0.95: alergia do modelo de exame físico ('ALERGIA: MEDICAMENTOS : N OTOSCOPIA: ...') vira NEGA ALERGIA; o valor da alergia para no próximo campo 'PALAVRA:' do exame.
      * v3.0.94: Guia SADT achada pelo 'Imprimir Documentos' do prontuário (assinada ou não). Antes vinha de listar_assinaveis, que só tem documento pendente de assinatura do usuário logado: depois de assinada a guia sumia ('Nenhuma Guia SADT'). Guia assinada abre a versão do assinaturasimples.
      * v3.0.93: sala Exames com 'Sala: Todas / Coleta / Sutura (ECG)' salva neste PC. Coleta mostra só quem tem coleta pendente; Sutura mostra os eletrocardiogramas. Encaminhamento com os dois aparece nas duas. A contagem e o 'Chamar próximo (N)' seguem a sala escolhida.
@@ -704,7 +705,7 @@
                 const n = norm(c.texto);
                 const negou = /\b(NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)
                     || /\bALERGIAS?\s*:?\s*(NEGA|NEGADA|NAO|NENHUMA)\b/.test(n)
-                    || /\bALERGIAS?\s*:\s*(?:A\s+)?(?:MEDICAMENTOS?A?S?|MEDICACA?O?E?S?)\s*[:\-]\s*(?:N|NAO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA)\b/.test(n);
+                    || /\bALERGIAS?\s*(?:[:\-]\s*)?(?:A\s+)?(?:MEDICAMENTOS?A?S?|MEDICACA?O?E?S?)\s*[:\-]\s*(?:N|NAO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA)\b/.test(n);
                 if (negou) negativaEvolucao = true;
                 for (const re of regexPositivas) {
                     const m = c.texto.match(re);
@@ -6987,13 +6988,17 @@
                 // Sem isso, "NEGA ALERGIAS A MEDICAÇÕES" vira falso positivo "MEDICAÇÕES".
                 if (
                     a280FraseNegaAlergia(candidato.texto) ||
-                    /\b(?:NG|NGA|NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)
+                    /\b(?:NG|NGA|NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n) ||
+                    // v3.0.96: modelo de exame físico "ALERGIA A MEDICAMENTOS : N OTOSCOPIA: ..."
+                    /\bALERGIAS?\s*(?:[:\-]\s*)?(?:A\s+)?(?:MEDICAMENTOS?A?S?|MEDICACA?O?E?S?)\s*[:\-]\s*(?:N|NAO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA)\b/.test(n)
                 ) {
                     return { positiva: '', negativa: true, trecho: candidato.texto, fonte: candidato.fonte };
                 }
                 for (const re of positivos) {
                     const m = candidato.texto.match(re);
-                    const valor = a280LimparTermoEvolucao(m?.[1] || '');
+                    // v3.0.96: tira o sub-rótulo "MEDICAMENTOS :" e para no próximo campo "PALAVRA:".
+                    const valor = a280LimparTermoEvolucao(om30AlergiaSubcampo(m?.[1] || ''));
+                    if (m && om30AlergiaRespostaNao(valor)) return { positiva: '', negativa: true, trecho: candidato.texto, fonte: candidato.fonte };
                     const nv = a280Normalizar(valor);
                     const generico = a280EhGenerico(valor);
                     if (valor && !generico && !a280EhNegativo(valor) && !a280EhNaoInformado(valor)) {

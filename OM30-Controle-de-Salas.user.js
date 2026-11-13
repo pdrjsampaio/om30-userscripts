@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.96
+// @version      3.0.97
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.0.96
+    /* OM30 - CONTROLE DE SALAS v3.0.97
+     * v3.0.97: junção das duas linhas de trabalho em cima da 3.0.96 publicada (alergia, Guia SADT pelo Imprimir Documentos, Coleta/Sutura, token compartilhado). Entra também: fila "Emergência" (EM) na Medicação, fora do Clínico; Cancelar pela lista manda a mesma senha para a próxima fila (sem "Senha perdida" no Raio-X/Exames); "Senha perdida" ao Chamar oferece Recuperar; Cancelar do Raio-X/Exames/Enfermagem no modelo da Medicação (motivos novos, Outro motivo e reavaliação médica com justificativa).
      * v3.0.96: 'ALERGIA A MEDICAMENTOS : N OTOSCOPIA: ...' (exame físico) também na leitura da evolução do atendimento: vira NEGA ALERGIA.
      * v3.0.95: alergia do modelo de exame físico ('ALERGIA: MEDICAMENTOS : N OTOSCOPIA: ...') vira NEGA ALERGIA; o valor da alergia para no próximo campo 'PALAVRA:' do exame.
      * v3.0.94: Guia SADT achada pelo 'Imprimir Documentos' do prontuário (assinada ou não). Antes vinha de listar_assinaveis, que só tem documento pendente de assinatura do usuário logado: depois de assinada a guia sumia ('Nenhuma Guia SADT'). Guia assinada abre a versão do assinaturasimples.
@@ -41,6 +42,12 @@
      * Arquitetura unificada e leve para o Controle de Salas.
      * Recursos compartilham o mesmo ciclo da fila, evitando observers/timers concorrentes.
      * Segurança: /edit nunca é consultado passivamente.
+     * (linha local, numerada 3.0.92–3.0.96 antes da junção:)
+     * v3.0.96L: Exames e Enfermagem sem o motivo "Paciente deixou a unidade antes…".
+     * v3.0.95L: Raio-X sem o motivo "Paciente deixou a unidade antes da realização do Raio-X.".
+     * v3.0.94L: Cancelar do Raio-X, Exames e Enfermagem no mesmo modelo da Medicação: motivos novos (ex.: "Paciente foi chamado e não compareceu à sala de Raio-X."), "Outro motivo" e a opção "Encaminhar paciente para reavaliação médica" com justificativa, gravada nos campos da própria ficha.
+     * v3.0.93L: Cancelar pela lista (Medicação e salas) não perde mais a senha: depois de concluir, a mesma senha vai para a próxima fila (a que a resposta do sistema indicaria, ou a sala em que o paciente ficou Em Espera), pelo retornar_para_atendimento dos Ausentes. "Senha perdida" ao Chamar numa sala: oferece Recuperar, que devolve a senha para a fila desta sala.
+     * v3.0.92L: Medicação com a fila "Emergência" (senhas EM): Mostrar Clínico | Pediatria | Emergência | Histórico. O Clínico da Medicação não mostra mais as senhas EM. "Chamar próximo" e a contagem seguem a fila escolhida.
      * v3.0.91: desfeito o "espera para na chamada" da 3.0.77: a espera volta a contar sempre do encaminhamento até agora, mesmo depois de chamar.
      * v3.0.90: "Selecione a sala de atendimento" não mostra mais cada sala duas vezes (o componente do sistema somava a lista a cada carga).
      * v3.0.89: "Chamar próximo (N)" mostra a quantidade da fila da tela (Clínico/Pediatria; Raio-X sem quem está Em medicação). Título da aba sem código HTML no nome social (fica só o nome social). "Por Fulano" da Medicação grava no paciente da ficha (lista do sistema pelo número da ficha), não na memória da aba.
@@ -1063,7 +1070,7 @@
         const c = lerJSON(CHAVE_CONFIG, {});
         return {
             periodo: (N.PERIODOS[c.periodo] || c.periodo === 'datas') ? c.periodo : 'hoje',
-            mostrar: ['todos', 'pediatria', 'em_medicacao', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
+            mostrar: ['todos', 'pediatria', 'emergencia', 'em_medicacao', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
             // v3.0.93: sala física da fila de Exames neste PC (Coleta / Sutura com ECG).
             salaExames: ['todas', 'coleta', 'sutura'].includes(c.salaExames) ? c.salaExames : 'todas',
             medicacoes: true,
@@ -6065,6 +6072,8 @@
         function ehMedicacao(vm) { return /\/aplicacoes_medicamentos/.test(vm.url || ''); }
         // Salas com o filtro "Pediatria" (senhas PD e PP). var: a barra pode ser montada antes desta linha.
         var SALAS_PEDIATRIA = new Set(['medicacao', 'exames']);
+        // Salas com a fila "Emergência" (senhas EM), separada do Clínico.
+        var SALAS_EMERGENCIA = new Set(['medicacao']);
 
         // "Sala" é sempre a sala atual: vira a coluna de espera. Com MOSTRAR_MEDICACOES
         // vira a coluna de medicações, data e hora de chegada ficam juntas e a hora vira "Espera".
@@ -6433,34 +6442,83 @@
             const id=idGenerico(it,setor); if(!id)return '';
             return `<button type="button" class="cs-cancelar-linha" data-cs-cancelar-setor="${esc(id)}" data-cs-setor="${esc(setor.key)}">✕ Cancelar</button>`;
         }
-        function escolhaCancelamentoSetor(setor){
+        // Mesmo modelo do cancelamento da Medicação: motivos prontos, "Outro motivo" e a opção de
+        // encaminhar o paciente para reavaliação médica (com justificativa).
+        const MOTIVOS_SETOR = {
+            raio_x: [
+                'Paciente foi chamado e não compareceu à sala de Raio-X.',
+                'Paciente recusou a realização do Raio-X.',
+                'Equipamento de Raio-X indisponível no momento.',
+                'Raio-X já realizado anteriormente.',
+                'Solicitação suspensa/alterada pelo médico.',
+            ],
+            exames: [
+                'Paciente foi chamado e não compareceu à sala de exames.',
+                'Paciente recusou a coleta do exame.',
+                'Material/insumo em falta na unidade no momento.',
+                'Exame já coletado anteriormente.',
+                'Solicitação suspensa/alterada pelo médico.',
+                'Difícil acesso venoso.',
+            ],
+            enfermagem: [
+                'Paciente foi chamado e não compareceu à sala de procedimentos.',
+                'Paciente recusou a realização do procedimento.',
+                'Procedimento já realizado anteriormente.',
+                'Solicitação suspensa/alterada pelo médico.',
+            ],
+        };
+        function escolhaCancelamentoSetor(setor, it){
             return new Promise(resolve=>{
                 const fundo=document.createElement('div'); fundo.className='cs-editor cs-cancelar-modal';
-                const op = setor.key === 'exames'
-                    ? ['Exame realizado manualmente.','Paciente deixou a unidade antes da realização do exame.','Paciente recusou a realização do exame.','Outro motivo']
-                    : setor.key === 'raio_x'
-                    ? ['Raio-X realizado manualmente.','Paciente deixou a unidade antes da realização do Raio-X.','Paciente recusou a realização do Raio-X.','Outro motivo']
-                    : ['Procedimento realizado manualmente.','Paciente deixou a unidade antes da realização do procedimento.','Paciente recusou a realização do procedimento.','Outro motivo'];
-                fundo.innerHTML=`<div><div class="cs-cancel-title">Cancelar ${esc(setor.item)}</div><div class="cs-cancel-sub">Selecione o motivo. O cancelamento será gravado diretamente, sem precisar abrir e salvar a ficha manualmente.</div><div class="cs-cm-rotulo">Motivo</div><div class="cs-cm-motivos">${op.map((x,i)=>`<button type="button" data-m="${i}">${esc(x)}</button>`).join('')}</div><textarea class="cs-cm-motivo" placeholder="Justificativa do cancelamento"></textarea><div class="cs-acoes"><button type="button" data-a="voltar">Voltar</button><button type="button" data-a="ok" disabled>Cancelar</button></div></div>`;
-                const ta=fundo.querySelector('textarea'), ok=fundo.querySelector('[data-a="ok"]');
-                fundo.onclick=e=>{const b=e.target.closest('button');if(e.target===fundo||(b&&b.dataset.a==='voltar')){fundo.remove();resolve(null);return;}if(b&&b.dataset.m!=null){const i=+b.dataset.m,t=op[i];fundo.querySelectorAll('[data-m]').forEach(x=>x.dataset.on=x===b?'1':'0');ta.value=/^Outro motivo$/i.test(t)?'':t;ok.disabled=!ta.value.trim();if(/^Outro motivo$/i.test(t))ta.focus();}if(b&&b.dataset.a==='ok'&&!ok.disabled){const motivo=ta.value.trim();fundo.remove();resolve({motivo});}};
-                ta.oninput=()=>{ok.disabled=!ta.value.trim();}; document.body.appendChild(fundo);
+                const op=MOTIVOS_SETOR[setor.key]||MOTIVOS_SETOR.enfermagem;
+                fundo.innerHTML=`<div>
+                    <div class="cs-cancel-title">Cancelar ${esc(setor.item)}</div>
+                    ${it?`<div class="cs-cm-paciente">${esc(it.nome_municipe||'Paciente')}${it.senha?` · senha ${esc(it.senha)}`:''}</div>`:''}
+                    <div class="cs-cm-rotulo">Motivo</div>
+                    <div class="cs-cm-motivos">${op.map((x,i)=>`<button type="button" data-m="${i}">${esc(x)}</button>`).join('')}<button type="button" data-m="outro">Outro motivo</button></div>
+                    <textarea class="cs-cm-motivo" placeholder="Justificativa do cancelamento"></textarea>
+                    <label class="cs-cm-reav"><input type="checkbox"> <span>Encaminhar paciente para reavaliação médica</span></label>
+                    <textarea class="cs-cm-just-reav" placeholder="Justificativa para encaminhar ao médico" hidden></textarea>
+                    <div class="cs-acoes"><button type="button" data-a="voltar">Voltar</button><button type="button" data-a="ok" disabled>Cancelar ${esc(setor.item)}</button></div>
+                </div>`;
+                const ta=fundo.querySelector('.cs-cm-motivo'), ok=fundo.querySelector('[data-a="ok"]');
+                const reav=fundo.querySelector('.cs-cm-reav input'), justReav=fundo.querySelector('.cs-cm-just-reav');
+                const validar=()=>{ok.disabled=!ta.value.trim()||(reav.checked&&!justReav.value.trim());};
+                const fechar=v=>{fundo.remove();document.removeEventListener('keydown',tecla,true);resolve(v);};
+                const tecla=e=>{if(e.key==='Escape')fechar(null);};
+                document.addEventListener('keydown',tecla,true);
+                fundo.onclick=e=>{
+                    const b=e.target.closest('button');
+                    if(e.target===fundo||(b&&b.dataset.a==='voltar')){fechar(null);return;}
+                    if(b&&b.dataset.m!=null){fundo.querySelectorAll('[data-m]').forEach(x=>x.dataset.on=x===b?'1':'0');if(b.dataset.m==='outro'){ta.value='';ta.focus();}else ta.value=op[+b.dataset.m]||'';validar();}
+                    if(b&&b.dataset.a==='ok'&&!ok.disabled)fechar({motivo:ta.value.trim(),reavaliar:reav.checked,justificativaReavaliacao:justReav.value.trim()});
+                };
+                ta.oninput=()=>{const t=ta.value.trim();if(t&&!op.includes(t))fundo.querySelectorAll('[data-m]').forEach(x=>x.dataset.on=x.dataset.m==='outro'?'1':'0');validar();};
+                justReav.oninput=validar;
+                reav.onchange=()=>{justReav.hidden=!reav.checked;if(reav.checked)justReav.focus();validar();};
+                document.body.appendChild(fundo);
             });
         }
         async function cancelarSetorDireto(it,setor){
             const id=idGenerico(it,setor);if(!id)return;
-            const escolha=await escolhaCancelamentoSetor(setor);if(!escolha)return;
+            const escolha=await escolhaCancelamentoSetor(setor,it);if(!escolha)return;
             // /edit somente após este clique humano.
             const r=await fetch(`${setor.endpoint}/${encodeURIComponent(id)}/edit`,{credentials:'same-origin',cache:'no-store',headers:{Accept:'text/html,application/xhtml+xml','X-OM30-Intentional-Edit':'1'}});
             if(!r.ok)throw new Error(`HTTP ${r.status}`);const doc=new DOMParser().parseFromString(await r.text(),'text/html');
             const form=doc.querySelector(`form.${setor.formClass},form[id^="${setor.formPrefix}"]`);if(!form)throw new Error('Ficha não editável');
             const profissional=[...form.querySelectorAll('#current_profissional,input[name="current_profissional"]')].map(x=>String(x.value||'').trim()).find(Boolean)||'';if(!profissional)throw new Error('Profissional atual não encontrado');
+            // Reavaliação médica (mesmos campos que a ficha tem: caixa + justificativa do encaminhamento).
+            {const caixaReav=form.querySelector('input[type="checkbox"][name$="[encaminhar_paciente_para_reavaliacao_medica]"]'),justEnc=form.querySelector('textarea[name$="[justificativa_encaminhamento]"],input[name$="[justificativa_encaminhamento]"]');
+            if(escolha.reavaliar&&(!caixaReav||!justEnc))throw new Error('Esta ficha não tem a opção de reavaliação médica');
+            if(caixaReav)caixaReav.checked=!!escolha.reavaliar;if(justEnc)justEnc.value=escolha.reavaliar?escolha.justificativaReavaliacao:'';}
             const blocos=[...form.querySelectorAll('.item-encaminhamento-controle-salas')];let qtd=0;const momento=new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
             for(const item of blocos){const feito=item.querySelector(`input[name$="[${setor.feito}]"],input[id$="_${setor.feito}"]`),cancel=item.querySelector('input[name$="[cancelado]"],input[id$="_cancelado"]');if(!cancel||/^(true|1)$/i.test(String(cancel.value))||/^(true|1)$/i.test(String(feito&&feito.value)))continue;const just=item.querySelector('input[name$="[justificativa_cancelamento]"],textarea[name$="[justificativa_cancelamento]"],input[id$="_justificativa_cancelamento"],textarea[id$="_justificativa_cancelamento"]'),at=item.querySelector('input[name$="[canceled_at]"],input[id$="_canceled_at"]'),prof=item.querySelector('input[name$="[profissional_cancelamento_id]"],input[id$="_profissional_cancelamento_id"]');if(!just||!at||!prof)throw new Error('Campos de cancelamento incompletos');cancel.value='true';if(feito)feito.value='false';just.value=escolha.motivo;at.value=momento;prof.value=profissional;qtd++;}
             if(!qtd)throw new Error('Nenhum item pendente');
             const fd=new FormData(form),body=new URLSearchParams();for(const [k,v] of fd.entries())if(typeof v==='string')body.append(k,v);if(!body.has('button'))body.append('button','');const headers={'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8',Accept:'*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, application/x-ecmascript','X-Requested-With':'XMLHttpRequest'};const csrf=document.querySelector('meta[name="csrf-token"]');if(csrf&&csrf.content)headers['X-CSRF-Token']=csrf.content;
             const sv=await fetch(form.getAttribute('action')||setor.endpoint,{method:(form.getAttribute('method')||'post').toUpperCase(),credentials:'same-origin',cache:'no-store',headers,body:body.toString()});const txt=await sv.text();if(!sv.ok)throw new Error(`Salvar HTTP ${sv.status}`);
             const m=txt.match(/concluirSenhaOpcional\(\s*["']([^"']+)["']\s*,\s*\{[\s\S]*?atendimento_id\s*:\s*(\d+)\s*,[\s\S]*?atendimento_type\s*:\s*["']([^"']+)["']/i);if(m&&typeof window.concluirSenhaOpcional==='function')await window.concluirSenhaOpcional(m[1],{atendimento_id:+m[2],atendimento_type:m[3]});
+            // A senha segue para a próxima sala/médico, como no Salvar da tela.
+            await encaminharSenhaAposCancelar(txt,it,TIPO_SALA[setor.key]||'');
             DET.cache.delete(`${setor.key}:${id}`);const ap=atendimentoPres(it.atendimento_str);if(ap)presReq('/api/attendance/delete',{atendimento_id:ap.chave,sala:setor.api}).catch(()=>{});CS.ultimaAssinatura='';aviso(`${setor.nome}: cancelamento concluído.`);if(CS.colecao)carregar(CS.colecao,{silencioso:true});
         }
         function cliqueCancelarSetor(ev){const b=ev.target.closest('button[data-cs-cancelar-setor]');if(!b)return;ev.preventDefault();ev.stopPropagation();const vm=CS.colecao,setor=setorDaColecao(vm),it=(vm.items||[]).find(x=>idGenerico(x,setor)===b.dataset.csCancelarSetor);if(!setor||!it)return;b.disabled=true;cancelarSetorDireto(it,setor).catch(e=>swalSeguro({type:'error',title:'Cancelamento não concluído',html:esc(e&&e.message||e)})).finally(()=>{if(b.isConnected)b.disabled=false;});}
@@ -8036,7 +8094,65 @@
             if (!r.ok) throw new Error('HTTP ' + r.status);
             const res = N.resultadoSalvar(texto);
             if (!res.ok) throw new Error('o sistema recusou: ' + (res.erros.join('; ') || 'o formulário voltou com erro'));
+            res.texto = texto;
             return res;
+        }
+
+        // ── Senha para a próxima fila (recuperar) ─────────────────────────────
+        // O Salvar da tela conclui a senha e o JS da resposta a encaminha para a próxima fila.
+        // O cancelamento direto da lista só concluía: a senha sumia e a próxima sala (ex.: Raio-X)
+        // dava "Senha perdida". Mesmo caminho dos Ausentes: retornar_para_atendimento na
+        // categoria do Senha Simples da fila de destino devolve a MESMA senha para ela.
+        const NOMES_FILA = { controle_de_salas_medicacao:'Medicação', controle_de_salas_exames:'Exames', controle_de_salas_raio_x:'Raio-X', controle_de_salas_procedimento_enfermagem:'Enfermagem', controle_de_salas_gesso_imobilizacao:'Gesso', atendimento:'Médico' };
+        async function categoriaDaFila(codigo) {
+            const r = await fetch(`/filas/parametrizacoes/${encodeURIComponent(codigo)}.json`, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const j = await r.json();
+            const id = j && j.senha_simples_categoria && j.senha_simples_categoria.id;
+            if (!id) throw new Error('fila sem categoria de senha');
+            return id;
+        }
+        async function recuperarSenhaNaFila(atendimentoStr, codigo) {
+            const m = String(atendimentoStr || '').match(/^(\w+)#(\d+)$/);
+            if (!m) throw new Error('atendimento não identificado');
+            if (typeof window.senhaSimplesPutFilas !== 'function') throw new Error('Senha Simples indisponível');
+            try {   // como as funções do sistema fazem antes de falar com o Senha Simples
+                const tk = sessionStorage.getItem('senhaSimplesToken');
+                if (tk && typeof senhaSimplesProxy !== 'undefined') senhaSimplesProxy.defaults.headers = { Authorization: `Bearer ${tk}` };   // eslint-disable-line no-undef
+            } catch (_) {}
+            const cat = await categoriaDaFila(codigo);
+            const { data } = await window.senhaSimplesPutFilas(`${cat}/retornar_para_atendimento`, { atendimento_id: +m[2], atendimento_type: m[1], categoria_id: cat });
+            return data;
+        }
+        // Destino da senha depois de salvar: o que a resposta do sistema mandaria; sem isso, a sala
+        // em que o paciente ficou "Em Espera" (lista do sistema, ontem e hoje).
+        async function destinoDaSenha(textoResposta, atendimentoStr, salaAtual) {
+            const ch = [...String(textoResposta || '').matchAll(/(?:redirecionarControleSalasSemSenha|encaminharSenhaControleSalas)\(\s*["']([^"']*)["']\s*,\s*["']([^"']+)["']/g)].map(x => x[2]).filter(Boolean);
+            if (ch.length) return ch.find(x => x !== 'atendimento') || ch[0];
+            await new Promise(r => setTimeout(r, 800));
+            const fmt = x => `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
+            const hoje = new Date(), ontem = new Date(hoje.getTime() - 864e5);
+            const salas = [['controle_de_salas_medicacao', '/aplicacoes_medicamentos'], ['controle_de_salas_exames', '/encaminhamentos_exames'], ['controle_de_salas_raio_x', '/encaminhamentos_radiografias'], ['controle_de_salas_procedimento_enfermagem', '/encaminhamentos_procedimentos_enfermagem']];
+            for (const [codigo, ep] of salas) {
+                if (codigo === salaAtual) continue;
+                const q = new URLSearchParams({ format: 'json', sortable: '{}', page: '1', per_page: '100', profissional: '{}', status: '1', grau_risco: '', dataInicial: fmt(ontem), dataFinal: fmt(hoje) });
+                const arr = await fetch(`${ep}?${q}`, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : []).catch(() => []);
+                if (Array.isArray(arr) && arr.some(x => String(x.atendimento_str) === String(atendimentoStr))) return codigo;
+            }
+            return '';
+        }
+        async function encaminharSenhaAposCancelar(textoResposta, it, salaAtual) {
+            if (!it || !String(it.senha || '').replace(/[—-]/g, '').trim()) return;
+            let destino = '';
+            try {
+                destino = await destinoDaSenha(textoResposta, it.atendimento_str, salaAtual);
+                if (!destino) return;
+                await recuperarSenhaNaFila(it.atendimento_str, destino);
+                aviso(`Senha ${it.senha} → ${NOMES_FILA[destino] || destino}`);
+            } catch (e) {
+                console.warn('[Controle de Salas] senha não encaminhada após cancelar', destino, e);
+                aviso(`Senha ${it.senha}: não foi para ${NOMES_FILA[destino] || 'a próxima sala'}. Use Recuperar lá.`);
+            }
         }
 
         // A tela executaria a resposta do salvar, que conclui a senha; aqui só essa
@@ -8084,6 +8200,8 @@
                 MED.cache.delete(id);
                 etapa = 'concluir a senha';
                 await concluirSenha(salvo, it);
+                // A senha segue para a próxima sala (Raio-X, Exames…) ou para o médico, como no Salvar da tela.
+                await encaminharSenhaAposCancelar(salvo.texto, it, 'controle_de_salas_medicacao');
                 // Confere pela consulta (sem efeito no atendimento).
                 const depois = await buscarMedicacoes(id).catch(() => null);
                 const restam = depois ? depois.filter(m => m.estado === 'pendente').length : 0;
@@ -8152,11 +8270,19 @@
             // Medicação: "Pediatria" mostra só as senhas PD (pediatria) e PP (pediatria preferencial).
             // Medicação e Exames: duas filas separadas. "Clínico" (padrão) sem as senhas PD/PP;
             // "Pediatria" só PD (pediatria) e PP (pediatria preferencial).
-            const temPediatria = !historico && SALAS_PEDIATRIA.has((setorDaColecao(vm) || {}).key);
+            const chaveSala = (setorDaColecao(vm) || {}).key;
+            const temPediatria = !historico && SALAS_PEDIATRIA.has(chaveSala);
+            const temEmergencia = !historico && SALAS_EMERGENCIA.has(chaveSala);
             const soPediatria = temPediatria && cfg.mostrar === 'pediatria';
-            const soClinico = temPediatria && cfg.mostrar !== 'pediatria';
+            const soEmergencia = temEmergencia && cfg.mostrar === 'emergencia';
+            const soClinico = temPediatria && !soPediatria && !soEmergencia;
+            const ehEmergencia = it => /^EM\d/i.test(String(it.senha || '').trim());
             const ehPediatria = it => /^P[DP]\d/i.test(String(it.senha || '').trim());
-            const filaPediatria = it => soPediatria ? ehPediatria(it) : (soClinico ? !ehPediatria(it) : true);
+            // Clínico: sem PD/PP e, onde há a fila Emergência, sem as senhas EM.
+            const filaPediatria = it => soPediatria ? ehPediatria(it)
+                : soEmergencia ? ehEmergencia(it)
+                : soClinico ? (!ehPediatria(it) && !(temEmergencia && ehEmergencia(it)))
+                : true;
             // Raio-X: "Em medicação" é uma fila à parte; quem está marcado sai da fila principal.
             const comEmMed = !historico && setorEmMed(setorDaColecao(vm));
             const soEmMed = comEmMed && cfg.mostrar === 'em_medicacao';
@@ -8352,6 +8478,36 @@
         // "Senha perdida": o sistema não consegue chamar a senha. Quando o aviso aparece depois de um Chamar,
         // aquele atendimento passa a usar o Atender original do sistema (que abre a ficha).
         const SENHA_PERDIDA = new Set();
+        // "Senha perdida" depois de um Chamar nesta sala: oferece Recuperar, que devolve a mesma
+        // senha para a fila desta sala (retornar_para_atendimento, como nos Ausentes).
+        const RECUP = { ultimo: null, aberto: false };
+        document.addEventListener('click', ev => {
+            const a = ev.target && ev.target.closest && ev.target.closest('.cs-fila .botao-chamar');
+            const vm = CS.colecao;
+            if (!a || !vm || !vm.$el) return;
+            const linhas = [...vm.$el.querySelectorAll('tbody > tr')];
+            const it = (vm.items || [])[linhas.indexOf(a.closest('tr'))];
+            if (it) RECUP.ultimo = { at: String(it.atendimento_str || ''), senha: String(it.senha || ''), em: Date.now() };
+        }, true);
+        setInterval(async () => {
+            if (RECUP.aberto || !RECUP.ultimo || Date.now() - RECUP.ultimo.em > 20000 || !avisoSenhaPerdida()) return;
+            const alvo = RECUP.ultimo, setor = setorDaColecao(CS.colecao), codigo = setor && TIPO_SALA[setor.key];
+            if (!codigo || !/^\w+#\d+$/.test(alvo.at)) return;
+            RECUP.aberto = true; RECUP.ultimo = null;
+            try {
+                SENHA_PERDIDA.add(alvo.at);
+                for (let i = 0; i < 100 && avisoSenhaPerdida(); i++) await new Promise(r => setTimeout(r, 200));   // espera o OK do aviso do sistema
+                const ok = await swalSeguro({ type: 'warning', title: 'Senha perdida', html: `<b>${esc(alvo.senha)}</b> — recuperar para esta fila?`, showCancelButton: true, confirmButtonText: 'Recuperar', cancelButtonText: 'Voltar' });
+                if (!ok) return;
+                await recuperarSenhaNaFila(alvo.at, codigo);
+                SENHA_PERDIDA.delete(alvo.at);
+                aviso(`Senha ${alvo.senha} recuperada. Pode chamar.`);
+                CS.ultimaAssinatura = '';
+                if (CS.colecao) carregar(CS.colecao, { silencioso: true });
+            } catch (e) {
+                swalSeguro({ type: 'error', title: 'Não foi possível recuperar', html: esc(e && e.message || e) });
+            } finally { RECUP.aberto = false; }
+        }, 400);
         function avisoSenhaPerdida() {
             // O aviso do sistema é SweetAlert2 antigo (.swal2-modal dentro de .swal2-container fixo).
             return [...document.querySelectorAll('.swal2-modal, .swal2-popup, .swal2-container, .sweet-alert, .swal-modal, .toast, .toast-message, .alert, .modal.show, .modal.in, [role="alert"], [role="dialog"]')]
@@ -8638,11 +8794,13 @@
                 ? bt('mostrar:historico', 'Histórico', cfg.mostrar === 'historico')
                 : '';
             const naMedicacao = !!CS.colecao && SALAS_PEDIATRIA.has((setorDaColecao(CS.colecao) || {}).key);
-            const pediatriaHtml = naMedicacao ? bt('mostrar:pediatria', 'Pediatria', cfg.mostrar === 'pediatria') : '';
+            const comEmergenciaBarra = !!CS.colecao && SALAS_EMERGENCIA.has((setorDaColecao(CS.colecao) || {}).key);
+            const pediatriaHtml = (naMedicacao ? bt('mostrar:pediatria', 'Pediatria', cfg.mostrar === 'pediatria') : '')
+                + (comEmergenciaBarra ? bt('mostrar:emergencia', 'Emergência', cfg.mostrar === 'emergencia') : '');
             const noRaioX = !!CS.colecao && setorEmMed(setorDaColecao(CS.colecao));
             const qtdEmMed = (EMMED && EMMED.mapa.size) || 0;
             const emMedHtml = noRaioX ? bt('mostrar:em_medicacao', qtdEmMed ? `Em medicação (${qtdEmMed})` : 'Em medicação', cfg.mostrar === 'em_medicacao') : '';
-            const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao) || (cfg.mostrar === 'em_medicacao' && !noRaioX);
+            const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao) || (cfg.mostrar === 'emergencia' && !comEmergenciaBarra) || (cfg.mostrar === 'em_medicacao' && !noRaioX);
             const noExames = !!CS.colecao && (setorDaColecao(CS.colecao) || {}).key === 'exames' && cfg.mostrar !== 'historico';
             const salaHtml = noExames
                 ? `<span class="cs-grupo" title="Sala deste computador: Coleta mostra só coletas; Sutura mostra os eletrocardiogramas"><b>Sala:</b>${bt('sala:todas', 'Todas', cfg.salaExames === 'todas')}${bt('sala:coleta', 'Coleta', cfg.salaExames === 'coleta')}${bt('sala:sutura', 'Sutura (ECG)', cfg.salaExames === 'sutura')}</span>`

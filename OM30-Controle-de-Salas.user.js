@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.93
+// @version      3.0.95
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -16,7 +16,25 @@
 (function () {
     'use strict';
 
-    /* OM30 - CONTROLE DE SALAS v3.0.93
+    // ── v3.0.95: alergia no modelo de exame físico ─────────────────────────────
+    // Ex.: "ALERGIA: MEDICAMENTOS : N OTOSCOPIA: SEM ALTERAÇÕES PULMÕES: MV+ ..."
+    // "MEDICAMENTOS :" é sub-rótulo, "N" = não, e "OTOSCOPIA:" já é o próximo campo.
+    // Antes tudo isso virava "⚠ ALERGIA". Usado pelos dois leitores de alergia.
+    function om30AlergiaSubcampo(valor) {
+        let v = String(valor || '').replace(/\s+/g, ' ').trim();
+        v = v.replace(/^(?:A\s+)?(?:MEDICAMENTOS?A?S?|MEDICAMENTOSAS?|MEDICA[CÇ](?:AO|ÃO|OES|ÕES))\s*[:\-]\s*/i, '');
+        // Próximo rótulo do exame físico: UMA palavra em maiúsculas seguida de ":".
+        const m = /\s+[A-ZÀ-Ü][A-ZÀ-Ü\/]{2,24}\s*:/.exec(v);
+        if (m) v = v.slice(0, m.index);
+        return v.replace(/^[\s:;,.\-]+|[\s:;,\-]+$/g, '').trim();
+    }
+    function om30AlergiaRespostaNao(valor) {
+        return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
+    }
+
+    /* OM30 - CONTROLE DE SALAS v3.0.95
+     * v3.0.95: alergia do modelo de exame físico ('ALERGIA: MEDICAMENTOS : N OTOSCOPIA: ...') vira NEGA ALERGIA; o valor da alergia para no próximo campo 'PALAVRA:' do exame.
+     * v3.0.94: Guia SADT achada pelo 'Imprimir Documentos' do prontuário (assinada ou não). Antes vinha de listar_assinaveis, que só tem documento pendente de assinatura do usuário logado: depois de assinada a guia sumia ('Nenhuma Guia SADT'). Guia assinada abre a versão do assinaturasimples.
      * v3.0.93: sala Exames com 'Sala: Todas / Coleta / Sutura (ECG)' salva neste PC. Coleta mostra só quem tem coleta pendente; Sutura mostra os eletrocardiogramas. Encaminhamento com os dois aparece nas duas. A contagem e o 'Chamar próximo (N)' seguem a sala escolhida.
      * v3.0.92: token do Senha Simples compartilhado entre as abas deste navegador (apagado na tela de login/sair): aba nova não abre mais outra aba de login do Senha Simples.
      * Arquitetura unificada e leve para o Controle de Salas.
@@ -685,15 +703,16 @@
             for (const c of candidatos) {
                 const n = norm(c.texto);
                 const negou = /\b(NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s+ALERGIAS?\b/.test(n)
-                    || /\bALERGIAS?\s*:?\s*(NEGA|NEGADA|NAO|NENHUMA)\b/.test(n);
+                    || /\bALERGIAS?\s*:?\s*(NEGA|NEGADA|NAO|NENHUMA)\b/.test(n)
+                    || /\bALERGIAS?\s*:\s*(?:A\s+)?(?:MEDICAMENTOS?A?S?|MEDICACA?O?E?S?)\s*[:\-]\s*(?:N|NAO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA)\b/.test(n);
                 if (negou) negativaEvolucao = true;
                 for (const re of regexPositivas) {
                     const m = c.texto.match(re);
                     if (!m) continue;
                     const antes = norm(c.texto.slice(0, m.index));
                     if (/\b(NEGA|NEGOU|SEM|NAO POSSUI|NAO TEM|NAO REFERE|NAO RELATA)\s*$/.test(antes)) continue;
-                    const termo = cortarTermoAlergia(m[1]);
-                    if (termo && !ehNegativa(termo) && !ehVazia(termo) && !/^NEGA\b/.test(norm(termo))) {
+                    const termo = cortarTermoAlergia(om30AlergiaSubcampo(m[1]));
+                    if (termo && !om30AlergiaRespostaNao(termo) && !ehNegativa(termo) && !ehVazia(termo) && !/^NEGA\b/.test(norm(termo))) {
                         positivas.push(termo.slice(0,160));
                         fontes.push('evolução');
                     }
@@ -6804,6 +6823,8 @@
                 .replace(/^ALERGIAS?\s*[:\-]?\s*/i, '')
                 .replace(/^ALERGICO\s+A\s*[:\-]?\s*/i, '')
                 .trim();
+            v = om30AlergiaSubcampo(v);
+            if (!v || om30AlergiaRespostaNao(v)) return '';
             if (a280EhNegativo(v)) return '';
             v = a280CortarNoProximoCampo(v);
             const n = a280Normalizar(v);
@@ -6824,7 +6845,8 @@
             for (const re of padroes) {
                 const m = texto.match(re);
                 if (!m) continue;
-                const bruto = a280Limpar(m[1]);
+                const bruto = om30AlergiaSubcampo(a280Limpar(m[1]));
+                if (!bruto || om30AlergiaRespostaNao(bruto)) return '';
                 if (a280EhNegativo(bruto)) continue;
                 const v = a280LimparAlergia(bruto);
                 if (v && !a280EhGenerico(v)) return v.slice(0, 500);
@@ -6931,6 +6953,7 @@
                 let valor = valores[0] || '';
                 if (!valor) valor = a280Limpar(strong.nextElementSibling?.textContent || '');
                 if (a280EhNaoInformado(valor)) return { localizado: true, valor: '', negativa: false, naoInformada: true };
+                if (om30AlergiaRespostaNao(om30AlergiaSubcampo(valor))) return { localizado: true, valor: '', negativa: true, naoInformada: false };
                 if (a280EhNegativo(valor)) return { localizado: true, valor: '', negativa: true, naoInformada: false };
                 valor = a280CortarNoProximoCampo(valor);
                 if (a280EhNegativo(valor)) return { localizado: true, valor: '', negativa: true, naoInformada: false };
@@ -9168,7 +9191,11 @@
   const naLista = /^\/aplicacoes_medicamentos$/.test(caminho);
   if (!mFicha && !naLista) return;
 
-  const CACHE = 'om30-sadt:guias:v1', CACHE_MS = 10 * 60000;
+  const CACHE = 'om30-sadt:guias:v2', CACHE_MS = 10 * 60000;
+  // v3.0.94: id → { url, assinada, nome }. A guia ASSINADA não aparece mais em
+  // listar_assinaveis (só pendentes) e vira link do assinaturasimples em
+  // imprimir_documentos; por isso o "Nenhuma Guia SADT" depois de assinar.
+  const META = new Map();
   const USO = 'om30-sadt:uso:v1', USO_MS = 7 * 86400000;
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -9186,22 +9213,64 @@
   async function buscarGuias(atend, forcar = false) {
     const cache = lerJ(CACHE, {});
     const c = cache[atend.chave];
-    if (!forcar && c && Date.now() - c.t < CACHE_MS) return c.ids;
+    // Cache vazio não vale: a guia pode ter sido gerada/assinada depois.
+    if (!forcar && c && c.ids && c.ids.length && Date.now() - c.t < CACHE_MS) {
+      for (const [id, m] of Object.entries(c.meta || {})) META.set(id, m);
+      return c.ids;
+    }
     const r = await fetch(`/prontuarios/new?prontuariavel_id=${encodeURIComponent(atend.id)}&prontuariavel_type=${atend.tipo}`, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html' } });
     if (!r.ok) throw new Error(`prontuário HTTP ${r.status}`);
     const pid = (r.url.match(/\/prontuarios\/(\d+)/) || [])[1] || ((await r.text()).match(/\/prontuarios\/(\d+)/) || [])[1];
     if (!pid) throw new Error('prontuário não encontrado');
-    const r2 = await fetch(`/prontuarios/${pid}/listar_assinaveis`, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-    if (!r2.ok) throw new Error(`documentos HTTP ${r2.status}`);
-    const doc = new DOMParser().parseFromString(await r2.text(), 'text/html');
-    const ids = [...new Set([...doc.querySelectorAll('[data-documento-type][data-documento-id]')]
-      .filter(e => /^Ambulatorial::Sadt$/i.test(e.dataset.documentoType)).map(e => String(e.dataset.documentoId)))];
+    const meta = {};
+    const ordem = [];
+    const add = (id, m) => { if (!id) return; if (!meta[id]) ordem.push(id); meta[id] = Object.assign(meta[id] || {}, m); };
+    // 1) "Imprimir Documentos" do prontuário: traz a guia assinada OU não.
+    let erroImp = null;
+    try {
+      const ri = await fetch(`/prontuarios/${pid}/imprimir_documentos`, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'text/html, */*;q=0.01' } });
+      if (!ri.ok) throw new Error(`imprimir HTTP ${ri.status}`);
+      const di = new DOMParser().parseFromString(await ri.text(), 'text/html');
+      let n = 0;
+      for (const tr of di.querySelectorAll('tr')) {
+        const nome = String(tr.cells?.[0]?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!/GUIA\s*SADT/i.test(nome)) continue;
+        const a = tr.querySelector('a[href]');
+        if (!a) continue;
+        n++;
+        const href = new URL(a.getAttribute('href'), location.origin).href;
+        const mSadt = href.match(/\/sadts\/(\d+)/);
+        const mAss = href.match(/\/publics\/consult\/([A-Za-z0-9]+)/);
+        if (mSadt) add(mSadt[1], { url: href, assinada: false, nome });
+        else if (mAss) add(`assinada-${mAss[1]}`, { url: href, assinada: true, nome });
+        else add(`guia-${n}`, { url: href, assinada: /assinatura/i.test(href), nome });
+      }
+    } catch (e) { erroImp = e; console.warn('[OM30 SADT] imprimir_documentos', e?.message || e); }
+    // 2) Pendentes de assinatura (fonte antiga): garante o id numérico das não assinadas.
+    try {
+      const r2 = await fetch(`/prontuarios/${pid}/listar_assinaveis`, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (r2.ok) {
+        const doc = new DOMParser().parseFromString(await r2.text(), 'text/html');
+        for (const e of doc.querySelectorAll('[data-documento-type][data-documento-id]')) {
+          if (!/^Ambulatorial::Sadt$/i.test(e.dataset.documentoType)) continue;
+          const id = String(e.dataset.documentoId);
+          if (!meta[id]) add(id, { url: urlPdf(id), assinada: false, nome: `Guia SADT ${id}` });
+        }
+      } else if (erroImp) throw new Error(`documentos HTTP ${r2.status}`);
+    } catch (e) { if (erroImp) throw e; }
+    for (const id of ordem) META.set(id, meta[id]);
     const novo = lerJ(CACHE, {});
     for (const k of Object.keys(novo)) if (Date.now() - novo[k].t > CACHE_MS) delete novo[k];
-    novo[atend.chave] = { ids, t: Date.now() };
+    novo[atend.chave] = { ids: ordem, meta, t: Date.now() };
     gravarJ(CACHE, novo);
-    return ids;
+    return ordem;
   }
+  const urlGuia = id => META.get(id)?.url || urlPdf(id);
+  const nomeGuia = id => {
+    const m = META.get(id);
+    const base = m?.nome || (/^\d+$/.test(id) ? `Guia SADT ${id}` : 'Guia SADT');
+    return m?.assinada ? `${base} (assinada)` : base;
+  };
 
   // ── Uso (aberta / baixada) ────────────────────────────────────────────
   function uso(atend, id) { return lerJ(USO, {})[`${atend.chave}|${id}`] || {}; }
@@ -9233,19 +9302,27 @@
   async function escolherGuia(ids) {
     if (ids.length <= 1) return ids[0] || null;
     const opcoes = {};
-    for (const id of ids) opcoes[id] = `Guia ${id}`;
+    for (const id of ids) opcoes[id] = nomeGuia(id);
     const r = await janela({ title: 'Guia SADT', input: 'select', inputOptions: opcoes, inputValue: ids[ids.length - 1], showCancelButton: true, confirmButtonText: 'Abrir', cancelButtonText: 'Voltar' });
     return r.ok ? String(r.valor || '') || null : null;
   }
 
   function abrirGuia(atend, id) {
-    const w = window.open(urlPdf(id), `om30-sadt-${id}`);
+    const w = window.open(urlGuia(id), `om30-sadt-${id}`);
     if (!w) { avisar('Pop-up bloqueado', 'warning'); return false; }
     registrar(atend, id, 'aberta');
     return true;
   }
   async function baixarGuia(atend, id) {
-    const r = await fetch(urlPdf(id), { credentials: 'same-origin', cache: 'no-store' });
+    const url = urlGuia(id);
+    // Guia assinada fica no assinaturasimples (outro site): não dá para baixar por
+    // aqui; abre a versão assinada para baixar/imprimir por lá.
+    if (new URL(url, location.origin).origin !== location.origin) {
+      if (!abrirGuia(atend, id)) throw new Error('pop-up bloqueado');
+      registrar(atend, id, 'baixada');
+      return;
+    }
+    const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     if (!/pdf/i.test(r.headers.get('content-type') || '')) throw new Error('resposta não é PDF');
     const blob = await r.blob();
@@ -9359,8 +9436,8 @@
       const temGuia = E.ids && E.ids.length;
       const guia = !temGuia ? '—'
         : E.ids.length > 1
-          ? `<select data-om30-sadt="escolher">${E.ids.map(id => `<option value="${esc(id)}"${id === E.id ? ' selected' : ''}>Guia ${esc(id)}</option>`).join('')}</select>`
-          : esc(E.id);
+          ? `<select data-om30-sadt="escolher">${E.ids.map(id => `<option value="${esc(id)}"${id === E.id ? ' selected' : ''}>${esc(nomeGuia(id))}</option>`).join('')}</select>`
+          : esc(nomeGuia(E.id));
       const botoes = temGuia
         ? `<a class="btn btn-primary ml-0" data-om30-sadt="abrir">Abrir guia</a> <a class="btn btn-primary" data-om30-sadt="baixar">Baixar PDF</a>`
         : (E.estado === 'carregando' ? '' : `<a class="btn btn-primary ml-0" data-om30-sadt="recarregar">Buscar de novo</a>`);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.3.2
+// @version      2.3.3
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -6699,7 +6699,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.3.2', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.3.3', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];
@@ -7561,5 +7561,64 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       }finally{estado.rodando=false;}
     }
   };
-  console.info(TAG,'v2.3.1 ativo: assinatura pela rota nativa + confirmação real + lembrete de assinatura sem encaminhamento + finalização protegida.');
+  console.info(TAG,'v2.3.3 ativo: assinatura pela rota nativa + confirmação real + lembrete de assinatura sem encaminhamento + finalização protegida.');
+})();
+
+
+/* ============================================================
+   OM30 PA v2.3.3 • RAIO-X COMO 1º ENCAMINHAMENTO
+   ------------------------------------------------------------
+   Tela nativa /encaminhamentos_controle_salas/new, tabela "Ordem de chamada"
+   (select.selecionar_ordenacao_sala name="salas_ordem[]", valores sala#N).
+   O padrão do sistema é Medicamentos 01, Exames 02, Raio X 03.
+   - Ao abrir, Raio X vira "Encaminhamento 01"; as outras salas descem,
+     mantendo a ordem que já tinham entre si.
+   - Dispara a validação nativa (ordens diferentes) pelo change do jQuery.
+   - Se o profissional mudar a ordem na mão, o script não mexe mais.
+   ============================================================ */
+(() => {
+  'use strict';
+  if (!/^\/encaminhamentos_controle_salas(?:\/new)?\/?$/.test(location.pathname)) return;
+  if (window.__OM30_PA_RX_PRIMEIRO__) return;
+  window.__OM30_PA_RX_PRIMEIRO__ = true;
+  const TAG = '[OM30 PA Raio-X 1º]';
+  let usuarioMexeu = false;
+  let aplicadoEm = null;
+  document.addEventListener('change', e => {
+    if (e.isTrusted && e.target?.matches?.('select.selecionar_ordenacao_sala')) usuarioMexeu = true;
+  }, true);
+  const posicao = s => Number(String(s?.value || '').split('#')[1]) || 99;
+  const ehRaioX = s => [...(s?.options || [])].some(o => /^radiografias?#/i.test(o.value));
+  function aplicar() {
+    if (usuarioMexeu) return true;
+    const sels = [...document.querySelectorAll('#ordem-collection-table select.selecionar_ordenacao_sala, select.selecionar_ordenacao_sala[name="salas_ordem[]"]')];
+    if (!sels.length) return false;
+    const rx = sels.find(ehRaioX);
+    if (!rx || sels.length < 2) return true;
+    if (aplicadoEm === rx && posicao(rx) === 1) return true;
+    const outros = sels.filter(s => s !== rx).sort((a, b) => posicao(a) - posicao(b));
+    const nova = [rx, ...outros];
+    let mudou = false;
+    nova.forEach((s, i) => {
+      const alvo = [...s.options].find(o => Number(String(o.value).split('#')[1]) === i + 1);
+      if (alvo && s.value !== alvo.value) { s.value = alvo.value; mudou = true; }
+    });
+    aplicadoEm = rx;
+    if (mudou) {
+      // Validação nativa: "É necessário que as ordens de encaminhamento sejam diferentes."
+      try { if (window.jQuery) window.jQuery(rx).trigger('change'); else rx.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+      console.info(TAG, 'Raio X colocado como Encaminhamento 01.');
+    }
+    return true;
+  }
+  aplicar();
+  // A tabela pode ser montada/remontada depois do carregamento.
+  let t = null;
+  const obs = new MutationObserver(() => {
+    if (usuarioMexeu) { obs.disconnect(); return; }
+    clearTimeout(t); t = setTimeout(aplicar, 120);
+  });
+  obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  setTimeout(() => obs.disconnect(), 120000);
+  window.OM30_PA_RX_PRIMEIRO = { aplicar, status: () => ({ usuarioMexeu, aplicado: !!aplicadoEm }) };
 })();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.3.3
+// @version      2.3.4
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -6486,8 +6486,27 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   async function esperar(cond,ms=3500){
     const ini=Date.now();while(Date.now()-ini<ms){if(cond())return true;await sleep(60);}return !!cond();
   }
+  // v2.3.4: o template nativo do "Novo SADT" na ficha PA vem com medico_solicitante_id = quem
+  // ABRIU a ficha (recepção). O médico logado é o "professional" do gravador de consulta da tela
+  // (conferido ao vivo contra /profissionais/search.json). Toda SADT nova (ainda não salva)
+  // sai com o médico logado como solicitante.
+  function medicoLogadoId(){
+    const v=clean(q('daai-consultation-recorder[professional], [professional]')?.getAttribute('professional'));
+    return /^\d+$/.test(v)?v:'';
+  }
+  function forcarSolicitante(){
+    const id=medicoLogadoId();
+    if(!id)return 0;
+    let n=0;
+    for(const el of qa('input[name*="[sadts_attributes]"][name$="[medico_solicitante_id]"]')){
+      const base=el.name.slice(0,-'[medico_solicitante_id]'.length);
+      if(clean(campoExato(base+'[id]')?.value))continue; // SADT já salva: não mexe
+      if(el.value!==id){el.value=id;n++;}
+    }
+    return n;
+  }
   async function garantirSadt(){
-    if(prefixExiste(autoPrefix))return autoPrefix;
+    if(prefixExiste(autoPrefix)){forcarSolicitante();return autoPrefix;}
     // Recupera a identificação de uma SADT que o próprio script criou nesta página.
     const anchor=q('input[data-om30-dual-created="1"]');
     if(anchor){const m=(anchor.name||'').match(/^(.*)\[municipe_id\]$/);if(m&&prefixExiste(m[1]))return autoPrefix=m[1];}
@@ -6502,6 +6521,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     if(!a)throw new Error('Estrutura da SADT não reconhecida.');
     a.dataset.om30DualCreated='1';
     autoPrefix=prefix;
+    forcarSolicitante();
     return prefix;
   }
   function sinalizar(state,message,codes=[]){
@@ -6648,6 +6668,8 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     // continua valendo mesmo se o formulário for recriado.
     document.addEventListener('submit',e=>{
       if(!ehFormProntuario(e.target))return;
+      // v2.3.4: inclusive SADT lançada à mão pelo médico.
+      try{forcarSolicitante();}catch(ex){console.warn(TAG,'Solicitante:',ex);}
       const semCodigo=examesSemCodigo();
       if(semCodigo.length){
         e.preventDefault(); e.stopImmediatePropagation();
@@ -6699,7 +6721,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.3.3', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.3.4', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

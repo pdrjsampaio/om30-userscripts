@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.0.97
+// @version      3.1.2
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,12 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.0.97
+    /* OM30 - CONTROLE DE SALAS v3.1.2
+     * v3.1.2: sala Exames sem o filtro "Sala: Todas / Coleta / ECG" (ECG e sutura agora são pedidos em Enfermagem); a fila de Exames mostra tudo.
+     * v3.1.1: "Nenhum local encontrado" sem precisar desligar/ligar o script: se o Senha Simples recusar o token reaproveitado (401), as cópias são apagadas e a página recarrega pelo login normal do sistema; e, se a lista de locais vier vazia com a sala escolhida, o script pede os locais de novo (no máximo a cada 20 s).
+     * v3.1.0: no filtro "Sala:" dos Exames o botão "Sutura (ECG)" passa a se chamar só "ECG" (o filtro continua o mesmo; a escolha salva no PC continua valendo).
+     * v3.0.99: ao escolher o local, o filtro já vem certo: local com "Pediatria" no nome (ex.: Medicação Pediatria) abre na fila Pediatria; local adulto abre no Clínico. Só muda quando o local muda; depois a pessoa troca o filtro como quiser.
+     * v3.0.98: o local da sala (ex.: Sala de Medicação / Medicação Pediatria) só é escolhido sozinho quando existe UM; com mais de um, a pessoa escolhe e o script não troca mais (antes forçava "SALA DE MEDICAÇÃO" e, nas outras salas, o último local do PC). Lista com erro 401 (login vencido ou derrubado por outro PC): recarrega a página, que leva ao login, em vez de ficar mostrando a lista velha.
      * v3.0.97: junção das duas linhas de trabalho em cima da 3.0.96 publicada (alergia, Guia SADT pelo Imprimir Documentos, Coleta/Sutura, token compartilhado). Entra também: fila "Emergência" (EM) na Medicação, fora do Clínico; Cancelar pela lista manda a mesma senha para a próxima fila (sem "Senha perdida" no Raio-X/Exames); "Senha perdida" ao Chamar oferece Recuperar; Cancelar do Raio-X/Exames/Enfermagem no modelo da Medicação (motivos novos, Outro motivo e reavaliação médica com justificativa).
      * v3.0.96: 'ALERGIA A MEDICAMENTOS : N OTOSCOPIA: ...' (exame físico) também na leitura da evolução do atendimento: vira NEGA ALERGIA.
      * v3.0.95: alergia do modelo de exame físico ('ALERGIA: MEDICAMENTOS : N OTOSCOPIA: ...') vira NEGA ALERGIA; o valor da alergia para no próximo campo 'PALAVRA:' do exame.
@@ -120,7 +125,34 @@
         const gravarComp = tk => { try { if (lerComp() !== tk) localStorage.setItem(CHAVE_TK_COMP, tk); } catch (_) {} };
         const apagarComp = () => { try { localStorage.removeItem(CHAVE_TK_COMP); } catch (_) {} };
         if (/^\/(?:[a-z]{2}-[A-Z]{2}\/)?usuarios\/(?:login|sair|sign_in|sign_out)\b/.test(location.pathname)) apagarComp();
+        // v3.1.1: token recusado pelo Senha Simples (401) → as listas do sistema voltavam vazias
+        // ("Nenhum local encontrado") e só desligando o script voltava. Agora o script apaga as
+        // cópias do token, não reaproveita na próxima carga e recarrega a página pelo login normal.
+        const PULAR_ATALHO = 'om30-ss-token-recusado';
+        const pularAtalho = () => { try { return Date.now() - Number(sessionStorage.getItem(PULAR_ATALHO) || 0) < 120000; } catch (_) { return false; } };
+        const vigiar401 = () => {
+            let px = null;
+            try { px = (typeof senhaSimplesProxy !== 'undefined') ? senhaSimplesProxy : null; } catch (_) {}   // eslint-disable-line no-undef
+            if (!px || !px.interceptors || !px.interceptors.response) return false;
+            if (px.__om30Vigia401) return true;
+            px.__om30Vigia401 = true;
+            px.interceptors.response.use(null, err => {
+                try {
+                    if (err && err.response && err.response.status === 401 && !pularAtalho()) {
+                        sessionStorage.setItem(PULAR_ATALHO, String(Date.now()));
+                        try { sessionStorage.removeItem(CHAVE_TK); } catch (_) {}
+                        apagarComp();
+                        console.warn('[OM30] Senha Simples recusou o token (401): cópias apagadas, recarregando pelo login do sistema.');
+                        setTimeout(() => location.reload(), 800);
+                    }
+                } catch (_) {}
+                return Promise.reject(err);
+            });
+            return true;
+        };
+        if (!vigiar401()) { const tv = setInterval(() => { if (vigiar401()) clearInterval(tv); }, 200); setTimeout(() => clearInterval(tv), 60000); }
         const tokenValido = () => {
+            if (pularAtalho()) return '';
             const daAba = lerSess();
             if (valeAinda(daAba)) { gravarComp(daAba); return daAba; }
             const comp = lerComp();
@@ -1072,7 +1104,7 @@
             periodo: (N.PERIODOS[c.periodo] || c.periodo === 'datas') ? c.periodo : 'hoje',
             mostrar: ['todos', 'pediatria', 'emergencia', 'em_medicacao', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
             // v3.0.93: sala física da fila de Exames neste PC (Coleta / Sutura com ECG).
-            salaExames: ['todas', 'coleta', 'sutura'].includes(c.salaExames) ? c.salaExames : 'todas',
+            salaExames: 'todas',   // v3.1.2: filtro Coleta/ECG removido; escolha antiga salva no PC é ignorada
             medicacoes: true,
             dataInicial: /^\d{4}-\d{2}-\d{2}$/.test(c.dataInicial || '') ? c.dataInicial : '',
             dataFinal: /^\d{4}-\d{2}-\d{2}$/.test(c.dataFinal || '') ? c.dataFinal : '',
@@ -6133,6 +6165,21 @@
             const unicos = l.filter(x => { const k = String(x && (x.id ?? x.nome) || ''); if (!k || vistos.has(k)) return !k; vistos.add(k); return true; });
             if (unicos.length !== l.length) l.splice(0, l.length, ...unicos);
         }
+        // "Nenhum local encontrado" com a sala já escolhida: a lista de locais voltou vazia (falha
+        // passageira do Senha Simples). Pede os locais de novo pelo próprio componente, no máximo
+        // uma vez a cada 20 s, em vez de exigir desligar/ligar o script.
+        let ultimaRecargaLocais = 0;
+        setInterval(() => {
+            if (location.pathname !== '/aplicacoes_medicamentos' || Date.now() - ultimaRecargaLocais < 20000) return;
+            for (const el of document.querySelectorAll('.guiche-container')) {
+                const vm = el.__vue__;
+                if (!vm || !Array.isArray(vm.locaisAtendimento) || typeof vm.getCategoriaAtendimento !== 'function') continue;
+                if (vm.locaisAtendimento.length || !el.querySelector('.not_found') || !autoSalaVisivel(el)) continue;
+                ultimaRecargaLocais = Date.now();
+                console.info('[OM30] Nenhum local encontrado: pedindo os locais de novo.');
+                try { const r = vm.getCategoriaAtendimento(); if (r && r.catch) r.catch(() => {}); } catch (_) {}
+            }
+        }, 3000);
         // "Selecione a sala de atendimento": o componente do sistema (selecao-sala) acrescenta as
         // salas na lista a cada carga sem limpar, e elas aparecem duas vezes. Tira os repetidos.
         setInterval(() => {
@@ -6149,10 +6196,13 @@
             try { return guiche?.$store?.getters?.localAtendimentoAtual?.controle_de_salas_medicacao || {}; }
             catch (_) { return {}; }
         }
+        // v3.0.98: só escolhe sozinho quando a unidade tem UM local de medicação. Com mais de um
+        // (ex.: Sala de Medicação e Medicação Pediatria) quem escolhe é a pessoa; antes o script
+        // forçava "SALA DE MEDICAÇÃO" e voltava para ela mesmo depois de trocar.
         function salaMedicacaoNaLista(guiche) {
             dedupLocaisGuiche(guiche);
-            return (Array.isArray(guiche?.locaisAtendimento)?guiche.locaisAtendimento:[])
-                .find(l=>normalizarAutoSala(l?.nome)==='SALA DE MEDICACAO') || null;
+            const lista = Array.isArray(guiche?.locaisAtendimento) ? guiche.locaisAtendimento : [];
+            return lista.length === 1 ? lista[0] : null;
         }
         function contextoAutoSalaAtivo(guiche) {
             if(location.pathname!=='/aplicacoes_medicamentos') return false;
@@ -6163,8 +6213,10 @@
             if(!contextoAutoSalaAtivo(guiche)) return null;
             let sala=salaMedicacaoNaLista(guiche);
             if(sala) return sala;
+            // Lista já carregada com mais de um local: a escolha é da pessoa (não recarrega).
+            if(Array.isArray(guiche.locaisAtendimento)&&guiche.locaisAtendimento.length>1) return null;
 
-            // Mesma recuperação validada: limpa a lista velha e pede os locais novamente.
+            // Lista vazia: pede os locais novamente.
             if(Array.isArray(guiche.locaisAtendimento)) guiche.locaisAtendimento.splice(0,guiche.locaisAtendimento.length);
             const r=guiche.getCategoriaAtendimento();
             if(r&&typeof r.then==='function') await r;
@@ -6276,7 +6328,8 @@
                     await carregar(g);const lista=locais(g), atual=atualValido(g,tipo), st=estado(tipo);
                     if(st.pausado){if(!atual){st.viuSem=true;return;}if(!st.viuSem)return;st.pausado=false;st.viuSem=false;salvarPref(g,tipo,atual);return;}
                     if(atual){salvarPref(g,tipo,atual);return;}
-                    const pref=lerPref(g,tipo);const salvo=pref?.id?lista.find(x=>String(x.id)===String(pref.id)):null;const alvo=salvo||(lista.length===1?lista[0]:null);
+                    // v3.0.98: escolhe sozinho só com UM local; com mais de um, quem escolhe é a pessoa.
+                    const alvo=lista.length===1?lista[0]:null;
                     if(alvo)await vincular(g,tipo,alvo);
                 }catch(e){console.warn('[OM30 AUTO LOCAL]',tipo,e);}finally{emCurso=false;}
             }
@@ -8240,6 +8293,26 @@
             vm.isLoading = !jaTemItens;
 
             const cfg = lerConfig();
+            // v3.0.99: o local escolhido decide o filtro de entrada. Local com "PEDIATRI…" (ex.:
+            // Medicação Pediatria) abre em Pediatria; os outros abrem no Clínico. Só muda quando
+            // o LOCAL muda: depois disso a pessoa pode trocar o filtro à vontade.
+            try {
+                const stLoc = setorDaColecao(vm);
+                if (stLoc && SALAS_PEDIATRIA.has(stLoc.key) && cfg.mostrar !== 'historico') {
+                    const ctxLoc = guicheDaSala(stLoc);
+                    const nomeLocal = String(ctxLoc && ctxLoc.local && ctxLoc.local.nome || '').trim();
+                    const chaveLoc = `${stLoc.key}|${nomeLocal}`;
+                    if (nomeLocal && chaveLoc !== CS.localVisto) {
+                        CS.localVisto = chaveLoc;
+                        const pedLocal = /PEDIATR/i.test(normalizarAutoSala(nomeLocal));
+                        const novoMostrar = pedLocal ? 'pediatria' : (cfg.mostrar === 'pediatria' ? 'todos' : cfg.mostrar);
+                        if (novoMostrar !== cfg.mostrar) {
+                            cfg.mostrar = novoMostrar;
+                            const salvo = lerJSON(CHAVE_CONFIG, {}); salvo.mostrar = novoMostrar; gravarJSON(CHAVE_CONFIG, salvo);
+                        }
+                    }
+                }
+            } catch (_) {}
             const agora = new Date(Date.now() + (CS.desvioRelogio || 0));
             // Hora de PAREDE de São Paulo no mesmo "formato" das datas da lista (que vêm como
             // texto dd/mm hh:mm e são lidas no fuso do PC). Com o fuso do Windows errado, a espera
@@ -8405,7 +8478,18 @@
             } catch (erro) {
                 if (seq !== CS.carga) return;
                 vm.isLoading = false;
-                CS.erro = 'Falha ao atualizar a lista (' + ((erro.response && erro.response.status) || erro.message || 'erro') + '). Mantendo a última versão.';
+                const stErro = erro.response && erro.response.status;
+                if (stErro === 401) {
+                    // Login do Saúde Simples vencido ou derrubado (mesmo usuário entrou em outro PC):
+                    // a lista velha ficava na tela. Recarrega a página, que leva ao login.
+                    CS.erro = 'Sessão encerrada. Entre de novo no Saúde Simples.';
+                    let ultima = 0; try { ultima = Number(sessionStorage.getItem('cs-recarga-401')) || 0; } catch (_) {}
+                    if (Date.now() - ultima > 120000) {
+                        try { sessionStorage.setItem('cs-recarga-401', String(Date.now())); } catch (_) {}
+                        setTimeout(() => location.reload(), 1500);
+                    }
+                } else
+                CS.erro = 'Falha ao atualizar a lista (' + (stErro || erro.message || 'erro') + '). Mantendo a última versão.';
                 if (!jaTemItens) {
                     vm.errorRequest = erro.response;
                     vm.$emit('onError', erro);
@@ -8802,9 +8886,8 @@
             const emMedHtml = noRaioX ? bt('mostrar:em_medicacao', qtdEmMed ? `Em medicação (${qtdEmMed})` : 'Em medicação', cfg.mostrar === 'em_medicacao') : '';
             const todosAtivo = cfg.mostrar === 'todos' || (cfg.mostrar === 'pediatria' && !naMedicacao) || (cfg.mostrar === 'emergencia' && !comEmergenciaBarra) || (cfg.mostrar === 'em_medicacao' && !noRaioX);
             const noExames = !!CS.colecao && (setorDaColecao(CS.colecao) || {}).key === 'exames' && cfg.mostrar !== 'historico';
-            const salaHtml = noExames
-                ? `<span class="cs-grupo" title="Sala deste computador: Coleta mostra só coletas; Sutura mostra os eletrocardiogramas"><b>Sala:</b>${bt('sala:todas', 'Todas', cfg.salaExames === 'todas')}${bt('sala:coleta', 'Coleta', cfg.salaExames === 'coleta')}${bt('sala:sutura', 'Sutura (ECG)', cfg.salaExames === 'sutura')}</span>`
-                : '';
+            // v3.1.2: ECG e sutura são pedidos em Enfermagem; Exames fica só com a coleta, sem o filtro "Sala:".
+            const salaHtml = '';
             const avisos = [];
             if (CS.filtroDataSistema) avisos.push(`<span class="cs-aviso">Usando a data do filtro do sistema (${esc(CS.filtroDataSistema)})</span>`);
             if (CS.truncado) avisos.push(`<span class="cs-aviso">Mostrando ${MAX_PAGINAS * POR_PAGINA} de ${CS.totalPeriodo}; reduza o período</span>`);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.3.4
+// @version      2.4.2
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -1806,12 +1806,39 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     status('Código '+codigo+' não vigente. Mostrando procedimentos atuais da SIGTAP '+competencia+'.','err');
   }
 
+  // v2.3.5: eletrocardiograma vai para Procedimentos de Enfermagem (sala de procedimentos),
+  // não para Exames: pedido em Exames ele caía na fila da coleta.
+  const ehEletrocardiograma=(cd,nm)=>digits(cd).slice(0,10)==='0211020036'||/ELETROCARDIOGRAMA/i.test(String(nm||''));
+
+  // v2.4.0: exames de diagnóstico (laboratório, testes rápidos, imagem) não são pedidos em
+  // Procedimentos de Enfermagem. Ficam liberados lá: coleta (0201), ECG e afins (0211) e glicemia capilar.
+  const ehPedidoEmExames=cd=>{
+    const c=digits(cd).slice(0,10);
+    if(!/^02\d{8}$/.test(c)) return false;
+    if(/^0201|^0211/.test(c)||c==='0214010015') return false;
+    return true;
+  };
+
   async function usar(tipo,item){
     try{
-      const nt=tipoNativo(tipo);
+      let nt=tipoNativo(tipo);
       if(nt==='medicamento'){
         composer(item);
         status('Medicamento selecionado. Preencha via e posologia.');
+        return;
+      }
+
+      // v2.3.9: ECG não é pedido em Exames. Bloqueia e abre a busca em Procedimentos de Enfermagem.
+      const viaEnfermagem=false;
+      if(nt==='exame'&&ehEletrocardiograma(code(nt,item),name(nt,item))){
+        irParaEnfermagem('ELETROCARDIOGRAMA');
+        status('ECG: solicitar em Enfermagem','err');
+        return;
+      }
+      if(nt==='procedimento'&&ehPedidoEmExames(code(nt,item))){
+        const raiox=/^0204/.test(digits(code(nt,item)));
+        irParaAba(raiox?'raiox':'exames',name(nt,item));
+        status('Solicitar em '+(raiox?'Raio X':'Exames'),'err');
         return;
       }
 
@@ -1838,6 +1865,8 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 
       if(r?.already){
         status(name(nt,validado)+' já está selecionado neste atendimento.','ok');
+      }else if(viaEnfermagem){
+        status('ECG é pedido em Enfermagem: '+name(nt,validado)+' incluído em Procedimentos de Enfermagem.','ok');
       }else{
         status(name(nt,validado)+' selecionado no prontuário. O destino da sala continua sendo definido pelo Saúde Simples.','ok');
       }
@@ -2438,6 +2467,87 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     q('.mpos',E.mc)?.focus();
   }
 
+  // v2.3.6: busca do Raio-X. "raio x de mão" virava só "RADIOGRAFIA" (o resto da frase se
+  // perdia) e a lista genérica não trazia a mão. Agora tira rx/raio x/radiografia/de, busca
+  // "RADIOGRAFIA DE <parte>", "<parte>" e cada palavra (sem acento) e fica com as radiografias
+  // que têm as palavras digitadas; as mais parecidas primeiro.
+  const STOP_RX=new Set(['RX','RAIO','X','RAIOX','RADIOGRAFIA','RADIOGRAFIAS','RADIO','DE','DO','DA','DOS','DAS','E','EM','NO','NA']);
+  async function buscarRaioX(termo){
+    const somenteNomeRx=xs=>xs.filter(x=>/RADIOGRAFIA/i.test(name('exame',x)));
+    if(/^\d{10}$/.test(digits(termo))) return somenteNomeRx(await buscar('exame',termo));
+    const palavras=norm(termo).replace(/[^A-Z0-9 ]+/g,' ').split(/\s+/).filter(w=>w&&!STOP_RX.has(w));
+    const resto=palavras.join(' ');
+    // Sinônimos do jeito que o médico fala x como está no SIGTAP.
+    const SIN_RX={LOMBAR:['LOMBAR','LOMBO'],TORACICA:['TORACICA','TORACO'],SACRO:['SACRO','SACRA'],CERVICAL:['CERVICAL'],CRANIO:['CRANIO'],FACE:['FACE','SEIOS'],SEIOS:['SEIOS'],DEDO:['DEDO','DEDOS'],DEDOS:['DEDOS','DEDO'],OMBRO:['OMBRO','ESCAPULO'],TORNOZELO:['TORNOZELO','TIBIO'],COXA:['COXA','FEMUR'],FEMUR:['FEMUR','COXA'],QUADRIL:['QUADRIL','COXO','BACIA']};
+    const formas=w=>SIN_RX[w]||[w];
+    const consultas=resto
+      ?['RADIOGRAFIA DE '+resto,'RADIOGRAFIA '+resto,resto,...palavras.flatMap(w=>formas(w)).filter(w=>w.length>=3)]
+      :['RADIOGRAFIA'];
+    const listas=await Promise.all([...new Set(consultas)].map(t=>api('/procedimentos/search.json?exame=1&q='+encodeURIComponent(t)).catch(()=>[])));
+    let xs=somenteNomeRx(mergeResultadosBusca(listas));
+    if(palavras.length){
+      const nomeN=x=>' '+norm(name('exame',x)).replace(/[^A-Z0-9]+/g,' ')+' ';
+      // Palavra curta (PE, PA) tem que bater inteira; as outras podem ser começo de palavra.
+      const bate=(n,w)=>formas(w).some(f=>f.length<=2?n.includes(' '+f+' '):n.includes(' '+f));
+      const fortes=xs.filter(x=>palavras.every(w=>bate(nomeN(x),w)));
+      if(fortes.length) xs=fortes;
+      const pontos=x=>{const n=nomeN(x);let p=0;for(const w of palavras){if(n.includes(' '+w+' '))p+=3;else if(formas(w).some(f=>n.includes(' '+f+' ')))p+=2;else if(bate(n,w))p+=1;}if(n.includes(' RADIOGRAFIA DE '+resto+' '))p+=5;return p;};
+      xs.sort((a,b)=>pontos(b)-pontos(a)||name('exame',a).length-name('exame',b).length);
+    }
+    return xs;
+  }
+
+  // v2.3.6: pedido de Enfermagem procurado em Exames (sutura, curativo, ECG, HGT…): aviso com
+  // atalho para a aba Enfermagem, mesma busca. Também quando Exames não acha e Enfermagem acha.
+  const PALAVRAS_ENFERMAGEM=/\b(SUTURA|CURATIVO|GLICEMIA CAPILAR|HGT|DEXTRO|NEBULIZACAO|INALACAO|SONDAGEM|SONDA|RETIRADA DE PONTOS|PONTOS|DRENAGEM|LAVAGEM|IMOBILIZACAO|TALA|GESSO|AFERICAO|PRESSAO ARTERIAL)\b/;
+  function irParaAba(aba,termo){
+    q('.tab[data-t="'+aba+'"]',panel)?.click();
+    E.s.value=termo;
+    atualizarBotaoLimparBusca();
+    pesquisar(termo);
+  }
+  function irParaEnfermagem(termo){ irParaAba('enfermagem',termo); }
+  function avisoExamesEmEnfermagem(termo,removidos){
+    q('.om30-aviso-enf',E.r)?.remove();
+    const aba=removidos.every(x=>/^0204/.test(digits(code('procedimento',x))))?'raiox':'exames';
+    const rotulo=aba==='raiox'?'Raio X':'Exames';
+    const box=document.createElement('div');
+    box.className='om30-aviso-enf';
+    box.style.cssText='margin:6px 0;padding:9px 11px;border:1px solid #f0c27a;border-radius:8px;background:#fff8ec;color:#7a4a00;font:600 12px Segoe UI,Arial;display:flex;align-items:center;gap:10px;justify-content:space-between';
+    box.innerHTML='<span>⚠ Solicitar em <b>'+rotulo+'</b></span>';
+    const ir=document.createElement('button');
+    ir.type='button';ir.textContent='Ver em '+rotulo;
+    ir.style.cssText='border:1px solid #c98a1f;background:#fff;color:#7a4a00;border-radius:6px;padding:4px 10px;font:700 12px Segoe UI,Arial;cursor:pointer';
+    ir.onclick=()=>irParaAba(aba,termo);
+    box.appendChild(ir);
+    E.r.prepend(box);
+  }
+  const TERMO_ECG=/\b(ECG|ELETRO|ELETROCARDIOGRAMA|0211020036)\b/;
+  async function avisoEnfermagemEmExames(termo,xsExames){
+    try{
+      const n=norm(termo);
+      const ecg=TERMO_ECG.test(n);
+      const termoEnf=ecg?'ELETROCARDIOGRAMA':termo;   // ECG fica em Enfermagem
+      const pareceEnf=ecg||PALAVRAS_ENFERMAGEM.test(n);
+      if(!pareceEnf&&xsExames.length) return;
+      const ys=(await buscar('procedimento',termoEnf).catch(()=>[])).filter(y=>!/RADIOGRAFIA/i.test(name('procedimento',y)));
+      if(!ys.length) return;
+      if(tipo!=='exames'||norm(clean(E.s.value))!==n) return;   // a pessoa já mudou a busca/aba
+      q('.om30-aviso-enf',E.r)?.remove();
+      const box=document.createElement('div');
+      box.className='om30-aviso-enf';
+      box.style.cssText='margin:6px 0;padding:9px 11px;border:1px solid #f0c27a;border-radius:8px;background:#fff8ec;color:#7a4a00;font:600 12px Segoe UI,Arial;display:flex;align-items:center;gap:10px;justify-content:space-between';
+      box.innerHTML='<span>⚠ Solicitar em <b>Enfermagem</b></span>';
+      const ir=document.createElement('button');
+      ir.type='button';ir.textContent='Ver em Enfermagem';
+      ir.style.cssText='border:1px solid #c98a1f;background:#fff;color:#7a4a00;border-radius:6px;padding:4px 10px;font:700 12px Segoe UI,Arial;cursor:pointer';
+      ir.onclick=()=>irParaEnfermagem(termoEnf);
+      box.appendChild(ir);
+      E.r.prepend(box);
+      if(!xsExames.length) status('Solicitar em Enfermagem','err');
+    }catch(e){console.debug('[OM30 PA] aviso Enfermagem',e);}
+  }
+
   async function pesquisar(forcado=null,grupo=false){
     const termo=clean(forcado??E.s.value);
 
@@ -2472,10 +2582,15 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
       const cod=digits(termo);
       status('Pesquisando “'+traduz(nt,termo)+'”...');
 
-      let xs=await buscar(nt,termo);
+      let xs=tipo==='raiox'?await buscarRaioX(termo):await buscar(nt,termo);
 
       if(tipo==='raiox') xs=xs.filter(x=>/RADIOGRAFIA/i.test(name(nt,x)));
-      if(tipo==='exames') xs=xs.filter(x=>!/RADIOGRAFIA/i.test(name(nt,x)));
+      if(tipo==='exames') xs=xs.filter(x=>!/RADIOGRAFIA/i.test(name(nt,x))&&!ehEletrocardiograma(code(nt,x),name(nt,x)));
+      let deExames=[];
+      if(tipo==='enfermagem'){
+        deExames=xs.filter(x=>ehPedidoEmExames(code(nt,x)));
+        xs=xs.filter(x=>!ehPedidoEmExames(code(nt,x)));
+      }
 
       // Se o código antigo já não vier mais na API, ainda assim o exibe como
       // não vigente para permitir abrir os procedimentos originados/substitutos.
@@ -2498,6 +2613,11 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
         );
       }else{
         status('Nenhum resultado.');
+      }
+      if(tipo==='exames'&&!grupo&&(!/^\d{10}$/.test(digits(termo))||TERMO_ECG.test(norm(termo)))) avisoEnfermagemEmExames(termo,xs);
+      if(tipo==='enfermagem'&&deExames.length){
+        avisoExamesEmEnfermagem(termo,deExames);
+        if(!xs.length) status('Solicitar em Exames','err');
       }
     }catch(e){
       console.error(e);
@@ -6721,7 +6841,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.3.4', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.2', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

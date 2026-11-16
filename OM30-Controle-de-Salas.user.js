@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.7
+// @version      3.1.8
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.7
+    /* OM30 - CONTROLE DE SALAS v3.1.8
+     * v3.1.8: entrou na conta e a fila veio vazia (ou a 1ª carga falhou): recarrega a cada ~3 s nos 2 primeiros minutos da página, em vez de esperar 25 s; não empilha cargas com o servidor lento.
      * v3.1.7: fila não abre mais zerada: filtro do sistema (profissional/situação/risco) só volta no mesmo dia; situação Cancelado/Finalizado/Em outra sala é ignorada fora do Histórico; ao abrir, 'Emergência' volta para Clínico e 'Data...' vencida volta para Hoje.
      * v3.1.6: Medicação: fila Emergência = classificados VERMELHO (antes senhas EM); Clínico sem os vermelhos. Sem o aviso de filtro do PC na barra.
      * v3.1.5: faturamento: número da ficha + histórico desde 01/11.
@@ -5847,9 +5848,17 @@
         // v3.1.4: 25 s sem atualizar (antes 1 min) já recarrega; com falha, tenta de novo a cada 10 s.
         // Assim os PCs da mesma sala ficam no máximo ~25 s diferentes, mesmo se o ciclo do sistema parar.
         function vigiarListaParada() {
-            if (!CS.colecao || !CS.ultimaAtualizacao || document.visibilityState === 'hidden') return;
-            if (Date.now() + (CS.desvioRelogio || 0) - CS.ultimaAtualizacao.getTime() < 25e3) return;
-            if (Date.now() - (CS.vigiaEm || 0) < 10e3) return;
+            if (!CS.colecao || document.visibilityState === 'hidden') return;
+            // Uma carga ainda em andamento (servidor lento): não começa outra por cima.
+            if (CS.carregandoDesde && Date.now() - CS.carregandoDesde < 15e3) return;
+            // v3.1.8: lista VAZIA (ex.: acabou de entrar na conta) ou que nunca carregou (1ª carga
+            // com erro) recarrega a cada ~3 s, não 25 s.
+            // Só nos 2 primeiros minutos da página: sala vazia de verdade não fica pedindo a cada 3 s.
+            const vazia = !CS.historico && !(CS.colecao.items || []).length && performance.now() < 120e3;
+            const limite = vazia ? 3e3 : 25e3;
+            const ultima = CS.ultimaAtualizacao ? CS.ultimaAtualizacao.getTime() : 0;
+            if (Date.now() + (CS.desvioRelogio || 0) - ultima < limite) return;
+            if (Date.now() - (CS.vigiaEm || 0) < (vazia ? 3e3 : 10e3)) return;
             CS.vigiaEm = Date.now();
             carregar(CS.colecao, { silencioso: true });
         }
@@ -8312,6 +8321,7 @@
         async function carregar(vm, { silencioso }) {
             if (!vm.$el || !vm.$el.classList.contains('cs-fila')) prepararColecao(vm);
             const seq = ++CS.carga;
+            CS.carregandoDesde = Date.now();
             const jaTemItens = Array.isArray(vm.items) && vm.items.length > 0;
             vm.preparingLoading = false;
             vm.errorRequest = {};
@@ -8543,6 +8553,7 @@
                 }
                 console.error('[Controle de Salas] carga da lista', erro);
             }
+            if (seq === CS.carga) CS.carregandoDesde = null;
             atualizarBarra();
         }
 

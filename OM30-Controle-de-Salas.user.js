@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.4
+// @version      3.1.5
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.4
+    /* OM30 - CONTROLE DE SALAS v3.1.5
+     * v3.1.5: faturamento: número da ficha + histórico desde 01/11.
      * v3.1.4: fila mais igual entre os PCs: atualiza sozinha com 25 s parada (antes 1 min) e na hora ao voltar para a aba; filtro do sistema salvo no PC (situação/risco/profissional) aparece na barra com botão Limpar.
      * v3.1.3: Aplicar medicação sem travar: o envio do faturamento roda só na lista (não mais na tela de aplicação nem em cada aba) e uma aba por PC de cada vez; os vigias da tela de aplicação trabalham no máximo a cada 60-80 ms. Raio-X sem o 'Em medicação' (botão, filtro e contagem).
      * v3.1.3: faturamento de todas as salas: Raio-X, Exames, Enfermagem e Gesso vão para o faturamentops.pages.dev (só itens REALIZADO/COLETADO; o que foi cancelado depois sai do site). Roda em qualquer sala do Controle de Salas; só lê, não clica em nada.
@@ -9305,7 +9306,8 @@
   const VERSAO = '2.0.0';
   const CICLO_MS = 3 * 60000, POR_CICLO = 15, MAX_ITENS = 30, MAX_LIDOS = 40;
   const REVER_MS = 45 * 60000, REVER_POR_CICLO = 5;
-  const STORE = 'om30:raiox-fat:v1:enviados', STORE_REV = 'om30:fat-salas:v1:revistos';
+  const STORE = 'om30:raiox-fat:v1:enviados', STORE_REV = 'om30:fat-salas:v1:revistos', STORE_FICHA = 'om30:fat-salas:v1:com-ficha';
+  const FICHA_POR_CICLO = 10; // reenvio dos pedidos mandados antes de existir o número da ficha
   const GUARDA_MS = 4 * 86400000;
   const SALAS = [
     { sala: 'raio_x', endpoint: '/encaminhamentos_radiografias' },
@@ -9323,11 +9325,11 @@
 
   const estado = { ativo: false, ultimoCiclo: 0, enviados: 0, erro: '', rodando: false, pendentes: 0, porSala: {} };
   const ler = k => { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch { return {}; } };
-  let enviados = ler(STORE), revistos = ler(STORE_REV);
+  let enviados = ler(STORE), revistos = ler(STORE_REV), comFicha = ler(STORE_FICHA);
   function gravar() {
     const corte = Date.now() - GUARDA_MS;
-    for (const m of [enviados, revistos]) for (const [k, t] of Object.entries(m)) if (!(t > corte)) delete m[k];
-    try { localStorage.setItem(STORE, JSON.stringify(enviados)); localStorage.setItem(STORE_REV, JSON.stringify(revistos)); } catch {}
+    for (const m of [enviados, revistos, comFicha]) for (const [k, t] of Object.entries(m)) if (!(t > corte)) delete m[k];
+    try { localStorage.setItem(STORE, JSON.stringify(enviados)); localStorage.setItem(STORE_REV, JSON.stringify(revistos)); localStorage.setItem(STORE_FICHA, JSON.stringify(comFicha)); } catch {}
   }
   // Raio-X mantém a chave antiga (o que já foi enviado não é relido à toa).
   const chaveDe = (sala, unidade, id) => sala === 'raio_x' ? `${norm(unidade)}|${id}` : `${sala}|${norm(unidade)}|${id}`;
@@ -9398,6 +9400,40 @@
     return r;
   }
 
+  // Número da ficha (o mesmo da coluna "Ficha" do Rastreamento de Senhas), pelo id do AtendimentoPa.
+  // Usa o que o Controle de Salas/Rastreamento já guardaram neste PC; o que faltar busca no rastreamento (1 consulta por ciclo).
+  const FICHA_CACHE = 'om30-cs:fichas:v1', FICHA_CACHE_MS = 30 * 3600e3;
+  const fichaOk = f => /^\d{5,}$/.test(String(f || ''));
+  const atendId = it => (String(it?.atendimento_str || '').match(/(\d+)\s*$/) || [])[1] || '';
+  function fichasGuardadas() {
+    const m = new Map();
+    try {
+      const o = JSON.parse(localStorage.getItem(FICHA_CACHE) || '{}') || {}, lim = Date.now() - FICHA_CACHE_MS;
+      for (const [id, v] of Object.entries(o)) if (v && v.t > lim && fichaOk(v.f)) m.set(id, String(v.f));
+    } catch {}
+    try {
+      const r = JSON.parse(localStorage.getItem('om30-rastreamento-unidade:linhas-v1') || 'null');
+      for (const l of (Array.isArray(r?.linhas) ? r.linhas : [])) { const id = String(l?.[0] || ''), f = String(l?.[5] || ''); if (/^\d+$/.test(id) && fichaOk(f) && !m.has(id)) m.set(id, f); }
+    } catch {}
+    return m;
+  }
+  const textoHtml = v => { const d = document.createElement('div'); d.innerHTML = String(v ?? ''); return clean(d.textContent); };
+  async function buscarFichas(faltam, mapa) {
+    const q = new URLSearchParams({ sEcho: '1', iColumns: '8', sColumns: '', iDisplayStart: '0', iDisplayLength: '1000', sSearch: '', bRegex: 'false', iSortCol_0: '0', sSortDir_0: 'asc', iSortingCols: '1' });
+    for (let i = 0; i < 8; i++) { q.set('mDataProp_' + i, String(i)); q.set('sSearch_' + i, ''); q.set('bRegex_' + i, 'false'); q.set('bSearchable_' + i, 'true'); q.set('bSortable_' + i, 'false'); }
+    const j = await lerJson('/filas/rastreamento_senhas.json?' + q);
+    let novas = 0;
+    for (const l of (Array.isArray(j?.aaData) ? j.aaData : [])) {
+      const id = (String(l?.[7] ?? '').match(/atendimentos_pas\/(\d+)/) || [])[1], f = textoHtml(l?.[4]);
+      if (id && fichaOk(f) && !mapa.has(id)) { mapa.set(id, f); novas++; }
+    }
+    if (novas) try {
+      const o = JSON.parse(localStorage.getItem(FICHA_CACHE) || '{}') || {}, agora = Date.now();
+      for (const id of faltam) if (mapa.has(id) && !o[id]) o[id] = { f: mapa.get(id), t: agora };
+      localStorage.setItem(FICHA_CACHE, JSON.stringify(o));
+    } catch {}
+  }
+
   async function enviarLote(unidade, itens, lidos) {
     const r = await fetch(API + '/api/ingest', {
       method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store',
@@ -9410,7 +9446,7 @@
   }
 
   // Lê uma ficha e devolve { itens, lido } (lido = "sala:id", vai junto com os itens dela no mesmo envio).
-  async function montarFicha(unidade, s, id, it, diaPadrao) {
+  async function montarFicha(unidade, s, id, it, diaPadrao, fichas) {
     const ficha = await lerFicha(s.endpoint, id);
     const feitos = ficha.procs.filter(p => FEITOS.has(p.situacao));
     const itens = [];
@@ -9421,7 +9457,7 @@
         sala: s.sala, enc: Number(id), idx: p.idx, atendimento: (String(it.atendimento_str || '').match(/(\d+)$/) || [])[1] || '',
         data: diaIso(it.data_encaminhamento) || diaPadrao, hora: clean(it.hora_encaminhamento), senha: clean(it.senha),
         nome: clean(it.nome_municipe), nascimento: nasc, cns: mun.cns, cpf: mun.cpf, sexo: '', cns_status: mun.status,
-        codigo: p.codigo, procedimento: p.procedimento, cid: p.cid, situacao: p.situacao,
+        codigo: p.codigo, procedimento: p.procedimento, cid: p.cid, situacao: p.situacao, ficha: fichas.get(atendId(it)) || '',
         medico: clean(it.profissional_responsavel), ja_lancado: ficha.faturamento
       });
     }
@@ -9433,7 +9469,7 @@
     const unidade = unidadeLogada();
     if (!unidade) throw new Error('unidade não identificada');
     const hoje = isoDia(new Date()), agora = Date.now();
-    const novos = [], rever = [];
+    const novos = [], rever = [], completar = [];
     for (const s of SALAS) {
       let n = 0;
       try {
@@ -9444,6 +9480,7 @@
           const chave = chaveDe(s.sala, unidade, id);
           if (forcar || !enviados[chave]) novos.push({ s, id, chave, it, dia });
           else if (!revistos[chave] && diaIso(it.data_encaminhamento) === hoje && agora - enviados[chave] > REVER_MS) rever.push({ s, id, chave, it, dia });
+          else if (!comFicha[chave]) completar.push({ s, id, chave, it, dia });
         }
         estado.porSala[s.sala] = n;
       } catch (e) {
@@ -9452,22 +9489,26 @@
       }
     }
     estado.pendentes = Math.max(0, novos.length - POR_CICLO);
-    const fila = [...novos.slice(0, forcar ? 300 : POR_CICLO), ...(forcar ? [] : rever.slice(0, REVER_POR_CICLO).map(x => ({ ...x, revisao: true })))];
+    const fila = [...novos.slice(0, forcar ? 300 : POR_CICLO), ...(forcar ? [] : rever.slice(0, REVER_POR_CICLO).map(x => ({ ...x, revisao: true }))),
+      ...(forcar ? [] : completar.slice(0, FICHA_POR_CICLO).map(x => ({ ...x, soFicha: true })))];
+    const mapaFichas = fichasGuardadas();
+    const semFicha = [...new Set(fila.map(x => atendId(x.it)).filter(a => a && !mapaFichas.has(a)))];
+    if (semFicha.length) await buscarFichas(semFicha, mapaFichas).catch(e => { if (e.message === 'sessao') throw e; });
     let gravados = 0, fichas = 0, lote = { itens: [], lidos: [], chaves: [] };
     const fechar = async () => {
       if (!lote.lidos.length && !lote.itens.length) { lote.chaves.length = 0; return; }
       gravados += await enviarLote(unidade, lote.itens, lote.lidos);
       const t = Date.now();
-      for (const { chave, revisao } of lote.chaves) { if (revisao) revistos[chave] = t; else enviados[chave] = t; }
+      for (const { chave, revisao, soFicha } of lote.chaves) { if (revisao) revistos[chave] = t; else if (!soFicha) enviados[chave] = t; comFicha[chave] = t; }
       gravar();
       lote = { itens: [], lidos: [], chaves: [] };
     };
     for (const x of fila) {
       let f;
-      try { f = await montarFicha(unidade, x.s, x.id, x.it, x.dia); }
+      try { f = await montarFicha(unidade, x.s, x.id, x.it, x.dia, mapaFichas); }
       catch (e) { if (e.message === 'sessao') throw e; estado.erro = `${x.s.sala} ${x.id}: ${e.message}`; continue; }
       if (lote.itens.length + f.itens.length > MAX_ITENS || lote.lidos.length >= MAX_LIDOS) await fechar();
-      lote.itens.push(...f.itens); if (f.lido) lote.lidos.push(f.lido); lote.chaves.push({ chave: x.chave, revisao: !!x.revisao });
+      lote.itens.push(...f.itens); if (f.lido) lote.lidos.push(f.lido); lote.chaves.push({ chave: x.chave, revisao: !!x.revisao, soFicha: !!x.soFicha });
       fichas++;
       await esperar(150);
     }
@@ -9488,13 +9529,31 @@
   }
   function soltarTrava() { try { const t = JSON.parse(localStorage.getItem(TRAVA) || 'null'); if (t && t.dono === EU) localStorage.removeItem(TRAVA); } catch {} }
 
+  // Dias anteriores (desde HIST_INICIO até anteontem), um dia de cada vez, só quando hoje/ontem já estão em dia.
+  // Cada dia fica marcado neste PC quando termina; o servidor ignora o que outro PC já mandou.
+  const HIST_INICIO = '2026-11-01', STORE_HIST = 'om30:fat-salas:v1:historico';
+  async function cicloHistorico(unidade) {
+    let feitos = {}; try { feitos = JSON.parse(localStorage.getItem(STORE_HIST) || '{}') || {}; } catch {}
+    const marca = norm(unidade), hoje = new Date();
+    for (let d = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 2); isoDia(d) >= HIST_INICIO; d.setDate(d.getDate() - 1)) {
+      const dia = isoDia(d);
+      if (feitos[`${marca}|${dia}`]) continue;
+      const r = await processar([dia]);
+      estado.historico = `${dia}: ${r.fichas} fichas, faltam ${r.faltam}`;
+      if (!r.faltam) { feitos[`${marca}|${dia}`] = Date.now(); try { localStorage.setItem(STORE_HIST, JSON.stringify(feitos)); } catch {} }
+      return;
+    }
+    estado.historico = `completo desde ${HIST_INICIO}`;
+  }
+
   async function ciclo() {
     if (estado.rodando || document.hidden) return;
     if (!pegarTrava()) return;
     estado.ativo = true; estado.rodando = true;
     try {
       const hoje = new Date(), ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
-      await processar([isoDia(hoje), isoDia(ontem)]);
+      const r = await processar([isoDia(hoje), isoDia(ontem)]);
+      if (!r.faltam) await cicloHistorico(unidadeLogada());
       estado.erro = '';
     } catch (e) {
       estado.erro = String(e?.message || e);

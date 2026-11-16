@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.5
+// @version      3.1.6
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.5
+    /* OM30 - CONTROLE DE SALAS v3.1.6
+     * v3.1.6: Medicação: fila Emergência = classificados VERMELHO (antes senhas EM); Clínico sem os vermelhos. Sem o aviso de filtro do PC na barra.
      * v3.1.5: faturamento: número da ficha + histórico desde 01/11.
      * v3.1.4: fila mais igual entre os PCs: atualiza sozinha com 25 s parada (antes 1 min) e na hora ao voltar para a aba; filtro do sistema salvo no PC (situação/risco/profissional) aparece na barra com botão Limpar.
      * v3.1.3: Aplicar medicação sem travar: o envio do faturamento roda só na lista (não mais na tela de aplicação nem em cada aba) e uma aba por PC de cada vez; os vigias da tela de aplicação trabalham no máximo a cada 60-80 ms. Raio-X sem o 'Em medicação' (botão, filtro e contagem).
@@ -8369,9 +8370,10 @@
             const soPediatria = temPediatria && cfg.mostrar === 'pediatria';
             const soEmergencia = temEmergencia && cfg.mostrar === 'emergencia';
             const soClinico = temPediatria && !soPediatria && !soEmergencia;
-            const ehEmergencia = it => /^EM\d/i.test(String(it.senha || '').trim());
+            // v3.1.6: Emergência da Medicação = classificados como VERMELHO (antes: senhas EM).
+            const ehEmergencia = it => String(it.grau_risco || '').trim().toUpperCase() === 'VERMELHO';
             const ehPediatria = it => /^P[DP]\d/i.test(String(it.senha || '').trim());
-            // Clínico: sem PD/PP e, onde há a fila Emergência, sem as senhas EM.
+            // Clínico: sem PD/PP e, onde há a fila Emergência, sem os VERMELHOS.
             const filaPediatria = it => soPediatria ? ehPediatria(it)
                 : soEmergencia ? ehEmergencia(it)
                 : soClinico ? (!ehPediatria(it) && !(temEmergencia && ehEmergencia(it)))
@@ -8935,7 +8937,6 @@
             // v3.1.2: ECG e sutura são pedidos em Enfermagem; Exames fica só com a coleta, sem o filtro "Sala:".
             const salaHtml = '';
             const avisos = [];
-            if (CS.filtroSistemaAtivo) avisos.push(`<span class="cs-aviso" title="Com este filtro, a fila deste PC fica diferente da dos outros">Filtro ligado neste PC: ${esc(CS.filtroSistemaAtivo)} ${bt('filtro:limpar', 'Limpar', false)}</span>`);
             if (CS.filtroDataSistema) avisos.push(`<span class="cs-aviso">Usando a data do filtro do sistema (${esc(CS.filtroDataSistema)})</span>`);
             if (CS.truncado) avisos.push(`<span class="cs-aviso">Mostrando ${MAX_PAGINAS * POR_PAGINA} de ${CS.totalPeriodo}; reduza o período</span>`);
             if (CS.erro) avisos.push(`<span class="cs-erro">${esc(CS.erro)}</span>`);

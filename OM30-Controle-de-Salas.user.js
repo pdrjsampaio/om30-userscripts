@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.6
+// @version      3.1.7
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.6
+    /* OM30 - CONTROLE DE SALAS v3.1.7
+     * v3.1.7: fila não abre mais zerada: filtro do sistema (profissional/situação/risco) só volta no mesmo dia; situação Cancelado/Finalizado/Em outra sala é ignorada fora do Histórico; ao abrir, 'Emergência' volta para Clínico e 'Data...' vencida volta para Hoje.
      * v3.1.6: Medicação: fila Emergência = classificados VERMELHO (antes senhas EM); Clínico sem os vermelhos. Sem o aviso de filtro do PC na barra.
      * v3.1.5: faturamento: número da ficha + histórico desde 01/11.
      * v3.1.4: fila mais igual entre os PCs: atualiza sozinha com 25 s parada (antes 1 min) e na hora ao voltar para a aba; filtro do sistema salvo no PC (situação/risco/profissional) aparece na barra com botão Limpar.
@@ -501,9 +502,13 @@
         function filtrosParaRestaurar(salvo, agora) {
             if (!salvo || typeof salvo !== 'object') return null;
             const mesmoDia = salvo.dia === isoDia(agora);
+            // v3.1.7: filtro do sistema só volta no MESMO dia (antes voltava para sempre e a fila
+            // abria zerada no dia seguinte: profissional de ontem, situação Finalizado...).
+            if (!mesmoDia) return null;
             const r = {
                 profissionalId: salvo.profissionalId ?? null,
-                status: salvo.status || '',
+                // Situação Cancelado/Finalizado/Em outra sala zera a fila ativa: não volta.
+                status: ['1', '2'].includes(String(salvo.status || '')) ? String(salvo.status) : '',
                 grauRisco: salvo.grauRisco || '',
                 dataInicial: mesmoDia ? salvo.dataInicial || '' : '',
                 dataFinal: mesmoDia ? salvo.dataFinal || '' : '',
@@ -8314,6 +8319,17 @@
             vm.isLoading = !jaTemItens;
 
             const cfg = lerConfig();
+            // v3.1.7: ao abrir a página, o que costuma deixar a fila zerada não fica salvo:
+            // "Emergência" (só VERMELHO) volta para Clínico e "Data..." com dia que já passou volta para Hoje.
+            if (!CS.ajusteAbertura) {
+                CS.ajusteAbertura = true;
+                let mudou = false;
+                if (cfg.mostrar === 'emergencia') { cfg.mostrar = 'todos'; mudou = true; }
+                if (cfg.periodo === 'datas' && cfg.dataFinal && String(cfg.dataFinal) < N.isoDia(new Date())) {
+                    cfg.periodo = 'hoje'; cfg.dataInicial = ''; cfg.dataFinal = ''; mudou = true;
+                }
+                if (mudou) { gravarJSON(CHAVE_CONFIG, cfg); try { atualizarBarra(); } catch (_) {} }
+            }
             // v3.0.99: o local escolhido decide o filtro de entrada. Local com "PEDIATRI…" (ex.:
             // Medicação Pediatria) abre em Pediatria; os outros abrem no Clínico. Só muda quando
             // o LOCAL muda: depois disso a pessoa pode trocar o filtro à vontade.
@@ -8350,6 +8366,9 @@
             const condBase = Object.assign({}, vm.conditions || {});
             delete condBase.dataInicial;
             delete condBase.dataFinal;
+            // v3.1.7: a fila mostra Em Espera/Em Andamento; situação Cancelado/Finalizado/Em outra sala
+            // no filtro do sistema deixava a fila zerada. Fora do Histórico, essa situação é ignorada.
+            if (cfg.mostrar !== 'historico' && condBase.status && !['1', '2'].includes(String(condBase.status))) condBase.status = '';
             if (cfg.periodo === 'datas' && cfg.dataInicial && cfg.dataFinal) {
                 cond = Object.assign({}, condBase, { dataInicial: cfg.dataInicial, dataFinal: cfg.dataFinal });
                 minimo = null;

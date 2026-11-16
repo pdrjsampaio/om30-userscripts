@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.3
+// @version      3.1.4
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,9 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.2
+    /* OM30 - CONTROLE DE SALAS v3.1.4
+     * v3.1.4: fila mais igual entre os PCs: atualiza sozinha com 25 s parada (antes 1 min) e na hora ao voltar para a aba; filtro do sistema salvo no PC (situação/risco/profissional) aparece na barra com botão Limpar.
+     * v3.1.3: Aplicar medicação sem travar: o envio do faturamento roda só na lista (não mais na tela de aplicação nem em cada aba) e uma aba por PC de cada vez; os vigias da tela de aplicação trabalham no máximo a cada 60-80 ms. Raio-X sem o 'Em medicação' (botão, filtro e contagem).
      * v3.1.3: faturamento de todas as salas: Raio-X, Exames, Enfermagem e Gesso vão para o faturamentops.pages.dev (só itens REALIZADO/COLETADO; o que foi cancelado depois sai do site). Roda em qualquer sala do Controle de Salas; só lê, não clica em nada.
      * v3.1.2: sala Exames sem o filtro "Sala: Todas / Coleta / ECG" (ECG e sutura agora são pedidos em Enfermagem); a fila de Exames mostra tudo.
      * v3.1.1: "Nenhum local encontrado" sem precisar desligar/ligar o script: se o Senha Simples recusar o token reaproveitado (401), as cópias são apagadas e a página recarrega pelo login normal do sistema; e, se a lista de locais vier vazia com a sala escolhida, o script pede os locais de novo (no máximo a cada 20 s).
@@ -1103,7 +1105,7 @@
         const c = lerJSON(CHAVE_CONFIG, {});
         return {
             periodo: (N.PERIODOS[c.periodo] || c.periodo === 'datas') ? c.periodo : 'hoje',
-            mostrar: ['todos', 'pediatria', 'emergencia', 'em_medicacao', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',
+            mostrar: ['todos', 'pediatria', 'emergencia', 'historico'].includes(c.mostrar) ? c.mostrar : 'todos',   // v3.1.3: 'em_medicacao' saiu
             // v3.0.93: sala física da fila de Exames neste PC (Coleta / Sutura com ECG).
             salaExames: 'todas',   // v3.1.2: filtro Coleta/ECG removido; escolha antiga salva no PC é ignorada
             medicacoes: true,
@@ -4135,8 +4137,10 @@
       if(!btn){btn=document.createElement('button');btn.type='button';btn.className='btn om30-cancel-ficha-btn';btn.textContent='Cancelar todos';btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();iniciar280()});topo.appendChild(btn);}
     }
 
-    if(document.body){instalar280();new MutationObserver(instalar280).observe(document.body,{childList:true,subtree:true});}
-    else document.addEventListener('DOMContentLoaded',()=>{instalar280();new MutationObserver(instalar280).observe(document.body,{childList:true,subtree:true});},{once:true});
+    // v3.1.3: no máximo uma vez a cada 80 ms (antes rodava a cada mudança da página).
+    let ag280=null; const instalar280Leve=()=>{ if(ag280) return; ag280=setTimeout(()=>{ag280=null;instalar280();},80); };
+    if(document.body){instalar280();new MutationObserver(instalar280Leve).observe(document.body,{childList:true,subtree:true});}
+    else document.addEventListener('DOMContentLoaded',()=>{instalar280();new MutationObserver(instalar280Leve).observe(document.body,{childList:true,subtree:true});},{once:true});
   })();
 
 
@@ -4197,7 +4201,8 @@
     }
     const ligar=()=>{
       instalar();
-      new MutationObserver(instalar).observe(document.body,{childList:true,subtree:true});
+      let ag=null;
+      new MutationObserver(()=>{ if(ag) return; ag=setTimeout(()=>{ag=null;instalar();},60); }).observe(document.body,{childList:true,subtree:true});
       document.addEventListener('click',e=>{
         if(e.target.closest('.btn-atendimento-prescricao-interna-cancelada,.btn-cancelar-exame,.btn-cancelar-radiografia,.btn-cancelar-procedimento-enfermagem')){
           setTimeout(instalar,40);setTimeout(instalar,120);setTimeout(instalar,260);
@@ -4466,7 +4471,8 @@
         const ligarDestino=()=>{
             csDecorarSucesso();
             if(!window.__CS_DESTINO_OBSERVER__ && document.body){
-                window.__CS_DESTINO_OBSERVER__=new MutationObserver(csDecorarSucesso);
+                let agD=null;
+                window.__CS_DESTINO_OBSERVER__=new MutationObserver(()=>{ if(agD) return; agD=setTimeout(()=>{agD=null;csDecorarSucesso();},60); });
                 window.__CS_DESTINO_OBSERVER__.observe(document.body,{childList:true,subtree:true});
             }
         };
@@ -5820,7 +5826,8 @@
                 clearInterval(timer);
                 try { remendarComponentes(V); } catch (e) { console.error('[Controle de Salas] remendo falhou', e); }
                 setInterval(() => { varrerInstancias(); atualizarTitulo(); vigiarListaParada(); }, 3000);
-                document.addEventListener('visibilitychange', vigiarListaParada);
+                document.addEventListener('visibilitychange', atualizarAoVoltar);
+                window.addEventListener('focus', atualizarAoVoltar, { passive: true });
                 varrerInstancias();
             } else if (Date.now() - inicio > 60000) {
                 clearInterval(timer);
@@ -5830,10 +5837,20 @@
 
         // Lista parada (aba voltou do segundo plano, PC acordou, ciclo de 20 s do sistema
         // parou): com a tela visível e mais de 1 min sem atualizar, atualiza sem esperar.
+        // v3.1.4: 25 s sem atualizar (antes 1 min) já recarrega; com falha, tenta de novo a cada 10 s.
+        // Assim os PCs da mesma sala ficam no máximo ~25 s diferentes, mesmo se o ciclo do sistema parar.
         function vigiarListaParada() {
             if (!CS.colecao || !CS.ultimaAtualizacao || document.visibilityState === 'hidden') return;
-            if (Date.now() + (CS.desvioRelogio || 0) - CS.ultimaAtualizacao.getTime() < 60e3) return;
-            if (Date.now() - (CS.vigiaEm || 0) < 30e3) return; // falhando, tenta de novo a cada 30 s
+            if (Date.now() + (CS.desvioRelogio || 0) - CS.ultimaAtualizacao.getTime() < 25e3) return;
+            if (Date.now() - (CS.vigiaEm || 0) < 10e3) return;
+            CS.vigiaEm = Date.now();
+            carregar(CS.colecao, { silencioso: true });
+        }
+        // Voltou para a aba/janela: atualiza na hora se a lista tem mais de 5 s.
+        function atualizarAoVoltar() {
+            if (!CS.colecao || !CS.ultimaAtualizacao || document.visibilityState === 'hidden') return;
+            if (Date.now() + (CS.desvioRelogio || 0) - CS.ultimaAtualizacao.getTime() < 5e3) return;
+            if (Date.now() - (CS.vigiaEm || 0) < 3e3) return;
             CS.vigiaEm = Date.now();
             carregar(CS.colecao, { silencioso: true });
         }
@@ -5954,7 +5971,7 @@
                         return r;
                     },
                 },
-                mounted() { restaurarFiltros(this); },
+                mounted() { CS.filtroVm = this; restaurarFiltros(this); },
             });
 
             // Chamar: o bloqueio era calculado só na montagem; com a lista reordenada a
@@ -6642,10 +6659,11 @@
         // var (não const): a barra e a carga da fila podem rodar antes desta linha.
         var EMMED = { mapa:new Map(), lidoEm:0, lendo:false, SALA:'radiografia', LEITURA_MS:45000, RENOVA_MS:8*60000, CACHE:'cs-em-medicacao-v1' };
         // Última leitura guardada neste PC (até 3 min): evita o paciente marcado piscar na fila ao abrir.
-        try{ const c=JSON.parse(localStorage.getItem(EMMED.CACHE)||'null'); if(c&&Date.now()-c.t<180000&&Array.isArray(c.itens)) for(const [b,v] of c.itens) EMMED.mapa.set(b,v); }catch(_){}
+        // v3.1.3: "Em medicação" retirado do Raio-X (botão, filtro e leitura no Worker desligados).
+        try{ localStorage.removeItem(EMMED.CACHE); }catch(_){}
         function guardarEmMed(){ try{ localStorage.setItem(EMMED.CACHE,JSON.stringify({t:Date.now(),itens:[...EMMED.mapa]})); }catch(_){} }
         const ICONE_EMMED = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8"/><path d="M10 3v3"/><path d="M14 3v3"/><rect x="7" y="6" width="10" height="9" rx="2"/><path d="M12 15v3"/><path d="M12 18c0 2 2 3 4 3"/></svg>';
-        function setorEmMed(setor){ return !!setor && setor.key === 'raio_x'; }
+        function setorEmMed(setor){ return false; }
         function chaveEmMed(it){ const a=atendimentoPres(it && it.atendimento_str); return a ? { bruto:a.bruto, chave:'8'+a.chave } : null; }
         function emMedicacao(it){ if(!EMMED) return false; const c=chaveEmMed(it); return !!c && EMMED.mapa.has(c.bruto); }
         async function lerEmMed(vm,lista,opcoes={}){
@@ -8399,6 +8417,12 @@
             // (Hoje, sem filtro do sistema). Com 24 horas/Data ou filtro salvo neste PC,
             // ela sai de uma consulta à parte; a tabela continua como foi escolhida.
             const comFiltro = !!(cond.status || cond.grau_risco || cond.search_term || (cond.profissional && cond.profissional.id != null));
+            // v3.1.4: filtro do sistema salvo NESTE PC deixa a fila diferente dos outros PCs; a barra avisa.
+            CS.filtroSistemaAtivo = historico ? '' : [
+                cond.status ? 'situação' : '',
+                cond.grau_risco ? 'risco' : '',
+                (cond.profissional && cond.profissional.id != null) ? 'profissional' : '',
+            ].filter(Boolean).join(', ');
             const contagemPadrao = !historico && (cfg.periodo !== 'hoje' || comFiltro)
                 ? buscarTudo(N.aplicarPeriodo(Object.assign({}, condBase, { search_term: null, profissional: {}, status: '', grau_risco: '' }), 'hoje', agora).cond).catch(() => null)
                 : null;
@@ -8831,6 +8855,7 @@
                     if (!b) return;
                     const cfg = lerConfig();
                     const [campo, valor] = b.dataset.cs.split(':');
+                    if (campo === 'filtro' && valor === 'limpar') return limparFiltroSistema();
                     if (campo === 'periodo' && valor === 'datas') return abrirDatas();
                     if (campo === 'periodo' && valor === 'limpar') {
                         cfg.periodo='hoje'; cfg.dataInicial=''; cfg.dataFinal='';
@@ -8845,6 +8870,25 @@
             }
             if (barra.nextSibling !== col.$el) col.$el.parentNode.insertBefore(barra, col.$el);
             atualizarBarra();
+        }
+
+        // v3.1.4: tira o filtro do sistema (situação/risco/profissional) salvo neste PC.
+        function limparFiltroSistema() {
+            const limpar = c => { if (!c) return; c.profissional = {}; c.status = ''; c.grau_risco = ''; };
+            const f = CS.filtroVm;
+            try {
+                if (f) {
+                    f.profissionalSelecionado = ''; f.statusSelecionado = ''; f.grauRiscoSelecionado = '';
+                    limpar(f.conditions);
+                    try { f.textFilter(); } catch (_) {}
+                }
+            } catch (_) {}
+            if (CS.colecao) limpar(CS.colecao.conditions);
+            gravarJSON(CHAVE_FILTROS, null);
+            CS.filtroSistemaAtivo = '';
+            CS.ultimaAssinatura = '';
+            atualizarBarra();
+            if (CS.colecao) carregar(CS.colecao, { silencioso: false });
         }
 
         function atualizarBarra() {
@@ -8890,6 +8934,7 @@
             // v3.1.2: ECG e sutura são pedidos em Enfermagem; Exames fica só com a coleta, sem o filtro "Sala:".
             const salaHtml = '';
             const avisos = [];
+            if (CS.filtroSistemaAtivo) avisos.push(`<span class="cs-aviso" title="Com este filtro, a fila deste PC fica diferente da dos outros">Filtro ligado neste PC: ${esc(CS.filtroSistemaAtivo)} ${bt('filtro:limpar', 'Limpar', false)}</span>`);
             if (CS.filtroDataSistema) avisos.push(`<span class="cs-aviso">Usando a data do filtro do sistema (${esc(CS.filtroDataSistema)})</span>`);
             if (CS.truncado) avisos.push(`<span class="cs-aviso">Mostrando ${MAX_PAGINAS * POR_PAGINA} de ${CS.totalPeriodo}; reduza o período</span>`);
             if (CS.erro) avisos.push(`<span class="cs-erro">${esc(CS.erro)}</span>`);
@@ -9194,7 +9239,8 @@
         };
         const iniciar = () => {
             observar();
-            new MutationObserver(observar).observe(document.body, { childList: true, subtree: true });
+            let ag = null;
+            new MutationObserver(() => { if (ag) return; ag = setTimeout(() => { ag = null; observar(); }, 80); }).observe(document.body, { childList: true, subtree: true });
         };
         if (document.body) iniciar();
         else document.addEventListener('DOMContentLoaded', iniciar);
@@ -9248,7 +9294,10 @@
 // Suporte: OM30FatSalas.diagnostico() · OM30FatSalas.enviarDia('2026-11-08')
 (() => {
   'use strict';
-  if (!/^\/aplicacoes_medicamentos/.test(location.pathname)) return;
+  // v3.1.3: só na LISTA do Controle de Salas. Antes rodava também na tela de aplicação
+  // (/aplicacoes_medicamentos/new) e em cada aba aberta, lendo dezenas de fichas no meio do
+  // "Aplicar" e deixando a página travada ("script não responde").
+  if (!/^\/aplicacoes_medicamentos\/?$/.test(location.pathname)) return;
   if (window.__OM30_FAT_SALAS__) return;
   window.__OM30_FAT_SALAS__ = true;
 
@@ -9427,8 +9476,21 @@
     return { fichas, procedimentos: gravados, faltam: estado.pendentes };
   }
 
+  // v3.1.3: uma aba por PC de cada vez (várias listas abertas não leem as mesmas fichas juntas).
+  const TRAVA = 'om30:fat-salas:v1:trava', TRAVA_MS = 2 * 60000, EU = Math.random().toString(36).slice(2);
+  function pegarTrava() {
+    try {
+      const t = JSON.parse(localStorage.getItem(TRAVA) || 'null');
+      if (t && t.dono !== EU && Date.now() - t.em < TRAVA_MS) return false;
+      localStorage.setItem(TRAVA, JSON.stringify({ dono: EU, em: Date.now() }));
+      return true;
+    } catch { return true; }
+  }
+  function soltarTrava() { try { const t = JSON.parse(localStorage.getItem(TRAVA) || 'null'); if (t && t.dono === EU) localStorage.removeItem(TRAVA); } catch {} }
+
   async function ciclo() {
     if (estado.rodando || document.hidden) return;
+    if (!pegarTrava()) return;
     estado.ativo = true; estado.rodando = true;
     try {
       const hoje = new Date(), ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
@@ -9438,6 +9500,7 @@
       estado.erro = String(e?.message || e);
     } finally {
       estado.rodando = false; estado.ultimoCiclo = Date.now();
+      soltarTrava();
     }
   }
 

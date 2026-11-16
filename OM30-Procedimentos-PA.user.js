@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.2
+// @version      2.4.3
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -3326,6 +3326,13 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     function showReturnWarningModal(form, submitter) {
       removeReturnWarningModal();
 
+      // v2.4.3: encaminhamento com Raio X ganha a informação da radiografia no aviso.
+      const comRaioX = !!form?.querySelector?.('select.selecionar_ordenacao_sala option[value^="radiografia"]');
+      const textoRaioX = comRaioX
+        ? `<strong>Você solicitou um exame de radiografia.</strong> Tem certeza de que o paciente
+           não precisa voltar para a avaliação médica com o resultado do Raio X?<br><br>`
+        : '';
+
       const backdrop = document.createElement('div');
       backdrop.id = 'om30-pa-return-warning-backdrop';
       backdrop.innerHTML = `
@@ -3343,7 +3350,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
           </div>
 
           <div class="om30-pa-return-warning-text">
-            Você não marcou o retorno ao consultório médico.
+            ${textoRaioX}Você não marcou o retorno ao consultório médico.
             <br><br>
             Se continuar assim, o munícipe seguirá apenas para as salas encaminhadas
             e <strong>não voltará automaticamente à fila de atendimento médico.</strong>
@@ -6841,7 +6848,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.2', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.3', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];
@@ -7763,4 +7770,41 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
   setTimeout(() => obs.disconnect(), 120000);
   window.OM30_PA_RX_PRIMEIRO = { aplicar, status: () => ({ usuarioMexeu, aplicado: !!aplicadoEm }) };
+})();
+
+/* ============================================================
+   OM30 PA v2.4.3 • RAIO X => RETORNO MÉDICO MARCADO
+   ------------------------------------------------------------
+   No encaminhamento do Controle de Salas, se houver Raio X na
+   "Ordem de chamada", marca sozinho "Paciente irá retornar para
+   Avaliação Médica?" UMA vez. Se o médico desmarcar, o script
+   respeita; ao salvar, o aviso "sem retorno médico" lembra da
+   radiografia.
+   ============================================================ */
+(() => {
+  'use strict';
+  if (!/^\/(?:encaminhamentos_controle_salas|prontuarios)(?:\/|$)/.test(location.pathname)) return;
+  if (window.__OM30_PA_RX_RETORNO__) return;
+  window.__OM30_PA_RX_RETORNO__ = true;
+  const NOME = 'encaminhamento_controle_salas[retornar_paciente_para_avaliacao]';
+  const temRaioX = f => !!f.querySelector('select.selecionar_ordenacao_sala option[value^="radiografia"]');
+  function aplicar() {
+    for (const f of document.querySelectorAll('form')) {
+      if (f.dataset.om30RxRetorno) continue;
+      const cb = [...f.querySelectorAll('input[type="checkbox"]')].find(x => x.name === NOME);
+      if (!cb || !temRaioX(f)) continue;
+      f.dataset.om30RxRetorno = '1';
+      if (!cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+        console.info('[OM30 PA Raio-X retorno]', 'Retorno médico marcado (encaminhamento com Raio X).');
+      }
+    }
+  }
+  aplicar();
+  let t = null;
+  const obs = new MutationObserver(() => { clearTimeout(t); t = setTimeout(aplicar, 150); });
+  const ligar = () => obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  if (document.body) ligar(); else document.addEventListener('DOMContentLoaded', () => { aplicar(); ligar(); }, { once: true });
+  window.OM30_PA_RX_RETORNO = { aplicar };
 })();

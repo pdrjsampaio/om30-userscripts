@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.9
+// @version      3.1.10
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.9
+    /* OM30 - CONTROLE DE SALAS v3.1.10
+     * v3.1.10: senha por aba só volta na página do MESMO paciente (aba usada para outro paciente segue o sistema); 'Chamar' usa o último consultório/guichê escolhido no navegador.
      * v3.1.9: 'Senha perdida' na sala seguinte: cada aba guarda a própria senha chamada; com a ficha em aba nova, chamar outro paciente em outra aba não troca mais a senha que o Salvar encaminha.
      * v3.1.8: entrou na conta e a fila veio vazia (ou a 1ª carga falhou): recarrega a cada ~3 s nos 2 primeiros minutos da página, em vez de esperar 25 s; não empilha cargas com o servidor lento.
      * v3.1.7: fila não abre mais zerada: filtro do sistema (profissional/situação/risco) só volta no mesmo dia; situação Cancelado/Finalizado/Em outra sala é ignorada fora do Histórico; ao abrir, 'Emergência' volta para Clínico e 'Data...' vencida volta para Hoje.
@@ -10049,21 +10050,44 @@
 // ===== OM30 SENHA POR ABA (bloco igual na Fila Médica, Ausentes e Controle de Salas; roda uma vez por página) =====
 // O Saúde Simples guarda a "senha chamada" no localStorage, que é o MESMO para todas as abas, e cada
 // página lê esse valor ao abrir. Com a ficha aberta em aba nova, se o profissional chamar outro paciente
-// em outra aba antes de salvar, a ficha passa a usar a senha do outro: ao salvar, o sistema encaminha a
-// senha errada e a do paciente fica presa ("Senha perdida" na sala seguinte).
-// Aqui cada aba guarda a SUA senha (sessionStorage, que é por aba e é copiado para a aba nova no
-// momento em que ela abre) e, a cada página, devolve essa senha para o sistema antes do Salvar.
+// em outra aba antes de salvar, a ficha do 1º passa a ver a senha do 2º (e o próprio sistema a apaga por
+// não ser do paciente). Ao salvar, a senha do 1º não é encaminhada: "Senha perdida" na sala seguinte.
+// Aqui cada aba guarda a SUA senha (sessionStorage: é por aba e é copiado para a aba nova quando ela abre)
+// e só a devolve na página do MESMO paciente (atendimento da senha = atendimento da página). Em qualquer
+// outra página nada muda: vale o comportamento normal do sistema.
 (() => {
   'use strict';
   if (window.__OM30_SENHA_POR_ABA__) return;
   window.__OM30_SENHA_POR_ABA__ = true;
-  const CHAVE = 'om30-senha-desta-aba';
-  const ler = () => { try { const s = JSON.parse(sessionStorage.getItem(CHAVE) || 'null'); return s && s.id ? s : null; } catch (_) { return null; } };
-  const gravar = s => { try { if (s && s.id) sessionStorage.setItem(CHAVE, JSON.stringify(s)); else sessionStorage.removeItem(CHAVE); } catch (_) {} };
-  // Script que roda antes do sistema (document-start): a página já nasce com a senha desta aba.
+  const CHAVE = 'om30-senha-desta-aba', VALIDADE_MS = 12 * 3600e3;
+  const ler = () => {
+    try {
+      const o = JSON.parse(sessionStorage.getItem(CHAVE) || 'null');
+      return o && o.s && o.s.id && Date.now() - (o.em || 0) < VALIDADE_MS ? o.s : null;
+    } catch (_) { return null; }
+  };
+  const gravar = s => {
+    try {
+      if (s && s.id) sessionStorage.setItem(CHAVE, JSON.stringify({ s, em: Date.now() }));
+      else sessionStorage.removeItem(CHAVE);
+    } catch (_) {}
+  };
+  // Números do atendimento que esta página mostra (URL e campos escondidos da ficha).
+  function idsDaPagina() {
+    const ids = new Set();
+    for (const m of String(location.href).matchAll(/\d{4,}/g)) ids.add(m[0]);
+    try {
+      document.querySelectorAll('input[name*="atendimento" i], input[id*="atendimento" i], input[name*="prontuariavel" i], input[id*="prontuariavel" i]')
+        .forEach(i => { const v = String(i.value || '').match(/\d{4,}/); if (v) ids.add(v[0]); });
+    } catch (_) {}
+    return ids;
+  }
+  const daPagina = s => !!(s && s.saude_atendimento_id != null && idsDaPagina().has(String(s.saude_atendimento_id)));
+
+  // Script que roda antes do sistema (document-start): a ficha do paciente já nasce com a senha dele.
   if (document.readyState === 'loading') {
     const minha = ler();
-    if (minha) { try { localStorage.setItem('senha', JSON.stringify(minha)); } catch (_) {} }
+    if (minha && daPagina(minha)) { try { localStorage.setItem('senha', JSON.stringify(minha)); } catch (_) {} }
   }
   const pegarStore = () => {
     try { if (typeof store !== 'undefined' && store && typeof store.dispatch === 'function') return store; } catch (_) {}   // eslint-disable-line no-undef
@@ -10077,9 +10101,9 @@
     instalado = true;
     const minha = ler();
     const atual = st.getters.senhaChamada;
-    if (minha && (!atual || String(atual.id) !== String(minha.id))) {
+    if (minha && daPagina(minha) && (!atual || String(atual.id) !== String(minha.id))) {
       try { st.dispatch('defineSenhaChamada', minha); console.info('[OM30] senha desta aba mantida:', minha.id); } catch (_) {}
-    } else if (!minha && atual && atual.id) {
+    } else if (!minha && atual && atual.id && daPagina(atual)) {
       gravar(atual);
     }
     // Acompanha o que ESTA aba chama, conclui ou limpa.
@@ -10101,5 +10125,31 @@
     let n = 0;
     const t = setInterval(() => { if (instalar() || ++n > 240) clearInterval(t); }, 250);
   }
+  // Consultório/guichê: cada aba lê o local escolhido só quando abre. Aba aberta antes da troca
+  // chamava pelo consultório antigo (ex.: "Chamado por ... Consultório 1" com o médico no 4).
+  // Só no clique em "Chamar" (chamada NOVA) a aba passa a usar o último local escolhido neste
+  // navegador; nunca durante um atendimento (o sistema conclui a senha pelo local da aba).
+  // "Chamar novamente" fica de fora (repete no mesmo consultório) e local vazio ("Sair do local")
+  // não é copiado.
+  document.addEventListener('click', ev => {
+    const b = ev.target && ev.target.closest && ev.target.closest('button, a');
+    if (!b) return;
+    const rot = `${b.textContent || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('aria-label') || ''}`.replace(/\s+/g, ' ').trim();
+    if (!/^chamar\b/i.test(rot) || /novamente/i.test(rot)) return;
+    const st = pegarStore();
+    if (!st || !st.getters || typeof st.commit !== 'function') return;
+    let salvo = null;
+    try { salvo = JSON.parse(localStorage.getItem('localAtendimentoAtual') || 'null'); } catch (_) { salvo = null; }
+    if (!salvo || typeof salvo !== 'object') return;
+    const atual = st.getters.localAtendimentoAtual || {};
+    const novo = Object.assign({}, atual);
+    let mudou = false;
+    for (const [k, v] of Object.entries(salvo)) {
+      if (!v || v.id == null) continue;
+      if (String((atual[k] || {}).id ?? '') !== String(v.id)) { novo[k] = v; mudou = true; }
+    }
+    if (!mudou) return;
+    try { st.commit('GET_LOCAL_ATENDIMENTO_ATUAL', novo); console.info('[OM30] chamada pelo último local escolhido neste navegador'); } catch (_) {}
+  }, true);
 })();
 // ===== FIM OM30 SENHA POR ABA =====

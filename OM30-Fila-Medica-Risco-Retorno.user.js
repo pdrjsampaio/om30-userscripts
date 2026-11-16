@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.9
+// @version      2.15.10
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -10001,3 +10001,61 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
 })();
 }
 // ===== FIM OM30 AUSENTES EMBUTIDO =====
+
+// ===== OM30 SENHA POR ABA (bloco igual na Fila Médica, Ausentes e Controle de Salas; roda uma vez por página) =====
+// O Saúde Simples guarda a "senha chamada" no localStorage, que é o MESMO para todas as abas, e cada
+// página lê esse valor ao abrir. Com a ficha aberta em aba nova, se o profissional chamar outro paciente
+// em outra aba antes de salvar, a ficha passa a usar a senha do outro: ao salvar, o sistema encaminha a
+// senha errada e a do paciente fica presa ("Senha perdida" na sala seguinte).
+// Aqui cada aba guarda a SUA senha (sessionStorage, que é por aba e é copiado para a aba nova no
+// momento em que ela abre) e, a cada página, devolve essa senha para o sistema antes do Salvar.
+(() => {
+  'use strict';
+  if (window.__OM30_SENHA_POR_ABA__) return;
+  window.__OM30_SENHA_POR_ABA__ = true;
+  const CHAVE = 'om30-senha-desta-aba';
+  const ler = () => { try { const s = JSON.parse(sessionStorage.getItem(CHAVE) || 'null'); return s && s.id ? s : null; } catch (_) { return null; } };
+  const gravar = s => { try { if (s && s.id) sessionStorage.setItem(CHAVE, JSON.stringify(s)); else sessionStorage.removeItem(CHAVE); } catch (_) {} };
+  // Script que roda antes do sistema (document-start): a página já nasce com a senha desta aba.
+  if (document.readyState === 'loading') {
+    const minha = ler();
+    if (minha) { try { localStorage.setItem('senha', JSON.stringify(minha)); } catch (_) {} }
+  }
+  const pegarStore = () => {
+    try { if (typeof store !== 'undefined' && store && typeof store.dispatch === 'function') return store; } catch (_) {}   // eslint-disable-line no-undef
+    try { return document.querySelector('#app-vue')?.__vue__?.$store || null; } catch (_) { return null; }
+  };
+  let instalado = false;
+  function instalar() {
+    if (instalado) return true;
+    const st = pegarStore();
+    if (!st || !st.getters) return false;
+    instalado = true;
+    const minha = ler();
+    const atual = st.getters.senhaChamada;
+    if (minha && (!atual || String(atual.id) !== String(minha.id))) {
+      try { st.dispatch('defineSenhaChamada', minha); console.info('[OM30] senha desta aba mantida:', minha.id); } catch (_) {}
+    } else if (!minha && atual && atual.id) {
+      gravar(atual);
+    }
+    // Acompanha o que ESTA aba chama, conclui ou limpa.
+    const original = st.dispatch;
+    if (!original.__om30SenhaAba) {
+      const novo = function (tipo, carga) {
+        const nome = tipo && typeof tipo === 'object' ? tipo.type : tipo;
+        const dado = tipo && typeof tipo === 'object' ? tipo.payload : carga;
+        if (nome === 'defineSenhaChamada') gravar(dado);
+        else if (nome === 'limpaSenhaChamada') gravar(null);
+        return original.apply(this, arguments);
+      };
+      novo.__om30SenhaAba = true;
+      st.dispatch = novo;
+    }
+    return true;
+  }
+  if (!instalar()) {
+    let n = 0;
+    const t = setInterval(() => { if (instalar() || ++n > 240) clearInterval(t); }, 250);
+  }
+})();
+// ===== FIM OM30 SENHA POR ABA =====

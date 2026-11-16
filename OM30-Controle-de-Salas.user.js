@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.8
+// @version      3.1.9
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.8
+    /* OM30 - CONTROLE DE SALAS v3.1.9
+     * v3.1.9: 'Senha perdida' na sala seguinte: cada aba guarda a própria senha chamada; com a ficha em aba nova, chamar outro paciente em outra aba não troca mais a senha que o Salvar encaminha.
      * v3.1.8: entrou na conta e a fila veio vazia (ou a 1ª carga falhou): recarrega a cada ~3 s nos 2 primeiros minutos da página, em vez de esperar 25 s; não empilha cargas com o servidor lento.
      * v3.1.7: fila não abre mais zerada: filtro do sistema (profissional/situação/risco) só volta no mesmo dia; situação Cancelado/Finalizado/Em outra sala é ignorada fora do Histórico; ao abrir, 'Emergência' volta para Clínico e 'Data...' vencida volta para Hoje.
      * v3.1.6: Medicação: fila Emergência = classificados VERMELHO (antes senhas EM); Clínico sem os vermelhos. Sem o aviso de filtro do PC na barra.
@@ -10044,3 +10045,61 @@
   };
 })();
 // ===== FIM OM30 GUIA SADT (EXAMES) =====
+
+// ===== OM30 SENHA POR ABA (bloco igual na Fila Médica, Ausentes e Controle de Salas; roda uma vez por página) =====
+// O Saúde Simples guarda a "senha chamada" no localStorage, que é o MESMO para todas as abas, e cada
+// página lê esse valor ao abrir. Com a ficha aberta em aba nova, se o profissional chamar outro paciente
+// em outra aba antes de salvar, a ficha passa a usar a senha do outro: ao salvar, o sistema encaminha a
+// senha errada e a do paciente fica presa ("Senha perdida" na sala seguinte).
+// Aqui cada aba guarda a SUA senha (sessionStorage, que é por aba e é copiado para a aba nova no
+// momento em que ela abre) e, a cada página, devolve essa senha para o sistema antes do Salvar.
+(() => {
+  'use strict';
+  if (window.__OM30_SENHA_POR_ABA__) return;
+  window.__OM30_SENHA_POR_ABA__ = true;
+  const CHAVE = 'om30-senha-desta-aba';
+  const ler = () => { try { const s = JSON.parse(sessionStorage.getItem(CHAVE) || 'null'); return s && s.id ? s : null; } catch (_) { return null; } };
+  const gravar = s => { try { if (s && s.id) sessionStorage.setItem(CHAVE, JSON.stringify(s)); else sessionStorage.removeItem(CHAVE); } catch (_) {} };
+  // Script que roda antes do sistema (document-start): a página já nasce com a senha desta aba.
+  if (document.readyState === 'loading') {
+    const minha = ler();
+    if (minha) { try { localStorage.setItem('senha', JSON.stringify(minha)); } catch (_) {} }
+  }
+  const pegarStore = () => {
+    try { if (typeof store !== 'undefined' && store && typeof store.dispatch === 'function') return store; } catch (_) {}   // eslint-disable-line no-undef
+    try { return document.querySelector('#app-vue')?.__vue__?.$store || null; } catch (_) { return null; }
+  };
+  let instalado = false;
+  function instalar() {
+    if (instalado) return true;
+    const st = pegarStore();
+    if (!st || !st.getters) return false;
+    instalado = true;
+    const minha = ler();
+    const atual = st.getters.senhaChamada;
+    if (minha && (!atual || String(atual.id) !== String(minha.id))) {
+      try { st.dispatch('defineSenhaChamada', minha); console.info('[OM30] senha desta aba mantida:', minha.id); } catch (_) {}
+    } else if (!minha && atual && atual.id) {
+      gravar(atual);
+    }
+    // Acompanha o que ESTA aba chama, conclui ou limpa.
+    const original = st.dispatch;
+    if (!original.__om30SenhaAba) {
+      const novo = function (tipo, carga) {
+        const nome = tipo && typeof tipo === 'object' ? tipo.type : tipo;
+        const dado = tipo && typeof tipo === 'object' ? tipo.payload : carga;
+        if (nome === 'defineSenhaChamada') gravar(dado);
+        else if (nome === 'limpaSenhaChamada') gravar(null);
+        return original.apply(this, arguments);
+      };
+      novo.__om30SenhaAba = true;
+      st.dispatch = novo;
+    }
+    return true;
+  }
+  if (!instalar()) {
+    let n = 0;
+    const t = setInterval(() => { if (instalar() || ++n > 240) clearInterval(t); }, 250);
+  }
+})();
+// ===== FIM OM30 SENHA POR ABA =====

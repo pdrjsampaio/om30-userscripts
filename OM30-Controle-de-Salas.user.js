@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.2
+// @version      3.1.3
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -33,6 +33,7 @@
     }
 
     /* OM30 - CONTROLE DE SALAS v3.1.2
+     * v3.1.3: faturamento de todas as salas: Raio-X, Exames, Enfermagem e Gesso vão para o faturamentops.pages.dev (só itens REALIZADO/COLETADO; o que foi cancelado depois sai do site). Roda em qualquer sala do Controle de Salas; só lê, não clica em nada.
      * v3.1.2: sala Exames sem o filtro "Sala: Todas / Coleta / ECG" (ECG e sutura agora são pedidos em Enfermagem); a fila de Exames mostra tudo.
      * v3.1.1: "Nenhum local encontrado" sem precisar desligar/ligar o script: se o Senha Simples recusar o token reaproveitado (401), as cópias são apagadas e a página recarrega pelo login normal do sistema; e, se a lista de locais vier vazia com a sala escolhida, o script pede os locais de novo (no máximo a cada 20 s).
      * v3.1.0: no filtro "Sala:" dos Exames o botão "Sutura (ECG)" passa a se chamar só "ECG" (o filtro continua o mesmo; a escolha salva no PC continua valendo).
@@ -9236,26 +9237,34 @@
 })();
 // ===== FIM OM30 ROLAR AO CHAMAR =====
 
-// ===== OM30 RAIO-X FATURAMENTO (bloco separado; para juntar com outra versão, copie daqui até o FIM) =====
+// ===== OM30 FATURAMENTO SALAS (bloco separado; para juntar com outra versão, copie daqui até o FIM) =====
 // Controle interno do faturamento (faturamentops.pages.dev, com login autorizado por unidade).
-// - Só age quando a tela do Controle de Salas está na sala de Raio-X e a aba está visível.
-// - A cada 3 min lê os raio-X FINALIZADOS de hoje e de ontem da unidade logada (mesma lista do Histórico),
-//   abre a ficha de cada encaminhamento novo (procedimentos REALIZADOS e o que já foi lançado no faturamento)
-//   e busca CNS/CPF no cadastro pelo nome + nascimento (só aceita um cadastro exato).
-// - Cada encaminhamento é enviado uma vez; o servidor ignora repetidos.
-// Suporte: OM30RaioXFat.diagnostico() · OM30RaioXFat.enviarDia('2026-11-08')
+// - Roda em qualquer sala da tela do Controle de Salas, com a aba visível.
+// - A cada 3 min lê os FINALIZADOS de hoje e de ontem de Raio-X, Exames, Enfermagem e Gesso (mesma lista do Histórico),
+//   abre a ficha de consulta de cada encaminhamento novo (só leitura, nunca /edit) e envia só os itens REALIZADO/COLETADO.
+// - Cada ficha vai com "lidos": o que o site tinha dela e não veio de novo (cancelado depois) sai do site.
+// - Fichas de hoje são relidas uma vez depois de 45 min, para pegar cancelamento feito depois do envio.
+// - CNS/CPF pelo cadastro (nome + nascimento; só aceita um cadastro exato).
+// Suporte: OM30FatSalas.diagnostico() · OM30FatSalas.enviarDia('2026-11-08')
 (() => {
   'use strict';
-  // Só na tela do Controle de Salas (o Raio-X é escolhido como local de atendimento nela).
   if (!/^\/aplicacoes_medicamentos/.test(location.pathname)) return;
-  if (window.__OM30_RAIOX_FAT__) return;
-  window.__OM30_RAIOX_FAT__ = true;
+  if (window.__OM30_FAT_SALAS__) return;
+  window.__OM30_FAT_SALAS__ = true;
 
   const API = 'https://faturamentops.pages.dev';
-  const VERSAO = '1.0.0';
-  const CICLO_MS = 3 * 60000, POR_CICLO = 15, LOTE = 25;
-  const STORE = 'om30:raiox-fat:v1:enviados';
+  const VERSAO = '2.0.0';
+  const CICLO_MS = 3 * 60000, POR_CICLO = 15, MAX_ITENS = 30, MAX_LIDOS = 40;
+  const REVER_MS = 45 * 60000, REVER_POR_CICLO = 5;
+  const STORE = 'om30:raiox-fat:v1:enviados', STORE_REV = 'om30:fat-salas:v1:revistos';
   const GUARDA_MS = 4 * 86400000;
+  const SALAS = [
+    { sala: 'raio_x', endpoint: '/encaminhamentos_radiografias' },
+    { sala: 'exames', endpoint: '/encaminhamentos_exames' },
+    { sala: 'enfermagem', endpoint: '/encaminhamentos_procedimentos_enfermagem' },
+    { sala: 'gesso', endpoint: '/encaminhamentos_gessos_imobilizacoes' }
+  ];
+  const FEITOS = new Set(['REALIZADO', 'COLETADO']);
 
   const clean = v => String(v ?? '').replace(/\s+/g, ' ').trim();
   const norm = v => clean(v).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
@@ -9263,20 +9272,19 @@
   const isoDia = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const diaIso = br => { const m = String(br || '').match(/^(\d{2})\/(\d{2})\/(\d{4})/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
 
-  const estado = { ativo: false, ultimoCiclo: 0, enviados: 0, erro: '', rodando: false, pendentes: 0 };
-  let enviados = (() => { try { return JSON.parse(localStorage.getItem(STORE) || '{}') || {}; } catch { return {}; } })();
-  function gravarEnviados() {
+  const estado = { ativo: false, ultimoCiclo: 0, enviados: 0, erro: '', rodando: false, pendentes: 0, porSala: {} };
+  const ler = k => { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch { return {}; } };
+  let enviados = ler(STORE), revistos = ler(STORE_REV);
+  function gravar() {
     const corte = Date.now() - GUARDA_MS;
-    for (const [k, t] of Object.entries(enviados)) if (!(t > corte)) delete enviados[k];
-    try { localStorage.setItem(STORE, JSON.stringify(enviados)); } catch {}
+    for (const m of [enviados, revistos]) for (const [k, t] of Object.entries(m)) if (!(t > corte)) delete m[k];
+    try { localStorage.setItem(STORE, JSON.stringify(enviados)); localStorage.setItem(STORE_REV, JSON.stringify(revistos)); } catch {}
   }
+  // Raio-X mantém a chave antiga (o que já foi enviado não é relido à toa).
+  const chaveDe = (sala, unidade, id) => sala === 'raio_x' ? `${norm(unidade)}|${id}` : `${sala}|${norm(unidade)}|${id}`;
 
   const unidadeLogada = () => clean(document.querySelector('a[href*="trocar_unidade_saude"]')?.textContent);
   const usuarioLogado = () => clean(document.querySelector('a.navbar-avatar')?.textContent);
-  function naSalaRaioX() {
-    if (/Raio-X/i.test(document.title)) return true;
-    return /SALA DE RAIO|RADIOGRAFIA/i.test(clean(document.querySelector('#content, .content-wrapper, main')?.textContent).slice(0, 600));
-  }
 
   async function lerJson(url) {
     const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json, text/plain, */*', 'X-Requested-With': 'XMLHttpRequest' } });
@@ -9285,14 +9293,14 @@
     try { return JSON.parse(t); } catch { throw new Error(/usuarios\/login|type=["']?password/i.test(t) ? 'sessao' : 'resposta inválida'); }
   }
 
-  // Lista do Histórico: finalizados (status 4) de um dia.
-  async function finalizadosDoDia(dia) {
+  // Lista do Histórico de uma sala: finalizados (status 4) de um dia.
+  async function finalizadosDoDia(endpoint, dia) {
     const itens = [];
     let tam = 0;
     for (let page = 1; page <= 20; page++) {
       const q = `format=json&sortable=%7B%7D&page=${page}&per_page=100&profissional=%7B%7D&status=4&grau_risco=&dataInicial=${dia}&dataFinal=${dia}`;
-      const d = await lerJson(`/encaminhamentos_radiografias?${q}`);
-      const lista = Array.isArray(d) ? d : Array.isArray(d?.data) ? d.data : [];
+      const d = await lerJson(`${endpoint}?${q}`);
+      const lista = Array.isArray(d) ? d : Array.isArray(d?.data) ? d.data : (Object.values(d || {}).find(Array.isArray) || []);
       itens.push(...lista);
       if (!lista.length) break;
       if (page === 1) tam = lista.length;
@@ -9301,31 +9309,31 @@
     return itens;
   }
 
-  // Ficha de consulta do encaminhamento (só leitura): procedimentos e faturamento.
-  async function lerFicha(id) {
-    const r = await fetch(`/encaminhamentos_radiografias/${id}`, { credentials: 'same-origin', cache: 'no-store' });
+  // Ficha de consulta (só leitura): tabela de itens com coluna Situação (Procedimento/Exame/Radiografia) e a do Faturamento.
+  async function lerFicha(endpoint, id) {
+    const r = await fetch(`${endpoint}/${id}`, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html,application/xhtml+xml' } });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const html = await r.text();
     if (/usuarios\/login/.test(r.url)) throw new Error('sessao');
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const procs = [];
+    const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
     const tabelas = [...doc.querySelectorAll('table')];
-    const linhasDe = t => [...t.querySelectorAll('tbody tr')].map(tr => [...tr.cells].map(c => clean(c.textContent)));
-    // Tabela "Procedimento | CID | Situação"; a tabela seguinte é a do Faturamento da ficha.
-    const iProc = tabelas.findIndex(t => { const cab = [...t.querySelectorAll('th')].map(th => norm(th.textContent)); return cab[0] === 'PROCEDIMENTO' && cab.includes('SITUACAO'); });
-    if (iProc < 0) throw new Error('ficha sem tabela de procedimentos');
-    const cab = [...tabelas[iProc].querySelectorAll('th')].map(th => norm(th.textContent));
+    const cabDe = t => [...t.querySelectorAll('thead th, tr:first-child th')].map(th => norm(th.textContent));
+    const iProc = tabelas.findIndex(t => { const c = cabDe(t); return c.includes('SITUACAO') && !c.includes('PROFISSIONAL') && !c.includes('ESPECIALIDADE'); });
+    if (iProc < 0) throw new Error('ficha sem tabela de itens');
+    const cab = cabDe(tabelas[iProc]);
     const iS = cab.indexOf('SITUACAO'), iC = cab.indexOf('CID');
-    linhasDe(tabelas[iProc]).forEach((l, idx) => {
-      const m = (l[0] || '').match(/^(\d{10})\s*-\s*(.+)$/);
-      procs.push({ idx, codigo: m ? m[1] : '', procedimento: m ? m[2] : l[0] || '', cid: iC >= 0 && l[iC] !== '—' ? l[iC] : '', situacao: norm(l[iS]) });
-    });
-    const fat = tabelas[iProc + 1];
-    const faturamento = fat ? linhasDe(fat).map(l => l.join(' ')).join(' | ').slice(0, 300) : '';
+    const procs = [];
+    let idx = 0;
+    for (const tr of tabelas[iProc].querySelectorAll('tbody tr')) {
+      const l = [...tr.querySelectorAll(':scope > td')].map(td => clean(td.textContent));
+      if (l.length < 2 || !l[0]) continue;
+      const m = l[0].match(/^(\d{10})\s*-\s*(.+)$/);
+      procs.push({ idx: idx++, codigo: m ? m[1] : '', procedimento: m ? m[2] : l[0], cid: iC >= 0 && l[iC] && l[iC] !== '—' ? l[iC] : '', situacao: norm(l[iS] ?? l[l.length - 1]) });
+    }
+    const fat = tabelas.slice(iProc + 1).find(t => [...t.querySelectorAll('tbody tr')].length);
+    const faturamento = fat ? [...fat.querySelectorAll('tbody tr')].map(tr => clean(tr.textContent)).join(' | ').slice(0, 300) : '';
     return { procs, faturamento };
   }
 
-  // CNS/CPF: mesma busca de munícipes do prontuário; só vale um cadastro com nome e nascimento exatos.
   const cacheMunicipe = new Map();
   async function buscarMunicipe(nome, nascimento) {
     const chave = `${norm(nome)}|${nascimento}`;
@@ -9341,58 +9349,86 @@
     return r;
   }
 
-  async function enviarLote(unidade, itens) {
+  async function enviarLote(unidade, itens, lidos) {
     const r = await fetch(API + '/api/ingest', {
       method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ unidade, enviado_por: usuarioLogado(), itens })
+      body: JSON.stringify({ unidade, enviado_por: usuarioLogado(), itens, lidos })
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.ok) throw new Error(j.erro || `HTTP ${r.status}`);
     return j.gravados || 0;
   }
 
+  // Lê uma ficha e devolve { itens, lido } (lido = "sala:id", vai junto com os itens dela no mesmo envio).
+  async function montarFicha(unidade, s, id, it, diaPadrao) {
+    const ficha = await lerFicha(s.endpoint, id);
+    const feitos = ficha.procs.filter(p => FEITOS.has(p.situacao));
+    const itens = [];
+    if (feitos.length) {
+      const nasc = clean(it.data_nascimento_municipe);
+      const mun = await buscarMunicipe(clean(it.nome_municipe), nasc).catch(e => { if (e.message === 'sessao') throw e; return { status: 'nao_encontrado', cns: '', cpf: '' }; });
+      for (const p of feitos) itens.push({
+        sala: s.sala, enc: Number(id), idx: p.idx, atendimento: (String(it.atendimento_str || '').match(/(\d+)$/) || [])[1] || '',
+        data: diaIso(it.data_encaminhamento) || diaPadrao, hora: clean(it.hora_encaminhamento), senha: clean(it.senha),
+        nome: clean(it.nome_municipe), nascimento: nasc, cns: mun.cns, cpf: mun.cpf, sexo: '', cns_status: mun.status,
+        codigo: p.codigo, procedimento: p.procedimento, cid: p.cid, situacao: p.situacao,
+        medico: clean(it.profissional_responsavel), ja_lancado: ficha.faturamento
+      });
+    }
+    // Ficha gigante (mais de 30 itens): manda os 30 primeiros sem "lidos", para não apagar o resto.
+    return itens.length > MAX_ITENS ? { itens: itens.slice(0, MAX_ITENS), lido: null } : { itens, lido: `${s.sala}:${id}` };
+  }
+
   async function processar(dias, forcar = false) {
     const unidade = unidadeLogada();
     if (!unidade) throw new Error('unidade não identificada');
-    const novos = [];
-    for (const dia of dias) {
-      for (const it of await finalizadosDoDia(dia)) {
-        const id = (String(it.encaminhamento_id || '').match(/(\d+)$/) || [])[1];
-        if (!id) continue;
-        const chave = `${norm(unidade)}|${id}`;
-        if (!forcar && enviados[chave]) continue;
-        novos.push({ id, chave, it });
+    const hoje = isoDia(new Date()), agora = Date.now();
+    const novos = [], rever = [];
+    for (const s of SALAS) {
+      let n = 0;
+      try {
+        for (const dia of dias) for (const it of await finalizadosDoDia(s.endpoint, dia)) {
+          const id = (String(it.encaminhamento_id || '').match(/(\d+)$/) || [])[1];
+          if (!id) continue;
+          n++;
+          const chave = chaveDe(s.sala, unidade, id);
+          if (forcar || !enviados[chave]) novos.push({ s, id, chave, it, dia });
+          else if (!revistos[chave] && diaIso(it.data_encaminhamento) === hoje && agora - enviados[chave] > REVER_MS) rever.push({ s, id, chave, it, dia });
+        }
+        estado.porSala[s.sala] = n;
+      } catch (e) {
+        if (e.message === 'sessao') throw e;
+        estado.porSala[s.sala] = 'erro: ' + e.message;
       }
     }
     estado.pendentes = Math.max(0, novos.length - POR_CICLO);
-    const itens = [], feitos = [];
-    for (const { id, chave, it } of novos.slice(0, forcar ? 200 : POR_CICLO)) {
-      const ficha = await lerFicha(id);
-      const realizados = ficha.procs.filter(p => p.situacao === 'REALIZADO');
-      feitos.push(chave);
-      if (!realizados.length) continue;
-      const nasc = clean(it.data_nascimento_municipe);
-      const mun = await buscarMunicipe(clean(it.nome_municipe), nasc).catch(e => { if (e.message === 'sessao') throw e; return { status: 'nao_encontrado', cns: '', cpf: '' }; });
-      for (const p of realizados) itens.push({
-        enc: Number(id), idx: p.idx, atendimento: (String(it.atendimento_str || '').match(/(\d+)$/) || [])[1] || '',
-        data: diaIso(it.data_encaminhamento) || dias[0], hora: clean(it.hora_encaminhamento), senha: clean(it.senha),
-        nome: clean(it.nome_municipe), nascimento: nasc, cns: mun.cns, cpf: mun.cpf, sexo: '', cns_status: mun.status,
-        codigo: p.codigo, procedimento: p.procedimento, cid: p.cid, medico: clean(it.profissional_responsavel), ja_lancado: ficha.faturamento
-      });
+    const fila = [...novos.slice(0, forcar ? 300 : POR_CICLO), ...(forcar ? [] : rever.slice(0, REVER_POR_CICLO).map(x => ({ ...x, revisao: true })))];
+    let gravados = 0, fichas = 0, lote = { itens: [], lidos: [], chaves: [] };
+    const fechar = async () => {
+      if (!lote.lidos.length && !lote.itens.length) { lote.chaves.length = 0; return; }
+      gravados += await enviarLote(unidade, lote.itens, lote.lidos);
+      const t = Date.now();
+      for (const { chave, revisao } of lote.chaves) { if (revisao) revistos[chave] = t; else enviados[chave] = t; }
+      gravar();
+      lote = { itens: [], lidos: [], chaves: [] };
+    };
+    for (const x of fila) {
+      let f;
+      try { f = await montarFicha(unidade, x.s, x.id, x.it, x.dia); }
+      catch (e) { if (e.message === 'sessao') throw e; estado.erro = `${x.s.sala} ${x.id}: ${e.message}`; continue; }
+      if (lote.itens.length + f.itens.length > MAX_ITENS || lote.lidos.length >= MAX_LIDOS) await fechar();
+      lote.itens.push(...f.itens); if (f.lido) lote.lidos.push(f.lido); lote.chaves.push({ chave: x.chave, revisao: !!x.revisao });
+      fichas++;
       await esperar(150);
     }
-    let gravados = 0;
-    for (let i = 0; i < itens.length; i += LOTE) gravados += await enviarLote(unidade, itens.slice(i, i + LOTE));
-    const agora = Date.now();
-    for (const k of feitos) enviados[k] = agora;
-    gravarEnviados();
+    await fechar();
     estado.enviados += gravados;
-    return { encaminhamentos: feitos.length, procedimentos: gravados, faltam: estado.pendentes };
+    return { fichas, procedimentos: gravados, faltam: estado.pendentes };
   }
 
   async function ciclo() {
-    if (estado.rodando || document.hidden || !naSalaRaioX()) return;
+    if (estado.rodando || document.hidden) return;
     estado.ativo = true; estado.rodando = true;
     try {
       const hoje = new Date(), ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
@@ -9405,19 +9441,22 @@
     }
   }
 
-  window.OM30RaioXFat = {
+  const api = {
     versao: VERSAO,
-    diagnostico: () => ({ versao: VERSAO, naSalaRaioX: naSalaRaioX(), unidade: unidadeLogada(), ...estado,
-      ultimoCiclo: estado.ultimoCiclo ? new Date(estado.ultimoCiclo).toLocaleTimeString('pt-BR') : null, registrados: Object.keys(enviados).length }),
-    // Reenvia um dia inteiro (ex.: depois de instalar, para pegar dias anteriores). Formato AAAA-MM-DD.
+    diagnostico: () => ({ versao: VERSAO, unidade: unidadeLogada(), ...estado,
+      ultimoCiclo: estado.ultimoCiclo ? new Date(estado.ultimoCiclo).toLocaleTimeString('pt-BR') : null,
+      registrados: Object.keys(enviados).length, revistos: Object.keys(revistos).length }),
+    // Reenvia um dia inteiro de todas as salas. Formato AAAA-MM-DD.
     enviarDia: async dia => { if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '')) throw new Error('use AAAA-MM-DD'); return processar([dia], true); }
   };
+  window.OM30FatSalas = api;
+  window.OM30RaioXFat = api;
 
   setTimeout(ciclo, 8000);
   setInterval(ciclo, CICLO_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - estado.ultimoCiclo > CICLO_MS) ciclo(); });
 })();
-// ===== FIM OM30 RAIO-X FATURAMENTO =====
+// ===== FIM OM30 FATURAMENTO SALAS =====
 
 // ===== OM30 GUIA SADT (EXAMES) (bloco separado; para juntar com outra versão, copie daqui até o FIM) =====
 // Ficha de Exames: quadro "Guia SADT" no mesmo visual dos quadros Exames/Faturamento (abrir/baixar a guia do

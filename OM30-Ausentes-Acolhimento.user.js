@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.4.8
+// @version      2.4.9
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -961,7 +961,10 @@
       const st = e?.response?.status, d = e?.response?.data || {};
       if (st === 422 && d.ja_chamada) {
         const m = String(d.error || '').match(/por\s+(.+?)\s+no\s+guich[eê]\s+(.+)$/i) || [];
-        const quem = m[1] && /seu usu[aá]rio/i.test(m[1]) ? usuarioLogado() : limpo(m[1]);
+        // "seu usuário" é o login do Senha Simples desta aba, que nem sempre é quem está logado no Saúde Simples
+        // (login reaproveitado de outro profissional no mesmo PC). Fica sem nome, como nos outros módulos:
+        // nunca o nome de quem está olhando a fila (cada PC via o próprio nome nos mesmos pacientes).
+        const quem = m[1] && /seu usu[aá]rio/i.test(m[1]) ? '' : limpo(m[1]);
         return { estado: 'CHAMADO', nome: quem, guiche: limpo(m[2]) };
       }
       if (st === 404) return { estado: 'SEM_SENHA' };
@@ -5261,109 +5264,285 @@
   }
 })();
 
-// ===== OM30 SENHA POR ABA (bloco igual na Fila Médica, Ausentes e Controle de Salas; roda uma vez por página) =====
-// O Saúde Simples guarda a "senha chamada" no localStorage, que é o MESMO para todas as abas, e cada
-// página lê esse valor ao abrir. Com a ficha aberta em aba nova, se o profissional chamar outro paciente
-// em outra aba antes de salvar, a ficha do 1º passa a ver a senha do 2º (e o próprio sistema a apaga por
-// não ser do paciente). Ao salvar, a senha do 1º não é encaminhada: "Senha perdida" na sala seguinte.
-// Aqui cada aba guarda a SUA senha (sessionStorage: é por aba e é copiado para a aba nova quando ela abre)
-// e só a devolve na página do MESMO paciente (atendimento da senha = atendimento da página). Em qualquer
-// outra página nada muda: vale o comportamento normal do sistema.
+// ===== OM30 SENHA POR ABA (bloco igual na Fila Médica, Ausentes e Controle de Salas; roda uma vez por página) ===== v2
+// O Saúde Simples guarda a "senha chamada" no localStorage, que é o MESMO para todas as abas, e cada página
+// lê esse valor UMA vez, ao abrir. Se outra aba chama outro paciente (ou abre uma tela de fila, que zera a
+// senha) entre o "salvar" e o encaminhamento, a página do 1º paciente nasce com a senha errada ou sem senha.
+// Aqui cada aba guarda a SUA senha (sessionStorage: é por aba e é copiado para a aba nova) e só a devolve
+// quando a página prova de qual atendimento é, SÓ por dados da própria página (URL, campos escondidos, o
+// componente nativo limpar-senha-invalida) ou pelo vínculo prontuário -> atendimento que a aba aprendeu na
+// consulta. Em qualquer outra página nada muda: vale o comportamento normal do sistema.
 (() => {
   'use strict';
-  if (window.__OM30_SENHA_POR_ABA__) return;
-  window.__OM30_SENHA_POR_ABA__ = true;
-  const CHAVE = 'om30-senha-desta-aba', VALIDADE_MS = 12 * 3600e3;
-  const ler = () => {
+  // R0: travas. A nova não depende da antiga; se a antiga já entrou, a nova entra mesmo assim (e não duplica o clique).
+  if (window.__OM30_SENHA_POR_ABA_V2__) return;
+  window.__OM30_SENHA_POR_ABA_V2__ = true;
+  const antigoJaInstalado = window.__OM30_SENHA_POR_ABA__ === true;
+  window.__OM30_SENHA_POR_ABA__ = true;   // a antiga que carregar DEPOIS não se instala
+
+  // Se true, a página do atendimento da aba retira a senha de OUTRO atendimento (evita encaminhar o paciente errado).
+  const LIMPAR_SENHA_DE_OUTRO_ATENDIMENTO = true;
+  const CHAVE = 'om30-senha-desta-aba-v2', CHAVE_ANTIGA = 'om30-senha-desta-aba';
+  const CHAVE_VINCULOS = 'om30-senha-aba-vinculos-v2', MARCA_MIGRACAO = 'om30-senha-desta-aba-v2-migrada';
+  // "Limpar" só no fluxo auditado do PA: em outros tipos (ex.: Atenção Básica) o mesmo paciente pode aparecer por outra entidade.
+  const TIPO_COM_LIMPEZA = 'AtendimentoPa';
+  const VALIDADE_MS = 12 * 3600e3, MAX_VINCULOS = 8;
+  const ID_OK = /^\d{1,14}$/, TIPO_OK = /^[A-Z][A-Za-z]{2,40}$/;   // formato aceito de id e de tipo de atendimento
+
+  // ---- R1: memória da senha desta aba (sessionStorage pode lançar: tudo em try/catch) ----
+  const valido = o => !!(o && o.s && o.s.id && Date.now() - (o.em || 0) < VALIDADE_MS);   // vence em 12 h
+  const lerChave = chave => {
     try {
-      const o = JSON.parse(sessionStorage.getItem(CHAVE) || 'null');
-      return o && o.s && o.s.id && Date.now() - (o.em || 0) < VALIDADE_MS ? o.s : null;
+      const o = JSON.parse(sessionStorage.getItem(chave) || 'null');
+      return valido(o) ? o : null;
     } catch (_) { return null; }
   };
+  const ler = () => { const o = lerChave(CHAVE); return o ? o.s : null; };
   const gravar = s => {
     try {
       if (s && s.id) sessionStorage.setItem(CHAVE, JSON.stringify({ s, em: Date.now() }));
       else sessionStorage.removeItem(CHAVE);
     } catch (_) {}
   };
-  // Números do atendimento que esta página mostra (URL e campos escondidos da ficha).
-  function idsDaPagina() {
-    const ids = new Set();
-    for (const m of String(location.href).matchAll(/\d{4,}/g)) ids.add(m[0]);
-    try {
-      document.querySelectorAll('input[name*="atendimento" i], input[id*="atendimento" i], input[name*="prontuariavel" i], input[id*="prontuariavel" i]')
-        .forEach(i => { const v = String(i.value || '').match(/\d{4,}/); if (v) ids.add(v[0]); });
-    } catch (_) {}
-    return ids;
-  }
-  const daPagina = s => !!(s && s.saude_atendimento_id != null && idsDaPagina().has(String(s.saude_atendimento_id)));
+  // Migração UMA vez por aba (a marca vai junto para a aba filha): quem já tinha a memória do bloco antigo não a perde.
+  // A marca é gravada na 1ª tentativa, com ou sem valor antigo; sem ela, a senha que o bloco esqueceu (v2 removida)
+  // ressuscitaria da chave antiga, que fica intacta porque outros scripts a leem.
+  try {
+    if (sessionStorage.getItem(MARCA_MIGRACAO) == null) {
+      sessionStorage.setItem(MARCA_MIGRACAO, '1');
+      if (sessionStorage.getItem(CHAVE) == null) {
+        const ant = lerChave(CHAVE_ANTIGA);
+        if (ant) sessionStorage.setItem(CHAVE, JSON.stringify({ s: ant.s, em: ant.em }));
+      }
+    }
+  } catch (_) {}
 
-  // Script que roda antes do sistema (document-start): a ficha do paciente já nasce com a senha dele.
-  if (document.readyState === 'loading') {
-    const minha = ler();
-    if (minha && daPagina(minha)) { try { localStorage.setItem('senha', JSON.stringify(minha)); } catch (_) {} }
+  // ---- R2: vínculos prontuário -> atendimento (a página de encaminhamento só traz o nº do prontuário) ----
+  const lerVinculos = () => {
+    try {
+      const l = JSON.parse(sessionStorage.getItem(CHAVE_VINCULOS) || '[]');
+      return Array.isArray(l)
+        ? l.filter(v => v && ID_OK.test(String(v.p)) && ID_OK.test(String(v.id)) && TIPO_OK.test(String(v.tipo)) && Date.now() - (v.em || 0) < VALIDADE_MS)
+        : [];
+    } catch (_) { return []; }
+  };
+  const gravarVinculo = (p, ident) => {
+    try {
+      const lista = lerVinculos().filter(v => String(v.p) !== p);   // um vínculo por prontuário (o mais novo vale)
+      lista.push({ p, id: ident.id, tipo: ident.tipo, em: Date.now() });
+      lista.sort((a, b) => a.em - b.em);                            // descarta os mais velhos
+      sessionStorage.setItem(CHAVE_VINCULOS, JSON.stringify(lista.slice(-MAX_VINCULOS)));
+    } catch (_) {}
+  };
+
+  // ---- R3: de qual atendimento é ESTA página? Só por fontes da própria página, nunca por "qualquer número" ----
+  const num = v => { const t = String(v == null ? '' : v).trim(); return ID_OK.test(t) ? String(parseInt(t, 10)) : null; };
+  // Nº do prontuário que a página mostra (consulta/edição) ou que o encaminhamento recebe.
+  function numeroProntuario(cedo) {
+    const m = /^\/prontuarios\/(\d+)(\/edit)?\/?$/.exec(location.pathname);
+    if (m) return num(m[1]);
+    if (String(location.pathname).indexOf('/encaminhamentos_controle_salas') === 0) {
+      const p = num(new URLSearchParams(location.search).get('prontuario_id'));
+      if (p) return p;
+      if (!cedo) {
+        const c = Array.from(document.querySelectorAll('input')).find(i => i.name === 'encaminhamento_controle_salas[prontuario_id]');
+        if (c) return num(c.value);
+      }
+    }
+    return null;
   }
+  let identCache = null;   // identidade vinda de fonte própria não muda na vida da página; null NUNCA é guardado (a página pode estar carregando)
+  // cedo=true (document-start): o DOM ainda não existe, olha só URL e vínculo e não guarda cache.
+  function identidadeDaPagina(cedo) {
+    if (identCache) return identCache;
+    const achadas = [];
+    let semDevolver = false;
+    const somar = (id, tipo) => {
+      const i = num(id), t = String(tipo == null ? '' : tipo).trim();
+      if (i && TIPO_OK.test(t)) achadas.push({ id: i, tipo: t });
+    };
+    try {
+      // (a) parâmetros da URL
+      const q = new URLSearchParams(location.search);
+      for (const pre of ['prontuariavel', 'acolhivel', 'atendimento']) somar(q.get(pre + '_id'), q.get(pre + '_type'));
+      if (!cedo) {
+        // (b) campos escondidos da ficha: id e tipo precisam ter o MESMO prefixo de nome
+        const campos = Array.from(document.querySelectorAll('input')).map(i => [String(i.name || ''), i.value]);
+        const valor = nome => { const c = campos.find(x => x[0] === nome); return c ? c[1] : null; };
+        for (const [nome, v] of campos) {
+          for (const campo of ['prontuariavel', 'acolhivel']) {
+            const fim = '[' + campo + '_id]';
+            if (nome.length > fim.length && nome.endsWith(fim)) somar(v, valor(nome.slice(0, -fim.length) + '[' + campo + '_type]'));
+          }
+        }
+        // (c) tag bruta do componente nativo (antes de o Vue montar)
+        for (const t of Array.from(document.querySelectorAll('limpar-senha-invalida'))) {
+          somar(t.getAttribute('atendimento-id'), t.getAttribute('atendimento-type'));
+          const p1 = t.getAttribute('pular-validacao'), p2 = t.getAttribute(':pular-validacao');
+          if ((p1 !== null && p1 !== 'false') || (p2 !== null && p2 !== 'false')) semDevolver = true;   // a página manda limpar de propósito
+        }
+        // (d) componente já montado (depois do Vue): percorre a árvore em largura, com teto de nós
+        const raiz = document.querySelector('#app-vue')?.__vue__;
+        if (raiz) {
+          const fila = [raiz];
+          for (let k = 0; k < fila.length && k < 4000; k++) {
+            const vm = fila[k], o = vm.$options || {};
+            if (o.name === 'limpar-senha-invalida' || o._componentTag === 'limpar-senha-invalida') {
+              somar(vm.atendimentoId, vm.atendimentoType);
+              if (vm.pularValidacao) semDevolver = true;
+            }
+            for (const c of (vm.$children || [])) fila.push(c);
+          }
+        }
+      }
+    } catch (_) { return null; }
+    const chaves = new Set(achadas.map(a => a.id + '|' + a.tipo));
+    if (chaves.size > 1) return null;   // fontes próprias discordam: ambíguo, não faz nada
+    const p = numeroProntuario(cedo);
+    if (chaves.size === 1) {
+      const ident = { id: achadas[0].id, tipo: achadas[0].tipo, semDevolver };
+      if (p && !semDevolver) gravarVinculo(p, ident);   // aprende N -> atendimento para a página de encaminhamento
+      if (!cedo) identCache = ident;
+      return ident;
+    }
+    if (!p) return null;
+    const v = lerVinculos().filter(x => String(x.p) === p).pop();
+    return v ? { id: String(v.id), tipo: v.tipo, semDevolver: false } : null;
+  }
+
+  // ---- R4: decisões puras (sem efeito colateral, testáveis) ----
+  // A senha é do atendimento da página: compara o NÚMERO do atendimento e o tipo.
+  const pertence = (s, ident) => !!(s && s.id != null && s.id !== '' && ident &&
+    parseInt(s.saude_atendimento_id) === parseInt(ident.id) && String(s.saude_atendimento_type || '') === ident.tipo);
+  // Senha de OUTRO atendimento (senha de recepção, sem atendimento, nunca é "alheia").
+  const alheia = (s, ident) => !!(s && s.id && s.saude_atendimento_id != null && s.saude_atendimento_type && !pertence(s, ident));
+  function decidir(atual, minha, ident) {
+    if (!ident) return 'nada';
+    const a = pertence(atual, ident), m = pertence(minha, ident);
+    if (a && m) {
+      if (String(atual.id) === String(minha.id)) return 'nada';
+      const ta = Date.parse(atual.created_at), tm = Date.parse(minha.created_at);
+      // a senha mais NOVA do mesmo atendimento (encaminhada) vence; só a datada e maior troca a do sistema
+      return !isNaN(ta) && !isNaN(tm) && tm > ta ? 'devolver' : 'adotar';
+    }
+    if (a) return 'adotar';
+    if (m) return 'devolver';
+    // limpar exige que a página E a senha alheia sejam do PA; nos demais casos de senha alheia, não mexe
+    return alheia(atual, ident) && ident.tipo === TIPO_COM_LIMPEZA && String(atual.saude_atendimento_type) === TIPO_COM_LIMPEZA ? 'limpar' : 'nada';
+  }
+  // Só para teste (simulador); sem efeito em produção.
+  try { if (window.__OM30_SENHA_ABA_TESTE__) window.__OM30_SENHA_ABA_TESTE__({ decidir, pertence, alheia, identidadeDaPagina }); } catch (_) {}
+
   const pegarStore = () => {
     try { if (typeof store !== 'undefined' && store && typeof store.dispatch === 'function') return store; } catch (_) {}   // eslint-disable-line no-undef
     try { return document.querySelector('#app-vue')?.__vue__?.$store || null; } catch (_) { return null; }
   };
-  let instalado = false;
+  let instalado = false, despachoOriginal = null;
+
+  // ---- R5: reconciliar (idempotente, nunca lança) ----
+  function reconciliar() {
+    try {
+      const st = pegarStore();
+      if (!st || !st.getters) return;
+      const ident = identidadeDaPagina();
+      if (!ident || ident.semDevolver) return;
+      const minha = ler();
+      const acao = decidir(st.getters.senhaChamada, minha, ident);
+      // O dispatch ORIGINAL evita que o nosso embrulho se enrede (e não regrava a memória sem necessidade).
+      const despachar = despachoOriginal || st.dispatch;
+      if (acao === 'adotar') gravar(st.getters.senhaChamada);
+      else if (acao === 'devolver') {
+        despachar.call(st, 'defineSenhaChamada', minha);
+        console.info('[OM30] senha desta aba mantida:', minha.id);
+      } else if (acao === 'limpar' && LIMPAR_SENHA_DE_OUTRO_ATENDIMENTO) {
+        despachar.call(st, 'limpaSenhaChamada');
+        console.info('[OM30] senha de outro atendimento retirada desta página');
+      }
+    } catch (_) {}
+  }
+
+  // ---- R6 e R7(ii): embrulho do store.dispatch (uma vez), espera do store se ele ainda não existe ----
   function instalar() {
     if (instalado) return true;
     const st = pegarStore();
     if (!st || !st.getters) return false;
     instalado = true;
-    const minha = ler();
-    const atual = st.getters.senhaChamada;
-    if (minha && daPagina(minha) && (!atual || String(atual.id) !== String(minha.id))) {
-      try { st.dispatch('defineSenhaChamada', minha); console.info('[OM30] senha desta aba mantida:', minha.id); } catch (_) {}
-    } else if (!minha && atual && atual.id && daPagina(atual)) {
-      gravar(atual);
-    }
-    // Acompanha o que ESTA aba chama, conclui ou limpa.
-    const original = st.dispatch;
-    if (!original.__om30SenhaAba) {
-      const novo = function (tipo, carga) {
+    despachoOriginal = st.dispatch;
+    if (!despachoOriginal.__om30SenhaAbaV2) {
+      const embrulho = function (tipo, carga) {
         const nome = tipo && typeof tipo === 'object' ? tipo.type : tipo;
         const dado = tipo && typeof tipo === 'object' ? tipo.payload : carga;
-        if (nome === 'defineSenhaChamada') gravar(dado);
-        else if (nome === 'limpaSenhaChamada') gravar(null);
-        return original.apply(this, arguments);
+        try {
+          if (nome === 'defineSenhaChamada') gravar(dado);
+          else if (nome === 'limpaSenhaChamada') {
+            // Só esquece se o sistema está limpando a senha DESTA aba; limpar a de outro paciente não apaga a memória.
+            const minha = ler(), atual = st.getters.senhaChamada;
+            if (minha && atual && atual.id != null && String(atual.id) === String(minha.id)) gravar(null);
+          } else if (nome === 'defineRedirecionamentoAtendimento') reconciliar();   // 1º passo do encaminhamento: senha certa ANTES de ser lida
+        } catch (_) {}
+        const r = despachoOriginal.apply(this, arguments);
+        if (nome === 'limpaSenhaChamada') reconciliar();   // limpou a senha alheia na página da aba: a da aba volta na hora
+        return r;
       };
-      novo.__om30SenhaAba = true;
-      st.dispatch = novo;
+      embrulho.__om30SenhaAbaV2 = true;
+      st.dispatch = embrulho;
     }
+    reconciliar();
+    setTimeout(reconciliar, 1500);   // rede de segurança: dados que chegaram depois da montagem
     return true;
+  }
+
+  // ---- R7: momentos ----
+  // (i) document-start: a ficha já nasce com a senha dela (o store lê o localStorage uma vez, ao ser criado).
+  if (document.readyState === 'loading') {
+    try {
+      const ident = identidadeDaPagina(true);
+      if (ident && !ident.semDevolver) {
+        let atual = null;
+        try { atual = JSON.parse(localStorage.getItem('senha')); } catch (_) { atual = null; }
+        const minha = ler(), acao = decidir(atual, minha, ident);
+        if (acao === 'devolver') localStorage.setItem('senha', JSON.stringify(minha));
+        else if (acao === 'adotar') gravar(atual);
+      }
+    } catch (_) {}
+    // Roda ANTES da montagem do Vue (o ouvinte do sistema é registrado depois): o limpar-senha-invalida já vê a senha certa.
+    document.addEventListener('DOMContentLoaded', () => { instalar(); reconciliar(); });
   }
   if (!instalar()) {
     let n = 0;
     const t = setInterval(() => { if (instalar() || ++n > 240) clearInterval(t); }, 250);
   }
-  // Consultório/guichê: cada aba lê o local escolhido só quando abre. Aba aberta antes da troca
-  // chamava pelo consultório antigo (ex.: "Chamado por ... Consultório 1" com o médico no 4).
-  // Só no clique em "Chamar" (chamada NOVA) a aba passa a usar o último local escolhido neste
-  // navegador; nunca durante um atendimento (o sistema conclui a senha pelo local da aba).
-  // "Chamar novamente" fica de fora (repete no mesmo consultório) e local vazio ("Sair do local")
-  // não é copiado.
-  document.addEventListener('click', ev => {
-    const b = ev.target && ev.target.closest && ev.target.closest('button, a');
-    if (!b) return;
-    const rot = `${b.textContent || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('aria-label') || ''}`.replace(/\s+/g, ' ').trim();
-    if (!/^chamar\b/i.test(rot) || /novamente/i.test(rot)) return;
-    const st = pegarStore();
-    if (!st || !st.getters || typeof st.commit !== 'function') return;
-    let salvo = null;
-    try { salvo = JSON.parse(localStorage.getItem('localAtendimentoAtual') || 'null'); } catch (_) { salvo = null; }
-    if (!salvo || typeof salvo !== 'object') return;
-    const atual = st.getters.localAtendimentoAtual || {};
-    const novo = Object.assign({}, atual);
-    let mudou = false;
-    for (const [k, v] of Object.entries(salvo)) {
-      if (!v || v.id == null) continue;
-      if (String((atual[k] || {}).id ?? '') !== String(v.id)) { novo[k] = v; mudou = true; }
-    }
-    if (!mudou) return;
-    try { st.commit('GET_LOCAL_ATENDIMENTO_ATUAL', novo); console.info('[OM30] chamada pelo último local escolhido neste navegador'); } catch (_) {}
-  }, true);
+  window.addEventListener('load', reconciliar);
+  window.addEventListener('pageshow', e => { if (e.persisted) reconciliar(); });   // volta pelo botão "voltar" (cache de página)
+
+  // R8: ouvinte do "Chamar" copiado SEM mudar a lógica; só se o bloco antigo ainda não registrou o dele.
+  if (!antigoJaInstalado) {
+    // Consultório/guichê: cada aba lê o local escolhido só quando abre. Aba aberta antes da troca
+    // chamava pelo consultório antigo (ex.: "Chamado por ... Consultório 1" com o médico no 4).
+    // Só no clique em "Chamar" (chamada NOVA) a aba passa a usar o último local escolhido neste
+    // navegador; nunca durante um atendimento (o sistema conclui a senha pelo local da aba).
+    // "Chamar novamente" fica de fora (repete no mesmo consultório) e local vazio ("Sair do local")
+    // não é copiado.
+    document.addEventListener('click', ev => {
+      const b = ev.target && ev.target.closest && ev.target.closest('button, a');
+      if (!b) return;
+      const rot = `${b.textContent || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('aria-label') || ''}`.replace(/\s+/g, ' ').trim();
+      if (!/^chamar\b/i.test(rot) || /novamente/i.test(rot)) return;
+      const st = pegarStore();
+      if (!st || !st.getters || typeof st.commit !== 'function') return;
+      let salvo = null;
+      try { salvo = JSON.parse(localStorage.getItem('localAtendimentoAtual') || 'null'); } catch (_) { salvo = null; }
+      if (!salvo || typeof salvo !== 'object') return;
+      const atual = st.getters.localAtendimentoAtual || {};
+      const novo = Object.assign({}, atual);
+      let mudou = false;
+      for (const [k, v] of Object.entries(salvo)) {
+        if (!v || v.id == null) continue;
+        if (String((atual[k] || {}).id ?? '') !== String(v.id)) { novo[k] = v; mudou = true; }
+      }
+      if (!mudou) return;
+      try { st.commit('GET_LOCAL_ATENDIMENTO_ATUAL', novo); console.info('[OM30] chamada pelo último local escolhido neste navegador'); } catch (_) {}
+    }, true);
+  }
 })();
 // ===== FIM OM30 SENHA POR ABA =====

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.4.1
+// @version      0.4.2
 // @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem, Raio-X) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -681,7 +681,8 @@
   .om30x-cab .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.om30x-cab .tag{background:rgba(255,255,255,.16);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600}
   .om30x-cab .tag.s{background:#fff;color:#0f5132;font-weight:800}
   .om30x-corpo{flex:1;overflow:auto;padding:12px}
-  .om30x-barra{display:flex;justify-content:flex-end;margin:-2px 0 8px}.om30x-barra button{border:0;background:none;padding:2px 4px;font:700 12px inherit;cursor:pointer;color:#157347;text-decoration:underline}
+  .om30x-barra{display:flex;gap:6px;margin-bottom:10px}.om30x-barra button{flex:1;border:1px solid #d3dce3;background:#fff;border-radius:8px;padding:7px 6px;font:700 11.5px inherit;cursor:pointer;color:#33485a;line-height:1.2}
+  .om30x-barra button[data-v="fez"]:hover{border-color:#198754;color:#0f5132}.om30x-barra button[data-v="nao"]:hover{border-color:#c0392b;color:#8f2a22}
   .om30x-barra button:hover{border-color:#198754;color:#0f5132}
   .om30x-sala{background:#fff;border-radius:12px;margin-bottom:10px;box-shadow:0 1px 4px rgba(10,25,40,.07);overflow:hidden}
   .om30x-sala .h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #eef2f5}
@@ -937,7 +938,7 @@
     painelX.innerHTML = cab + `<div class="om30x-corpo">
       ${e.erros.map(t => `<div class="om30x-erro">⚠ ${esc(t)}</div>`).join('')}
       ${!e.salas.length ? '<div class="om30x-vazio">Nenhuma pendência em Medicação, Exames, Enfermagem ou Raio-X para este atendimento.</div>' : ''}
-      ${pend.some(p => p.v === 'nao') ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">↺ Voltar todos para feito</button></div>' : ''}
+      ${pend.length > 1 ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">✔ Marcar todos como realizados</button><button data-a="todos" data-v="nao">✖ Marcar todos como não realizados</button></div>' : ''}
       ${salasHtml}
       ${'' ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m.texto)}" title="${esc(m.texto)}" class="${m.sala ? 'sl ' : ''}${m.texto === e.motivo ? 'on' : ''}">${m.sala ? (ICONE[m.sala] || '') + ' ' : ''}${esc(m.curto)}</button>`).join('')}</div>
         <textarea data-f="motivo" placeholder="Toque num motivo acima ou escreva">${esc(e.motivo)}</textarea></div>` : ''}

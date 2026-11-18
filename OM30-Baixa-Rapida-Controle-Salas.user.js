@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.1.0
-// @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes nas salas e, na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
+// @version      0.2.0
+// @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
 // @match        https://guarujahomolog.saudesimples.net/*
@@ -315,82 +315,425 @@
     }
   }
 
-  // ---------- aba Pendências (telas de lista do Controle de Salas) ----------
-  // Mesmas tabelas da tela "Consultar Repousos/Medicações" (só leitura): [data, hora, nasc., nome, médico, senha, status].
-  const CONSULTA = [
-    ['Medicação', 'datatable_medicacoes'], ['Exames', 'datatable_exames'], ['Enfermagem', 'datatable_procedimentos_enfermagem'],
-    ['Raio-X', 'datatable_radiografias'], ['Repouso', 'datatable_repousos'], ['Gesso', 'datatable_gessos_imobilizacoes'],
+  // =====================================================================
+  // ABA PENDÊNCIAS — baixa de TUDO do paciente pela API (Medicação + Exames + Enfermagem)
+  // Mesmo caminho do "Cancelar todas pela lista" do Controle de Salas: carrega o formulário da sala
+  // por fetch, marca os itens nos mesmos campos que os botões do sistema marcam, lança o faturamento
+  // (BPA) e salva como o "Salvar" da tela. Nada é salvo se a conferência de alguma sala falhar.
+  //
+  // Faturamento (captura de 18/11 + parametrização da UPA): cada item consulta o procedimento no
+  // sistema (Medicação pela via; Exames/Enfermagem pelo item). Entra UMA linha por código diferente,
+  // quantidade 1, só dos itens feitos — 2 orais = 1 "administração por via oral"; hemograma + TGO =
+  // 1 "coleta de material"; teste rápido e procedimento de enfermagem têm código próprio.
+  // Linha do BPA (igual à criada pelo Aplicar): procedimentos_lancamentos_bpa_temporarios_attributes
+  // [n][profissional_ocupacao_id|automatico=true|procedimento_id|procedimento_token=texto|quantidade=1|_destroy=false].
+  // =====================================================================
+  const FORMATO_BPA_CONFIRMADO = { medicacao: true, exames: false, enfermagem: false };
+  const SALAS_API = [
+    {
+      k: 'medicacao', nome: 'Medicação', codigo: 'controle_de_salas_medicacao', lista: '/aplicacoes_medicamentos',
+      abrir: id => `/aplicacoes_medicamentos/new?encaminhamento_medicacao_id=${encodeURIComponent(id)}`,
+      form: 'form[id^="edit_encaminhamento_medicacao_"]',
+      proc: it => { const v = valor(it, '_tipo_uso_medicamento_id'); return v && `/aplicacoes_medicamentos/buscar_procedimentos_faturamento?tipo_uso_medicamento_id=${encodeURIComponent(v)}`; },
+      aberto: it => valor(it, '_pendente') === 'true' && valor(it, '_cancelada') !== 'true' && valor(it, '_para_atendimento') !== 'true' && valor(it, '_para_cancelamento') !== 'true',
+      fazer: it => { poe(it, '_pendente', 'true'); poe(it, '_cancelada', 'false'); poe(it, '_para_atendimento', 'true'); poe(it, '_para_cancelamento', 'false'); },
+      cancelar: (it, c) => { poe(it, '_pendente', 'false'); poe(it, '_cancelada', 'true'); poe(it, '_para_atendimento', 'false'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
+    },
+    {
+      k: 'exames', nome: 'Exames', codigo: 'controle_de_salas_exames', lista: '/encaminhamentos_exames',
+      abrir: id => `/encaminhamentos_exames/${encodeURIComponent(id)}/edit`,
+      form: 'form[id^="edit_encaminhamento_exame_"]',
+      proc: it => { const v = valor(it, '_exame_id'); return v && `/encaminhamentos_exames/buscar_procedimentos_faturamento?exame_id=${encodeURIComponent(v)}`; },
+      aberto: it => valor(it, '_coletado') !== 'true' && valor(it, '_cancelado') !== 'true',
+      fazer: it => { exigir(it, '_coletado'); poe(it, '_coletado', 'true'); poe(it, '_cancelado', 'false'); },
+      cancelar: (it, c) => { poe(it, '_coletado', 'false'); exigir(it, '_cancelado'); poe(it, '_cancelado', 'true'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
+    },
+    {
+      k: 'enfermagem', nome: 'Enfermagem', codigo: 'controle_de_salas_procedimento_enfermagem', lista: '/encaminhamentos_procedimentos_enfermagem',
+      abrir: id => `/encaminhamentos_procedimentos_enfermagem/${encodeURIComponent(id)}/edit`,
+      form: 'form[id*="procedimento_enfermagem"], form[id*="procedimentoenfermagem"]',
+      proc: it => { const v = valor(it, '_procedimento_enfermagem_id'); return v && `/encaminhamentos_procedimentos_enfermagem/buscar_procedimentos_faturamento?procedimento_enfermagem_id=${encodeURIComponent(v)}`; },
+      aberto: it => valor(it, '_realizado') !== 'true' && valor(it, '_cancelado') !== 'true',
+      fazer: it => { exigir(it, '_realizado'); poe(it, '_realizado', 'true'); poe(it, '_cancelado', 'false'); },
+      cancelar: (it, c) => { poe(it, '_realizado', 'false'); exigir(it, '_cancelado'); poe(it, '_cancelado', 'true'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
+    },
   ];
-  function paramsConsulta() {
-    const p = new URLSearchParams({ sEcho: '1', iColumns: '7', sColumns: '', iDisplayStart: '0', iDisplayLength: '500', sSearch: '', bRegex: 'false', iSortCol_0: '0', sSortDir_0: 'desc', iSortingCols: '1' });
-    for (let i = 0; i < 7; i++) { p.set(`mDataProp_${i}`, String(i)); p.set(`sSearch_${i}`, ''); p.set(`bRegex_${i}`, 'false'); p.set(`bSearchable_${i}`, 'true'); p.set(`bSortable_${i}`, 'false'); }
-    return p;
+  const inp = (it, suf) => it.querySelector(`input[id$="${suf}"], textarea[id$="${suf}"], select[id$="${suf}"]`);
+  const valor = (it, suf) => String(inp(it, suf)?.value ?? '').trim();
+  function poe(it, suf, v) { const e = inp(it, suf); if (e) e.value = v; return !!e; }
+  function exigir(it, suf) { if (!inp(it, suf)) throw new Error(`campo "${suf.slice(1)}" não existe na ficha (formato diferente do esperado)`); }
+  function camposCancelamento(it, c) {
+    const j = inp(it, '_justificativa_cancelamento');
+    if (!j) throw new Error('campo de justificativa do cancelamento não encontrado');
+    j.value = c.motivo;
+    poe(it, '_canceled_at', c.momento);
+    poe(it, '_profissional_cancelamento_id', c.profissional);
   }
-  const tempo = (d, h) => { const a = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d), b = /^(\d{1,2}):(\d{2})/.exec(h); return a ? new Date(+a[3], +a[2] - 1, +a[1], b ? +b[1] : 0, b ? +b[2] : 0).getTime() : 0; };
-  async function carregarPendencias() {
-    const linhas = [];
-    const erros = [];
-    await Promise.all(CONSULTA.map(async ([sala, tabela]) => {
-      try {
-        const r = await fetch(`/consultar_repousos_medicacoes/${tabela}.json?${paramsConsulta()}`, { credentials: 'same-origin', cache: 'no-store' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const j = await r.json();
-        for (const l of j?.aaData || []) {
-          const st = clean(l[6]);
-          if (/FINALIZ|CANCEL|CONCLU/.test(norm(st))) continue;
-          linhas.push({ sala, data: clean(l[0]), hora: clean(l[1]), nasc: clean(l[2]), nome: clean(l[3]), medico: clean(l[4]), senha: clean(l[5]), status: st });
-        }
-      } catch (e) { erros.push(`${sala}: ${e.message}`); }
-    }));
-    const limite = Date.now() - 24 * 3600e3;   // mais antigos que 24 h costumam ser encaminhamentos nunca fechados
-    const por = new Map();
-    for (const l of linhas) {
-      if (tempo(l.data, l.hora) && tempo(l.data, l.hora) < limite) continue;
-      const k = norm(l.nome) + '|' + l.nasc;
-      if (!por.has(k)) por.set(k, { nome: l.nome, nasc: l.nasc, senha: '', medico: l.medico, salas: [], desde: Infinity });
-      const p = por.get(k);
-      p.salas.push(l); if (l.senha && !/^[-—]$/.test(l.senha)) p.senha = l.senha;
-      p.desde = Math.min(p.desde, tempo(l.data, l.hora) || Infinity);
+  const momentoAgora = () => new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'America/Sao_Paulo' });
+  const dataBR = x => `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
+  const HJSON = { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json, text/javascript, */*; q=0.01', 'X-Requested-With': 'XMLHttpRequest' } };
+  async function getJSON(url) {
+    const r = await fetch(url, HJSON);
+    if (!r.ok) throw new Error(`HTTP ${r.status} em ${url.split('?')[0]}`);
+    let j = await r.json();
+    if (typeof j === 'string') { try { j = JSON.parse(j); } catch {} }   // algumas rotas devolvem JSON dentro de string
+    return j;
+  }
+  function nomeDoItem(it, i) {
+    const t = clean(it.textContent) + ' ' + [...it.querySelectorAll('input[type="text"],input:not([type]),textarea')].map(e => e.value).join(' ');
+    const m = t.match(/\b(?:Produto|Medicamento|Exame|Procedimento)\s*:?\s+(.+?)(?=\s+(?:Situa[cç][aã]o|Posologia|Via\s+de|Unidade\s+de|Observa[cç][aã]o|Quantidade|Aplicar|Coletar|Realizar|Cancelar|Justificativa|Almoxarifado)\b|$)/i);
+    return clean(m?.[1] || '').slice(0, 110) || `Item ${i + 1}`;
+  }
+
+  // 1) Pendências: lista de cada sala (Em Espera + Em Andamento, ontem e hoje), por atendimento.
+  async function listarSala(s) {
+    const hoje = new Date(), ontem = new Date(hoje.getTime() - 864e5), out = [];
+    for (const st of ['1', '2']) for (let page = 1; page <= 5; page++) {
+      const q = new URLSearchParams({ format: 'json', sortable: '{}', page: String(page), per_page: '100', profissional: '{}', status: st, grau_risco: '', dataInicial: dataBR(ontem), dataFinal: dataBR(hoje) });
+      const arr = await getJSON(`${s.lista}?${q}`).catch(() => []);
+      if (!Array.isArray(arr) || !arr.length) break;
+      out.push(...arr);
+      if (arr.length < 100) break;
     }
-    return { pacientes: [...por.values()].sort((a, b) => a.desde - b.desde), erros };
+    return out;
   }
+  async function carregarPendencias() {
+    const por = new Map(), erros = [];
+    await Promise.all(SALAS_API.map(async s => {
+      try {
+        for (const x of await listarSala(s)) {
+          const at = clean(x.atendimento_str), enc = String(x.encaminhamento_id || '').split('#').pop();
+          if (!/^\w+#\d+$/.test(at) || !/^\d+$/.test(enc)) continue;
+          if (!por.has(at)) por.set(at, { atendimento: at, nome: clean(x.nome_municipe), senha: clean(x.senha), salas: [] });
+          const p = por.get(at);
+          if (!p.salas.some(y => y.s.k === s.k && y.enc === enc)) p.salas.push({ s, enc, status: clean(x.status) });
+          if (!p.senha && x.senha) p.senha = clean(x.senha);
+        }
+      } catch (e) { erros.push(`${s.nome}: ${e.message}`); }
+    }));
+    const ordem = SALAS_API.map(s => s.k);
+    const pacientes = [...por.values()].map(p => ({ ...p, salas: p.salas.sort((a, b) => ordem.indexOf(a.s.k) - ordem.indexOf(b.s.k)) }))
+      .sort((a, b) => b.salas.length - a.salas.length || a.nome.localeCompare(b.nome));
+    return { pacientes, erros };
+  }
+
+  // 2) Abrir as fichas do paciente (só leitura do formulário; o sistema põe o paciente "Em Andamento").
+  async function carregarFicha(s, enc) {
+    const r = await fetch(s.abrir(enc), { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html' } });
+    if (!r.ok) throw new Error(`${s.nome}: HTTP ${r.status} ao abrir a ficha`);
+    const html = await r.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const form = doc.querySelector(s.form);
+    if (!form) throw new Error(`${s.nome}: a ficha não abriu o formulário`);
+    const doForm = form.id.match(/(\d+)$/)?.[1];
+    if (doForm && doForm !== String(enc)) throw new Error(`${s.nome}: abriu o encaminhamento ${doForm}, não o ${enc}`);
+    // O faturamento da sala precisa usar o mesmo formato do Aplicar; sem isso, não salva (evita baixa sem BPA).
+    // Medicação: formato confirmado pela captura de 18/11. Exames/Enfermagem: só com o formato visível na ficha.
+    const bpaOk = FORMATO_BPA_CONFIRMADO[s.k] || /procedimentos_lancamentos_bpa_temporarios/.test(html);
+    const prefixo = (form.querySelector('[name*="[atendimentos_prescricoes_internas_attributes]"],[name*="_attributes]"]')?.name || '').split('[')[0]
+      || form.id.replace(/^edit_/, '').replace(/_\d+$/, '');
+    const itens = [...form.querySelectorAll('.item-encaminhamento-controle-salas')].map((it, i) => ({
+      it, i, nome: nomeDoItem(it, i), aberto: s.aberto(it),
+      estoque: !!it.querySelector('[data-baixa-estoque="true"],[data-baixa-estoque="1"]'),
+    }));
+    return { s, enc, form, prefixo, bpaOk, itens, profissional: (form.querySelector('#current_profissional') || doc.querySelector('#current_profissional'))?.value || '' };
+  }
+
+  // 3) Faturamento: procedimento de cada item feito, sem repetir código; ocupação do profissional logado.
+  async function montarFaturamento(f, feitos) {
+    const porProc = new Map();
+    for (const x of feitos) {
+      const url = f.s.proc(x.it);
+      if (!url) throw new Error(`${f.s.nome}: "${x.nome}" sem o dado que define o faturamento`);
+      const p = await getJSON(url);
+      if (!p || !p.id) throw new Error(`${f.s.nome}: "${x.nome}" não tem procedimento de faturamento parametrizado`);
+      const k = p.fatura_por_aplicacao ? `${p.id}#${x.i}` : String(p.id);   // fatura_por_aplicacao = uma linha por item
+      if (!porProc.has(k)) porProc.set(k, { id: p.id, texto: clean(p.procedimento_text || p.codigo || ''), itens: [] });
+      porProc.get(k).itens.push(x.nome);
+    }
+    // Já lançado nesta ficha (ex.: aplicação parcial anterior)? Não repete.
+    const jaTem = new Set();
+    for (const e of f.form.querySelectorAll('[name*="[procedimentos_lancamentos_bpa_temporarios_attributes]"][name$="[procedimento_id]"]')) {
+      const destroy = f.form.querySelector(`[name="${CSS.escape(e.name.replace(/\[procedimento_id\]$/, '[_destroy]'))}"]`);
+      if (!/^(true|1)$/.test(destroy?.value || '')) jaTem.add(String(e.value));
+    }
+    const linhas = [];
+    for (const l of porProc.values()) {
+      if (!/#/.test(String(l.id)) && jaTem.has(String(l.id))) continue;
+      const oc = await getJSON(`/parametrizacoes/procedimentos_faturamento/buscar_profissional_ocupacao_compativel?procedimento_id=${encodeURIComponent(l.id)}`);
+      const o = Array.isArray(oc) ? oc[0] : oc;
+      if (!o?.id) throw new Error(`${f.s.nome}: nenhuma ocupação compatível com ${l.texto} para quem está logado`);
+      linhas.push({ ...l, ocupacao: String(o.id), ocupacaoNome: clean(o.name || '') });
+    }
+    return linhas;
+  }
+  function lancarFaturamento(f, linhas) {
+    let n = Date.now();
+    for (const l of linhas) {
+      const base = `${f.prefixo}[procedimentos_lancamentos_bpa_temporarios_attributes][${n++}]`;
+      for (const [k, v] of Object.entries({ profissional_ocupacao_id: l.ocupacao, automatico: 'true', procedimento_id: String(l.id), procedimento_token: l.texto, quantidade: '1', _destroy: 'false' })) {
+        const e = f.form.ownerDocument.createElement('input');
+        e.type = 'hidden'; e.name = `${base}[${k}]`; e.value = v;
+        f.form.appendChild(e);
+      }
+    }
+  }
+
+  // 4) Salvar como a tela salva (formulário data-remote) e ler a resposta.
+  function serializar(form) {
+    const corpo = new URLSearchParams();
+    for (const el of form.querySelectorAll('input[name],select[name],textarea[name]')) {
+      if (el.disabled) continue;
+      const t = (el.type || '').toLowerCase();
+      if (['submit', 'button', 'reset', 'image', 'file'].includes(t)) continue;
+      if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
+      if (el.tagName === 'SELECT') { for (const o of el.options) if (o.selected) corpo.append(el.name, o.value); continue; }
+      corpo.append(el.name, el.value);
+    }
+    corpo.append('button', '');
+    return corpo;
+  }
+  async function salvarFicha(f) {
+    const headers = { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: '*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, application/x-ecmascript', 'X-Requested-With': 'XMLHttpRequest' };
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+    if (csrf) headers['X-CSRF-Token'] = csrf;
+    const r = await fetch(f.form.getAttribute('action'), { method: (f.form.getAttribute('method') || 'post').toUpperCase(), credentials: 'same-origin', cache: 'no-store', headers, body: serializar(f.form).toString() });
+    const t = await r.text();
+    if (!r.ok) throw new Error(`${f.s.nome}: HTTP ${r.status} ao salvar`);
+    const erros = [];
+    for (let m, re = /inline-errors\\?["'][^>]*>([^<]+)</g; (m = re.exec(t));) erros.push(m[1].replace(/\\(.)/g, '$1').trim());
+    if (/\$\(\s*["']\.form["']\s*\)\.replaceWith/.test(t) || erros.length) throw new Error(`${f.s.nome}: o sistema recusou — ${erros.join('; ') || 'o formulário voltou com erro'}`);
+    const conc = /concluirSenhaOpcional\(\s*["']([^"']+)["']\s*,\s*\{[\s\S]*?atendimento_id\s*:\s*["']?(\d+)["']?\s*,[\s\S]*?atendimento_type\s*:\s*["']([^"']+)["']/.exec(t);
+    const destinos = [...t.matchAll(/(?:redirecionarControleSalasSemSenha|encaminharSenhaControleSalas)\(\s*["']([^"']*)["']\s*,\s*["']([^"']+)["']/g)].map(x => x[2]);
+    return { texto: t, conclusao: conc ? { tipo: conc[1], atendimentoId: +conc[2], atendimentoType: conc[3] } : null, destinos };
+  }
+
+  // 5) Senha: conclui em cada sala salva e devolve a MESMA senha para o destino final
+  //    (o que a resposta do último salvar mandaria: médico, Raio-X…), como o Cancelar da lista faz.
+  async function concluirSenhaSala(res, f, atendimento) {
+    if (typeof window.concluirSenhaOpcional !== 'function') return;
+    const [tipo, id] = atendimento.split('#');
+    const c = res.conclusao || { tipo: f.s.codigo, atendimentoId: +id, atendimentoType: tipo };
+    try { await window.concluirSenhaOpcional(c.tipo, { atendimento_id: c.atendimentoId, atendimento_type: c.atendimentoType }); } catch (_) {}
+  }
+  async function senhaParaDestino(atendimento, destino) {
+    const [tipo, id] = atendimento.split('#');
+    try { const tk = sessionStorage.getItem('senhaSimplesToken'); if (tk && typeof senhaSimplesProxy !== 'undefined') senhaSimplesProxy.defaults.headers = { Authorization: `Bearer ${tk}` }; } catch (_) {}   // eslint-disable-line no-undef
+    let ok = false;
+    try {
+      if (typeof window.senhaSimplesPutFilas !== 'function') throw new Error('Senha Simples indisponível nesta tela');
+      const par = await getJSON(`/filas/parametrizacoes/${encodeURIComponent(destino)}.json`);
+      const cat = par?.senha_simples_categoria?.id;
+      if (!cat) throw new Error('fila sem categoria de senha');
+      await window.senhaSimplesPutFilas(`${cat}/retornar_para_atendimento`, { atendimento_id: +id, atendimento_type: tipo, categoria_id: cat });
+      ok = true;
+    } finally {
+      // como o sistema faz ao encaminhar: destino marcado como "não chamado"
+      try { if (typeof window.atualizarFilaSenhaControleSalas === 'function') await window.atualizarFilaSenhaControleSalas(destino, +id, tipo); } catch (_) {}
+    }
+    return ok;
+  }
+  function marcarReavaliacao(f, sim, just) {
+    const cx = f.form.querySelector('input[type="checkbox"][name$="[encaminhar_paciente_para_reavaliacao_medica]"]');
+    const ju = f.form.querySelector('textarea[name$="[justificativa_encaminhamento]"], input[name$="[justificativa_encaminhamento]"]');
+    if (!cx) return false;
+    cx.checked = !!sim;
+    if (ju) ju.value = sim ? just : '';
+    return true;
+  }
+
+  // ---------- interface da aba ----------
+  const NOME_DESTINO = { atendimento: 'médico (retorno)', controle_de_salas_medicacao: 'Medicação', controle_de_salas_exames: 'Exames', controle_de_salas_raio_x: 'Raio-X', controle_de_salas_procedimento_enfermagem: 'Enfermagem', controle_de_salas_gesso_imobilizacao: 'Gesso' };
   function ehListaControle() { return /^\/(aplicacoes_medicamentos|encaminhamentos_(exames|procedimentos_enfermagem|radiografias))\/?$/.test(location.pathname); }
-  let aba = null, dados = { pacientes: [], erros: [] }, carregando = false;
+  let aba = null, dados = { pacientes: [], erros: [] }, carregando = false, aberto = null, ocupado = false;
+  const CSS_ABA = `
+  .om30pd-btn{position:fixed;right:14px;bottom:18px;z-index:2147482000;border:0;border-radius:999px;background:#0f5132;color:#fff;padding:10px 16px;font:700 13px "Segoe UI",Arial;box-shadow:0 8px 22px rgba(15,35,55,.3);cursor:pointer}
+  .om30pd-btn .n{background:#fff;color:#0f5132;border-radius:999px;padding:0 7px;margin-left:6px;font-size:12px}
+  .om30pd{position:fixed;top:0;right:0;bottom:0;width:470px;max-width:97vw;background:#f5f8fa;z-index:2147482001;box-shadow:-10px 0 30px rgba(15,35,55,.25);display:none;flex-direction:column;font:13px/1.35 "Segoe UI",Arial,sans-serif;color:#1f2f3c}
+  .om30pd.on{display:flex}.om30pd-topo{background:#0f5132;color:#fff;padding:11px 12px;display:flex;gap:8px;align-items:center}.om30pd-topo b{flex:1;font-size:14.5px}
+  .om30pd-topo button{border:0;background:rgba(255,255,255,.15);color:#fff;border-radius:7px;padding:5px 9px;cursor:pointer;font:600 12px inherit}
+  .om30pd-busca{padding:8px 12px}.om30pd-busca input{width:100%;box-sizing:border-box;border:1px solid #cfd8df;border-radius:8px;padding:7px 9px;font:13px inherit}
+  .om30pd-lista{overflow:auto;flex:1;padding:0 12px 12px}.om30pd-p{background:#fff;border-radius:10px;padding:9px 10px;margin-bottom:7px;box-shadow:0 1px 3px rgba(15,35,55,.08);cursor:pointer}
+  .om30pd-p:hover{box-shadow:0 0 0 2px #19875455}.om30pd-p .nm{font-weight:700}.om30pd-p .sub{color:#5f7383;font-size:11.5px;margin:1px 0 5px}
+  .om30pd-s{display:inline-block;border-radius:6px;padding:2px 7px;margin:0 4px 4px 0;font-size:11.5px;font-weight:700;background:#e8eff5;color:#24435c}
+  .om30pd-s.and{background:#fff3cd;color:#7a5600}.om30pd-vazio{color:#6b7f8e;text-align:center;padding:30px 10px}
+  .om30pd-sala{background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 3px rgba(15,35,55,.08)}
+  .om30pd-sala h4{margin:0 0 6px;font-size:13px;color:#0f5132;display:flex;gap:6px;align-items:center}.om30pd-sala h4 small{color:#6b7f8e;font-weight:600}
+  .om30pd-fat{font-size:11.5px;color:#4a6272;background:#f1f6f9;border-radius:7px;padding:5px 7px;margin-top:4px}
+  .om30pd-erro{color:#a12a1f;font-size:12px;white-space:pre-wrap;margin:4px 0}
+  .om30pd-pac{padding:2px 12px 8px}.om30pd-pac .nm{font-size:15px;font-weight:800}.om30pd-pac .sub{color:#5f7383;font-size:12px}
+  .om30pd-rod{padding:10px 12px;border-top:1px solid #e2e8ee;background:#fff}`;
   function montarAba() {
     css();
+    if (!document.getElementById('om30pd-css')) { const st = document.createElement('style'); st.id = 'om30pd-css'; st.textContent = CSS_ABA; document.head.appendChild(st); }
     const btn = document.createElement('button');
     btn.className = 'om30pd-btn';
     btn.innerHTML = '📋 Pendências<span class="n">…</span>';
     aba = document.createElement('div');
     aba.className = 'om30pd';
-    aba.innerHTML = `<div class="om30pd-topo"><b>📋 Pendências das salas</b><button data-a="rec">↻ Atualizar</button><button data-a="x">✕</button></div>
-      <div class="om30pd-busca"><input placeholder="Buscar nome ou senha…"></div><div class="om30pd-lista"></div>`;
+    aba.innerHTML = `<div class="om30pd-topo"><b>📋 Pendências das salas</b><button data-a="rec">↻</button><button data-a="x">✕</button></div><div class="om30pd-conteudo" style="display:flex;flex-direction:column;flex:1;min-height:0"></div>`;
     document.body.append(btn, aba);
-    btn.onclick = () => { aba.classList.add('on'); atualizarAba(); };
-    aba.querySelector('[data-a="x"]').onclick = () => aba.classList.remove('on');
-    aba.querySelector('[data-a="rec"]').onclick = () => atualizarAba();
-    aba.querySelector('input').oninput = () => pintarAba();
+    btn.onclick = () => { aba.classList.add('on'); if (!aberto) atualizarAba(); };
+    aba.querySelector('[data-a="x"]').onclick = () => { if (!ocupado) aba.classList.remove('on'); };
+    aba.querySelector('[data-a="rec"]').onclick = () => { if (!ocupado) { aberto = null; atualizarAba(); } };
     ['keydown', 'keyup', 'keypress'].forEach(t => aba.addEventListener(t, e => e.stopPropagation()));
-    const ciclo = async () => { if (!document.hidden) await atualizarAba(true); btn.querySelector('.n').textContent = String(dados.pacientes.length); };
+    const ciclo = async () => { if (!document.hidden && !aberto) await atualizarAba(true); btn.querySelector('.n').textContent = String(dados.pacientes.length); };
     ciclo(); setInterval(ciclo, 60000);
   }
+  const conteudo = () => aba.querySelector('.om30pd-conteudo');
   async function atualizarAba(silencioso) {
-    if (carregando) return;
+    if (carregando || aberto) return;
     carregando = true;
-    if (!silencioso) aba.querySelector('.om30pd-lista').innerHTML = '<div class="om30pd-vazio">Carregando…</div>';
+    if (!silencioso) conteudo().innerHTML = '<div class="om30pd-vazio">Carregando…</div>';
     try { dados = await carregarPendencias(); } finally { carregando = false; }
     document.querySelector('.om30pd-btn .n').textContent = String(dados.pacientes.length);
-    pintarAba();
+    if (!aberto) pintarLista();
   }
-  function pintarAba() {
-    const q = norm(aba.querySelector('input').value);
-    const xs = dados.pacientes.filter(p => !q || norm(p.nome).includes(q) || norm(p.senha).includes(q));
-    const el = aba.querySelector('.om30pd-lista');
-    el.innerHTML = (dados.erros.length ? `<div class="om30bl-msg erro">Não li: ${esc(dados.erros.join(' · '))}</div>` : '') +
-      (xs.length ? xs.map(p => `<div class="om30pd-p"><div class="nm">${esc(p.nome)}</div>
-        <div class="sub">${[p.senha && `Senha <b>${esc(p.senha)}</b>`, p.nasc && `Nasc. ${esc(p.nasc)}`, p.medico && `Dr(a). ${esc(p.medico)}`].filter(Boolean).join(' · ')}</div>
-        ${p.salas.map(s => `<span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}" title="${esc(s.data)} ${esc(s.hora)}">${esc(s.sala)} · ${esc(s.status)} · ${esc(s.hora)}</span>`).join('')}</div>`).join('')
-        : '<div class="om30pd-vazio">Nenhuma pendência nas salas (últimas 24 h).</div>');
+  function pintarLista() {
+    const c = conteudo();
+    const busca = c.querySelector('.om30pd-busca input')?.value || '';
+    c.innerHTML = '<div class="om30pd-busca"><input placeholder="Buscar nome ou senha…"></div><div class="om30pd-lista"></div>';
+    const input = c.querySelector('input'); input.value = busca;
+    const pinta = () => {
+      const q = norm(input.value);
+      const xs = dados.pacientes.filter(p => !q || norm(p.nome).includes(q) || norm(p.senha).includes(q));
+      const el = c.querySelector('.om30pd-lista');
+      el.innerHTML = (dados.erros.length ? `<div class="om30pd-erro">Não li: ${esc(dados.erros.join(' · '))}</div>` : '') +
+        (xs.length ? xs.map((p, i) => `<div class="om30pd-p" data-i="${dados.pacientes.indexOf(p)}"><div class="nm">${esc(p.nome)}</div>
+          <div class="sub">${[p.senha && `Senha <b>${esc(p.senha)}</b>`, `Atend. ${esc(p.atendimento.split('#')[1])}`].filter(Boolean).join(' · ')}</div>
+          ${p.salas.map(s => `<span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}">${esc(s.s.nome)} · ${esc(s.status)}</span>`).join('')}</div>`).join('')
+          : '<div class="om30pd-vazio">Nenhum paciente pendente em Medicação, Exames ou Enfermagem.</div>');
+      el.querySelectorAll('.om30pd-p').forEach(d => d.onclick = () => abrirPaciente(dados.pacientes[+d.dataset.i]));
+    };
+    input.oninput = pinta; pinta();
+  }
+
+  async function abrirPaciente(p) {
+    const salasTxt = p.salas.map(s => s.s.nome).join(', ');
+    if (!confirm(`Abrir as fichas de ${p.nome}?\n\nSalas: ${salasTxt}\n\nComo ao clicar em Atender, o paciente fica "Em Andamento" nessas salas.`)) return;
+    aberto = { p, fichas: [], erros: [], escolha: new Map() };
+    const c = conteudo();
+    c.innerHTML = '<div class="om30pd-vazio">Abrindo as fichas…</div>';
+    for (const s of p.salas) {
+      try { aberto.fichas.push(await carregarFicha(s.s, s.enc)); }
+      catch (e) { aberto.erros.push(e.message); }
+    }
+    pintarPaciente();
+  }
+  function pintarPaciente(msgTxt = '', tipo = '') {
+    const a = aberto, c = conteudo();
+    const motAnt = c.querySelector('.om30pd-mot')?.value || '', reavAnt = !!c.querySelector('.om30pd-reav')?.checked, justAnt = c.querySelector('.om30pd-just')?.value || '';
+    const abertos = a.fichas.flatMap(f => f.itens.filter(x => x.aberto).map(x => ({ f, x })));
+    for (const { x } of abertos) if (!a.escolha.has(x.it)) a.escolha.set(x.it, 'fez');
+    const nNao = abertos.filter(({ x }) => a.escolha.get(x.it) === 'nao').length;
+    const motivosSala = [...new Set(abertos.filter(({ x }) => a.escolha.get(x.it) === 'nao').flatMap(({ f }) => (SALAS[f.s.k] || SALAS.medicacao).motivos))];
+    c.innerHTML = `<div class="om30pd-pac"><button class="om30pd-voltar" style="border:0;background:none;color:#0f5132;font-weight:700;cursor:pointer;padding:6px 0">← Voltar</button>
+        <div class="nm">${esc(a.p.nome)}</div><div class="sub">${[a.p.senha && 'Senha ' + esc(a.p.senha), 'Atend. ' + esc(a.p.atendimento.split('#')[1])].filter(Boolean).join(' · ')}</div></div>
+      <div class="om30pd-lista">
+        ${a.erros.map(e => `<div class="om30pd-erro">⚠ ${esc(e)}</div>`).join('')}
+        ${abertos.length > 1 ? '<div class="om30bl-acoesgerais"><button data-todos="fez">✔ Tudo feito</button><button data-todos="nao">✖ Nada feito</button></div>' : ''}
+        ${a.fichas.map((f, fi) => `<div class="om30pd-sala"><h4>${esc(f.s.nome)} <small>${f.itens.filter(x => x.aberto).length} pendente(s)</small></h4>
+          ${f.itens.map(x => {
+            if (!x.aberto) return `<div class="om30bl-it feito"><div class="tx"><b>${esc(x.nome)}</b><small>já resolvido</small></div></div>`;
+            const v = a.escolha.get(x.it);
+            return `<div class="om30bl-it ${v}" data-f="${fi}" data-i="${x.i}"><div class="tx"><b>${esc(x.nome)}</b>${x.estoque ? '<br><span class="om30bl-tag">baixa de estoque: fazer pela ficha</span>' : ''}</div>
+              <div class="tg"><button data-v="fez" class="${v === 'fez' ? 'on' : ''}">✔ Fez</button><button data-v="nao" class="${v === 'nao' ? 'on' : ''}">✖ Não</button></div></div>`;
+          }).join('') || '<div class="om30pd-vazio" style="padding:8px">Nada pendente nesta sala.</div>'}
+          ${!f.bpaOk ? '<div class="om30pd-erro">Faturamento desta sala ainda não confirmado: esta sala fica para a ficha (painel ⚡ Baixa rápida) até a captura dela.</div>' : ''}</div>`).join('')}
+        ${nNao ? `<div class="om30pd-sala"><h4 style="color:#8f2a22">Motivo do que não foi feito (${nNao})</h4><div class="om30bl-chips">${motivosSala.map(m => `<button data-m="${esc(m)}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
+          <textarea class="om30pd-mot" placeholder="Justificativa do cancelamento">${esc(motAnt)}</textarea></div>` : ''}
+        <div class="om30pd-sala"><label class="om30bl-reav"><input type="checkbox" class="om30pd-reav"${reavAnt ? ' checked' : ''}> <span>Encaminhar para reavaliação médica</span></label>
+          <textarea class="om30pd-just" placeholder="Justificativa para o médico"${reavAnt ? '' : ' hidden'}>${esc(justAnt)}</textarea>
+          <div class="om30pd-fat">Sem marcar, o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div></div>
+        <div class="om30bl-msg ${tipo}">${esc(msgTxt)}</div>
+      </div>
+      <div class="om30pd-rod"><button class="om30bl-go">Dar baixa em tudo</button></div>`;
+    c.querySelector('.om30pd-voltar').onclick = () => { if (ocupado) return; aberto = null; atualizarAba(); };
+    c.querySelectorAll('.om30bl-it[data-f] .tg button').forEach(b => b.onclick = () => {
+      const d = b.closest('[data-f]'); a.escolha.set(a.fichas[+d.dataset.f].itens[+d.dataset.i].it, b.dataset.v); pintarPaciente();
+    });
+    c.querySelectorAll('[data-todos]').forEach(b => b.onclick = () => { abertos.forEach(({ x }) => a.escolha.set(x.it, b.dataset.todos)); pintarPaciente(); });
+    c.querySelectorAll('.om30bl-chips button').forEach(b => b.onclick = () => { c.querySelector('.om30pd-mot').value = b.dataset.m; validar(); });
+    const rv = c.querySelector('.om30pd-reav'); rv.onchange = () => { c.querySelector('.om30pd-just').hidden = !rv.checked; validar(); };
+    c.querySelectorAll('textarea').forEach(t => t.oninput = validar);
+    const go = c.querySelector('.om30bl-go');
+    go.onclick = () => darBaixaTudo();
+    function validar() {
+      const mot = clean(c.querySelector('.om30pd-mot')?.value), reav = rv.checked, just = clean(c.querySelector('.om30pd-just').value);
+      const f = abertos.length - nNao;
+      go.disabled = ocupado || !abertos.length || (nNao && !mot) || (reav && !just);
+      go.textContent = !abertos.length ? 'Nada pendente' : `Dar baixa em tudo: ${f} feito(s)${nNao ? ` + ${nNao} cancelado(s)` : ''}`;
+    }
+    validar();
+  }
+
+  async function darBaixaTudo() {
+    const a = aberto, c = conteudo();
+    const motivo = clean(c.querySelector('.om30pd-mot')?.value), reav = !!c.querySelector('.om30pd-reav')?.checked, just = clean(c.querySelector('.om30pd-just')?.value);
+    const plano = a.fichas.map(f => {
+      const abertos = f.itens.filter(x => x.aberto);
+      return { f, fez: abertos.filter(x => a.escolha.get(x.it) === 'fez'), nao: abertos.filter(x => a.escolha.get(x.it) === 'nao') };
+    }).filter(p => p.fez.length || p.nao.length);
+    if (!plano.length) return;
+    ocupado = true;
+    const go = c.querySelector('.om30bl-go'); go.disabled = true;
+    const passo = t => { go.textContent = t; };
+    // Conferência de tudo ANTES de salvar qualquer sala.
+    try {
+      for (const p of plano) {
+        if (!p.f.bpaOk) throw new Error(`${p.f.s.nome}: faturamento em formato desconhecido`);
+        const est = p.fez.filter(x => x.estoque);
+        if (est.length) throw new Error(`${p.f.s.nome}: ${est.map(x => x.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`);
+        passo(`Conferindo faturamento · ${p.f.s.nome}…`);
+        p.linhas = p.fez.length ? await montarFaturamento(p.f, p.fez) : [];
+      }
+    } catch (e) {
+      ocupado = false;
+      return pintarPaciente(`Nada foi salvo. ${e.message}`, 'erro');
+    }
+    const resumo = plano.map(p => `${p.f.s.nome.toUpperCase()}\n` +
+      (p.fez.length ? `  ✔ ${p.fez.map(x => x.nome).join('\n  ✔ ')}\n` : '') +
+      (p.nao.length ? `  ✖ ${p.nao.map(x => x.nome).join('\n  ✖ ')}\n` : '') +
+      (p.linhas.length ? `  Faturamento: ${p.linhas.map(l => l.texto).join(' | ')}\n` : '')).join('\n');
+    if (!confirm(`Dar baixa em ${a.p.nome}?\n\n${resumo}${plano.some(p => p.nao.length) ? `\nMotivo: ${motivo}\n` : ''}${reav ? `Reavaliação médica: ${just}\n` : ''}`)) { ocupado = false; return pintarPaciente(); }
+
+    const feitas = [], log = [];
+    let ultimo = null;
+    try {
+      const momento = momentoAgora();
+      for (const [k, p] of plano.entries()) {
+        passo(`Salvando ${p.f.s.nome} (${k + 1}/${plano.length})…`);
+        const prof = p.f.profissional;
+        if (p.nao.length && !prof) throw new Error(`${p.f.s.nome}: profissional atual não encontrado na ficha`);
+        for (const x of p.fez) p.f.s.fazer(x.it);
+        for (const x of p.nao) p.f.s.cancelar(x.it, { motivo, momento, profissional: prof });
+        lancarFaturamento(p.f, p.linhas);
+        if (reav && !marcarReavaliacao(p.f, true, just) && k === plano.length - 1) log.push(`${p.f.s.nome}: ficha sem opção de reavaliação`);
+        const res = await salvarFicha(p.f);
+        feitas.push(p.f.s.nome);
+        await concluirSenhaSala(res, p.f, a.p.atendimento);
+        ultimo = res;
+        log.push(`✔ ${p.f.s.nome}: ${p.fez.length} feito(s), ${p.nao.length} cancelado(s)${p.linhas.length ? `, faturamento ${p.linhas.length} linha(s)` : ''}`);
+      }
+      // Senha para o destino final da última sala salva (o que o sistema faria na tela).
+      const destino = (ultimo?.destinos || []).filter(Boolean).pop() || '';
+      if (destino && a.p.senha && !/^[-—]$/.test(a.p.senha)) {
+        passo('Encaminhando a senha…');
+        try { await senhaParaDestino(a.p.atendimento, destino); log.push(`Senha ${a.p.senha} → ${NOME_DESTINO[destino] || destino}`); }
+        catch (e) { log.push(`⚠ Senha não foi para ${NOME_DESTINO[destino] || destino} (${e.message}). Use Recuperar na fila de lá.`); }
+      } else if (destino) log.push(`Destino: ${NOME_DESTINO[destino] || destino}`);
+      console.log('[OM30 Baixa Rápida] baixa pela aba', { atendimento: a.p.atendimento, log });
+      aberto = null; ocupado = false;
+      alert(`✔ Baixa concluída — ${a.p.nome}\n\n${log.join('\n')}`);
+      atualizarAba();
+    } catch (e) {
+      ocupado = false;
+      console.warn('[OM30 Baixa Rápida] baixa pela aba falhou', e);
+      const resto = plano.map(p => p.f.s.nome).filter(n => !feitas.includes(n));
+      aberto = null;
+      alert(`⚠ Parou: ${e.message}\n\n${feitas.length ? `Já salvo: ${feitas.join(', ')}\n` : 'Nada foi salvo.\n'}${resto.length ? `Não salvo: ${resto.join(', ')} — abra essas fichas para conferir.` : ''}`);
+      atualizarAba();
+    }
   }
 
   // ---------- início ----------

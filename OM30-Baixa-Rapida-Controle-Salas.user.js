@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.3.0
+// @version      0.3.1
 // @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -249,9 +249,7 @@
           <div class="tg"><button data-v="fez" class="${v === 'fez' ? 'on' : ''}" title="${esc(sala.s.verbo)}">✔ Fez</button><button data-v="nao" class="${v === 'nao' ? 'on' : ''}" title="Cancelar">✖ Não</button></div></div>`;
       }).join('') +
       (nNao ? `<div class="om30bl-mot"><div class="rot">Motivo do que não foi feito (${nNao})</div><div class="om30bl-chips">${sala.s.motivos.map(m => `<button data-m="${esc(m)}" class="${m === motTxt ? 'on' : ''}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
-        <textarea placeholder="Justificativa do cancelamento">${esc(motTxt)}</textarea>
-        <label class="om30bl-reav"><input type="checkbox"${reavOn ? ' checked' : ''}> <span>Encaminhar para reavaliação médica</span></label>
-        <textarea class="om30bl-just" placeholder="Justificativa para o médico"${reavOn ? '' : ' hidden'}>${esc(reavTxt)}</textarea></div>` : '');
+        <textarea placeholder="Justificativa do cancelamento">${esc(motTxt)}</textarea></div>` : '');
     const porI = new Map(xs.map(x => [String(x.i), x]));
     corpo.querySelectorAll('.om30bl-it[data-i] .tg button').forEach(b => b.onclick = () => { escolha.set(porI.get(b.closest('[data-i]').dataset.i).item, b.dataset.v); corpo.dataset.a = ''; desenhar(sala); });
     corpo.querySelectorAll('[data-todos]').forEach(b => b.onclick = () => { abertos.forEach(x => escolha.set(x.item, b.dataset.todos)); corpo.dataset.a = ''; desenhar(sala); });
@@ -298,7 +296,6 @@
         setTimeout(() => semEstoque.forEach(x => x.item.classList.remove('om30bl-marca')), 8000);
         throw Object.assign(new Error(`Preencha almoxarifado e quantidade de: ${semEstoque.map(x => x.nome).join(', ')} — depois clique em "Salvar a ficha".`), { parar: true });
       }
-      if (reav || nao.length) { etapa = 'reavaliação'; if (!reavaliacao(sala.form, reav, just) && reav) throw new Error('esta ficha não tem a opção de reavaliação médica'); }
       etapa = 'salvar'; b.textContent = 'Salvando…';
       const r = await salvar();
       if (r === 'ok') msg('✔ Baixa feita e ficha salva. O sistema mostra o próximo destino.', 'ok');
@@ -842,9 +839,7 @@
       ${salasHtml}
       ${nN ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m)}" class="${m === e.motivo ? 'on' : ''}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
         <textarea data-f="motivo" placeholder="Ou escreva a justificativa">${esc(e.motivo)}</textarea></div>` : ''}
-      ${e.salas.length ? `<div class="om30x-bloco"><label class="om30x-chk"><input type="checkbox" data-f="reav"${e.reav ? ' checked' : ''}> Encaminhar para reavaliação médica</label>
-        ${e.reav ? `<textarea data-f="just" style="margin-top:7px" placeholder="Justificativa para o médico">${esc(e.just)}</textarea>` : ''}
-        <div class="om30x-nota">Sem marcar, o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div></div>` : ''}
+      ${e.salas.length ? '<div class="om30x-nota" style="padding:0 4px">Depois da baixa o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div>' : ''}
     </div>
     <div class="om30x-rod">${pend.length ? `<div class="om30x-res"><span>✔ ${nF} ${nF === 1 ? 'feito' : 'feitos'}</span>${nN ? `<span class="n">✖ ${nN} não ${nN === 1 ? 'feito' : 'feitos'}</span>` : ''}</div>` : ''}
       <button class="om30x-go" data-a="go">Realizar tudo e dar baixa</button></div>`;
@@ -856,7 +851,7 @@
     const e = estado, go = painelX.querySelector('[data-a="go"]');
     if (!go || !e) return;
     const pend = pendentesTodos(), nN = pend.filter(p => p.v === 'nao').length;
-    const falta = ocupado ? 'Dando baixa…' : !pend.length ? 'Nada pendente' : nN && !clean(e.motivo) ? 'Escolha o motivo do que não foi feito' : e.reav && !clean(e.just) ? 'Escreva a justificativa para o médico' : '';
+    const falta = ocupado ? 'Dando baixa…' : !pend.length ? 'Nada pendente' : nN && !clean(e.motivo) ? 'Escolha o motivo do que não foi feito' : '';
     go.disabled = !!falta;
     go.textContent = falta || `Realizar tudo e dar baixa (${pend.length})`;
   }
@@ -925,8 +920,7 @@
     const resumo = plano.map(p => `<div class="om30x-rs"><div class="rh">${ICONE[p.x.s.k] || ''} ${esc(p.x.s.nome)}</div><ul>
         ${p.fez.map(y => `<li>✔ ${esc(y.nome)}</li>`).join('')}${p.nao.map(y => `<li class="n">✖ ${esc(y.nome)}</li>`).join('')}</ul>
         ${p.linhas.length ? `<div class="fat"><b>Faturamento</b>${p.linhas.map(l => esc(l.texto)).join('<br>')}</div>` : ''}</div>`).join('') +
-      (plano.some(p => p.nao.length) ? `<div class="om30x-nota"><b>Motivo:</b> ${esc(e.motivo)}</div>` : '') +
-      (e.reav ? `<div class="om30x-nota"><b>Reavaliação médica:</b> ${esc(e.just)}</div>` : '');
+      (plano.some(p => p.nao.length) ? `<div class="om30x-nota"><b>Motivo:</b> ${esc(e.motivo)}</div>` : '');
     const ok = await janela({ tipo: 'aviso', icone: '📋', titulo: `Dar baixa em ${e.nome}?`, html: resumo, botoes: [{ txt: 'Voltar', valor: false }, { txt: 'Confirmar baixa', classe: 'p', valor: true }] });
     if (!ok) { ocupado = false; return pintarPainel(); }
 
@@ -944,7 +938,6 @@
           for (const y of p.fez) p.x.s.fazer(y.it);
           for (const y of p.nao) p.x.s.cancelar(y.it, { motivo: clean(e.motivo), momento, profissional: prof });
           lancarFaturamento(p.f, p.linhas);
-          if (e.reav) marcarReavaliacao(p.f, true, clean(e.just));
           const res = await salvarFicha(p.f);
           feitas.push(p.x.s.nome);
           await concluirSenhaSala(res, p.f, e.at);

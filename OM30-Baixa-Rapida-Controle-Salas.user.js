@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.2.0
+// @version      0.2.1
 // @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -328,7 +328,14 @@
   // Linha do BPA (igual à criada pelo Aplicar): procedimentos_lancamentos_bpa_temporarios_attributes
   // [n][profissional_ocupacao_id|automatico=true|procedimento_id|procedimento_token=texto|quantidade=1|_destroy=false].
   // =====================================================================
-  const FORMATO_BPA_CONFIRMADO = { medicacao: true, exames: false, enfermagem: false };
+  // 18/11: mesmo formato de faturamento da Medicação nas três salas (confirmado pelo usuário).
+  const FORMATO_BPA_CONFIRMADO = { medicacao: true, exames: true, enfermagem: true };
+  // Campos que cada sala precisa ter na ficha. Conferidos ANTES de salvar qualquer sala.
+  const REQUER = {
+    medicacao: { fez: ['_tipo_uso_medicamento_id', '_para_atendimento'], nao: ['_cancelada', '_justificativa_cancelamento'] },
+    exames: { fez: ['_exame_id', '_coletado'], nao: ['_cancelado', '_justificativa_cancelamento'] },
+    enfermagem: { fez: ['_procedimento_enfermagem_id', '_realizado'], nao: ['_cancelado', '_justificativa_cancelamento'] },
+  };
   const SALAS_API = [
     {
       k: 'medicacao', nome: 'Medicação', codigo: 'controle_de_salas_medicacao', lista: '/aplicacoes_medicamentos',
@@ -682,6 +689,8 @@
     try {
       for (const p of plano) {
         if (!p.f.bpaOk) throw new Error(`${p.f.s.nome}: faturamento em formato desconhecido`);
+        for (const [lista, campos] of [[p.fez, REQUER[p.f.s.k].fez], [p.nao, REQUER[p.f.s.k].nao]])
+          for (const x of lista) { const falta = campos.filter(c => !inp(x.it, c)); if (falta.length) throw new Error(`${p.f.s.nome}: a ficha não tem o campo ${falta.map(c => c.slice(1)).join(', ')} em "${x.nome}" (formato diferente do esperado)`); }
         const est = p.fez.filter(x => x.estoque);
         if (est.length) throw new Error(`${p.f.s.nome}: ${est.map(x => x.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`);
         passo(`Conferindo faturamento · ${p.f.s.nome}…`);

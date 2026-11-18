@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.2.3
+// @version      0.2.4
 // @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -431,6 +431,47 @@
     return { pacientes, erros };
   }
 
+  // 1b) O que o médico pediu, SÓ LENDO a tela de consulta de cada sala (não abre a ficha, não muda a situação).
+  //     Medicação: /aplicacoes_medicamentos/{id} (a mesma consulta que o Controle de Salas já lê).
+  //     Exames/Enfermagem: a consulta da sala, se existir; se o sistema redirecionar, não segue.
+  const CONSULTA_ITENS = {
+    medicacao: { url: id => `/aplicacoes_medicamentos/${id}`, chave: 'MEDICAMENTO' },
+    exames: { url: id => `/encaminhamentos_exames/${id}`, chave: 'EXAME' },
+    enfermagem: { url: id => `/encaminhamentos_procedimentos_enfermagem/${id}`, chave: 'PROCEDIMENTO' },
+  };
+  const CACHE_ITENS = new Map();
+  async function itensDoMedico(k, enc) {
+    const ck = `${k}#${enc}`, c = CACHE_ITENS.get(ck);
+    if (c && Date.now() - c.em < 60e3) return c.v;
+    let v = null;
+    try {
+      const cfg = CONSULTA_ITENS[k];
+      const r = await fetch(cfg.url(enc), { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: { Accept: 'text/html' } });
+      if (r.ok && r.type !== 'opaqueredirect') {
+        const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+        for (const t of doc.querySelectorAll('table')) {
+          const ths = [...(t.querySelector('thead') || t).querySelectorAll('th')].map(th => norm(th.textContent));
+          const iNome = ths.findIndex(h => h.includes(cfg.chave));
+          if (iNome < 0) continue;
+          const col = n => ths.findIndex(h => h.includes(n));
+          const iVia = col('VIA'), iPos = col('POSOLOGIA'), iSit = col('SITUACAO'), iObs = col('OBSERVACAO'), iQt = col('QUANTIDADE');
+          v = [...t.querySelectorAll('tbody tr')].map(tr => {
+            const td = [...tr.querySelectorAll('td')].map(x => clean(x.textContent));
+            const sit = iSit >= 0 ? td[iSit] || '' : '';
+            return {
+              nome: td[iNome] || '', det: [iPos >= 0 && td[iPos], iVia >= 0 && td[iVia], iQt >= 0 && td[iQt] && 'qtd ' + td[iQt]].filter(Boolean).join(' · '),
+              obs: iObs >= 0 && !/^[-–—]*$/.test(td[iObs] || '') ? td[iObs] : '',
+              estado: !norm(sit) || /PENDENTE|AGUARD/.test(norm(sit)) ? 'pendente' : /CANCEL/.test(norm(sit)) ? 'cancelado' : 'feito',
+            };
+          }).filter(x => x.nome);
+          break;
+        }
+      }
+    } catch (_) {}
+    CACHE_ITENS.set(ck, { em: Date.now(), v });
+    return v;
+  }
+
   // 2) Abrir as fichas do paciente (só leitura do formulário; o sistema põe o paciente "Em Andamento").
   async function carregarFicha(s, enc) {
     const r = await fetch(s.abrir(enc), { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html' } });
@@ -571,6 +612,11 @@
   .om30pd-p:hover{box-shadow:0 0 0 2px #19875455}.om30pd-p .nm{font-weight:700}.om30pd-p .sub{color:#5f7383;font-size:11.5px;margin:1px 0 5px}
   .om30pd-s{display:inline-block;border-radius:6px;padding:2px 7px;margin:0 4px 4px 0;font-size:11.5px;font-weight:700;background:#e8eff5;color:#24435c}
   .om30pd-s.and{background:#fff3cd;color:#7a5600}.om30pd-abrir{margin-top:4px;font-size:12px;font-weight:700;color:#198754}.om30pd-vazio{color:#6b7f8e;text-align:center;padding:30px 10px}
+  .om30pd-sl{margin-top:3px}.om30pd-itens{margin:2px 0 4px 6px;border-left:2px solid #e2e8ee;padding-left:8px}
+  .om30pd-it{font-size:12px;line-height:1.35;margin:2px 0}.om30pd-it .mk{display:inline-block;width:14px;color:#8796a0}.om30pd-it small{color:#5f7383}
+  .om30pd-it.feito{color:#6b7f8e}.om30pd-it.feito .mk{color:#198754}.om30pd-it.cancelado{color:#9aa7b0;text-decoration:line-through}.om30pd-it.cancelado .mk{color:#c0392b}
+  .om30pd-it .obs{margin-left:14px;color:#7a5600;font-size:11.5px}.om30pd-it-nd{font-size:11.5px;color:#8796a0}
+  .om30bl-it .tx small{display:block}
   .om30pd-sala{background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 3px rgba(15,35,55,.08)}
   .om30pd-sala h4{margin:0 0 6px;font-size:13px;color:#0f5132;display:flex;gap:6px;align-items:center}.om30pd-sala h4 small{color:#6b7f8e;font-weight:600}
   .om30pd-fat{font-size:11.5px;color:#4a6272;background:#f1f6f9;border-radius:7px;padding:5px 7px;margin-top:4px}
@@ -615,12 +661,24 @@
       el.innerHTML = (dados.erros.length ? `<div class="om30pd-erro">Não li: ${esc(dados.erros.join(' · '))}</div>` : '') +
         (xs.length ? xs.map((p, i) => `<div class="om30pd-p" data-i="${dados.pacientes.indexOf(p)}"><div class="nm">${esc(p.nome)}</div>
           <div class="sub">${[p.senha && `Senha <b>${esc(p.senha)}</b>`, `Atend. ${esc(p.atendimento.split('#')[1])}`].filter(Boolean).join(' · ')}</div>
-          ${p.salas.map(s => `<span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}">${esc(s.s.nome)} · ${esc(s.status)}</span>`).join('')}
-          <div class="om30pd-abrir">Clique para ver os itens e dar baixa ›</div></div>`).join('')
+          ${p.salas.map(s => `<div class="om30pd-sl"><span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}">${esc(s.s.nome)} · ${esc(s.status)}</span>
+            <div class="om30pd-itens" data-k="${s.s.k}" data-enc="${esc(s.enc)}">…</div></div>`).join('')}
+          <div class="om30pd-abrir">Dar baixa ›</div></div>`).join('')
           : '<div class="om30pd-vazio">Nenhum paciente pendente em Medicação, Exames ou Enfermagem.</div>');
       el.querySelectorAll('.om30pd-p').forEach(d => d.onclick = () => abrirPaciente(dados.pacientes[+d.dataset.i]));
+      preencherItens(el);
     };
     input.oninput = pinta; pinta();
+  }
+
+  const htmlItens = xs => xs === null ? '<span class="om30pd-it-nd">itens: abra para ver</span>'
+    : !xs.length ? '<span class="om30pd-it-nd">nenhum item</span>'
+    : xs.map(x => `<div class="om30pd-it ${x.estado}"><span class="mk">${x.estado === 'feito' ? '✔' : x.estado === 'cancelado' ? '✖' : '•'}</span><b>${esc(x.nome)}</b>${x.det ? ` <small>${esc(x.det)}</small>` : ''}${x.obs ? `<div class="obs">Obs.: ${esc(x.obs)}</div>` : ''}</div>`).join('');
+  async function preencherItens(raiz) {
+    const alvos = [...raiz.querySelectorAll('.om30pd-itens')];
+    let i = 0;
+    const trab = async () => { while (i < alvos.length) { const d = alvos[i++]; const xs = await itensDoMedico(d.dataset.k, d.dataset.enc); if (d.isConnected) d.innerHTML = htmlItens(xs); } };
+    await Promise.all([trab(), trab(), trab()]);   // 3 por vez
   }
 
   async function abrirPaciente(p) {
@@ -630,8 +688,13 @@
     const c = conteudo();
     c.innerHTML = '<div class="om30pd-vazio">Abrindo as fichas…</div>';
     for (const s of p.salas) {
-      try { aberto.fichas.push(await carregarFicha(s.s, s.enc)); }
-      catch (e) { aberto.erros.push(e.message); }
+      try {
+        const f = await carregarFicha(s.s, s.enc);
+        // nome, dose e via como o médico escreveu (consulta da sala), na mesma ordem da ficha
+        const med = await itensDoMedico(s.s.k, s.enc);
+        if (med && med.length === f.itens.length) f.itens.forEach((x, i) => { x.nome = med[i].nome || x.nome; x.det = med[i].det; x.obs = med[i].obs; });
+        aberto.fichas.push(f);
+      } catch (e) { aberto.erros.push(e.message); }
     }
     pintarPaciente();
   }
@@ -651,7 +714,7 @@
           ${f.itens.map(x => {
             if (!x.aberto) return `<div class="om30bl-it feito"><div class="tx"><b>${esc(x.nome)}</b><small>já resolvido</small></div></div>`;
             const v = a.escolha.get(x.it);
-            return `<div class="om30bl-it ${v}" data-f="${fi}" data-i="${x.i}"><div class="tx"><b>${esc(x.nome)}</b>${x.estoque ? '<br><span class="om30bl-tag">baixa de estoque: fazer pela ficha</span>' : ''}</div>
+            return `<div class="om30bl-it ${v}" data-f="${fi}" data-i="${x.i}"><div class="tx"><b>${esc(x.nome)}</b>${x.det ? `<small>${esc(x.det)}</small>` : ''}${x.obs ? `<small>Obs.: ${esc(x.obs)}</small>` : ''}${x.estoque ? '<br><span class="om30bl-tag">baixa de estoque: fazer pela ficha</span>' : ''}</div>
               <div class="tg"><button data-v="fez" class="${v === 'fez' ? 'on' : ''}">✔ Fez</button><button data-v="nao" class="${v === 'nao' ? 'on' : ''}">✖ Não</button></div></div>`;
           }).join('') || '<div class="om30pd-vazio" style="padding:8px">Nada pendente nesta sala.</div>'}
           ${!f.bpaOk ? '<div class="om30pd-erro">Faturamento desta sala ainda não confirmado: esta sala fica para a ficha (painel ⚡ Baixa rápida) até a captura dela.</div>' : ''}</div>`).join('')}

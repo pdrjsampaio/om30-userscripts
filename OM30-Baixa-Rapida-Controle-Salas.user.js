@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.3.4
+// @version      0.4.1
 // @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem, Raio-X) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -46,7 +46,6 @@
       btnCancelar: '.btn-atendimento-prescricao-interna-cancelada',
       fez: it => ehSim(campo(it, '_para_atendimento')),
       cancelou: it => ehSim(campo(it, '_para_cancelamento')) || ehSim(campo(it, '_cancelada')),
-      motivos: ['Paciente recusou a medicação.', 'Paciente não compareceu à sala de medicação após ser chamado.', 'Medicação em falta na unidade no momento.', 'Medicação já administrada anteriormente.', 'Prescrição suspensa/alterada pelo médico.', 'Difícil acesso venoso.'],
     },
     exames: {
       nome: 'Exames', verbo: 'Coletar', feito: 'coletado',
@@ -55,7 +54,6 @@
       btnCancelar: '.btn-cancelar-exame',
       fez: it => ehSim(campo(it, '_coletado')),
       cancelou: it => ehSim(campo(it, '_cancelado')),
-      motivos: ['Exame realizado manualmente.', 'Paciente deixou a unidade antes da realização do exame.', 'Paciente recusou a realização do exame.'],
     },
     enfermagem: {
       nome: 'Procedimentos de Enfermagem', verbo: 'Realizar', feito: 'realizado',
@@ -64,7 +62,6 @@
       btnCancelar: '.btn-cancelar-procedimento-enfermagem',
       fez: it => ehSim(campo(it, '_realizado')) || ehSim(campo(it, '_realizada')) || ehSim(campo(it, '_para_atendimento')),
       cancelou: it => ehSim(campo(it, '_cancelado')) || ehSim(campo(it, '_cancelada')) || ehSim(campo(it, '_para_cancelamento')),
-      motivos: ['Procedimento realizado manualmente.', 'Paciente deixou a unidade antes da realização do procedimento.', 'Paciente recusou a realização do procedimento.'],
     },
     raio_x: {
       nome: 'Raio-X', verbo: 'Realizar', feito: 'realizado',
@@ -73,9 +70,31 @@
       btnCancelar: '.btn-cancelar-radiografia',
       fez: it => ehSim(campo(it, '_realizado')) || ehSim(campo(it, '_realizada')),
       cancelou: it => ehSim(campo(it, '_cancelado')) || ehSim(campo(it, '_cancelada')),
-      motivos: ['Raio-X realizado manualmente.', 'Paciente deixou a unidade antes da realização do Raio-X.', 'Paciente recusou a realização do Raio-X.'],
     },
   };
+  // Motivos do cancelamento pensados para o PA/UPA: curtos no botão, texto completo na justificativa.
+  // Os comuns valem para qualquer sala; cada sala acrescenta os dela.
+  const MOTIVOS_COMUNS = [
+    ['Evadiu', 'Paciente evadiu da unidade antes do atendimento.'],
+    ['Não respondeu ao chamado', 'Paciente não respondeu ao chamado.'],
+    ['Recusou', 'Paciente recusou o procedimento.'],
+    ['Médico suspendeu', 'Suspenso/alterado pelo médico.'],
+    ['Foi para a emergência', 'Paciente encaminhado à sala de emergência; conduta alterada.'],
+    ['Transferido', 'Paciente transferido/removido antes do atendimento.'],
+    ['Pedido em duplicidade', 'Item prescrito em duplicidade.'],
+  ];
+  const MOTIVOS_SALA = {
+    medicacao: [['Em falta', 'Medicação em falta na unidade.'], ['Já administrada', 'Medicação já administrada anteriormente.'], ['Sem acesso venoso', 'Sem acesso venoso (difícil acesso).'], ['Alergia referida', 'Paciente refere alergia ao medicamento; médico comunicado.']],
+    exames: [['Insumo em falta', 'Insumo para coleta em falta na unidade.'], ['Sem acesso venoso', 'Sem acesso venoso para coleta (difícil acesso).'], ['Já coletado', 'Exame já coletado anteriormente.'], ['Não feito na unidade', 'Exame não realizado nesta unidade.']],
+    enfermagem: [['Material em falta', 'Material em falta na unidade.'], ['Já realizado', 'Procedimento já realizado anteriormente.']],
+    raio_x: [['Aparelho indisponível', 'Aparelho de Raio-X indisponível no momento.'], ['Possível gestação', 'Contraindicação (possível gestação); médico comunicado.'], ['Já realizado', 'Raio-X já realizado anteriormente.']],
+  };
+  function motivosPara(salas) {
+    const out = [], vistos = new Set();
+    for (const [c, t] of MOTIVOS_COMUNS) { out.push({ curto: c, texto: t, sala: '' }); vistos.add(t); }
+    for (const k of salas) for (const [c, t] of MOTIVOS_SALA[k] || []) if (!vistos.has(t)) { vistos.add(t); out.push({ curto: c, texto: t, sala: k }); }
+    return out;
+  }
   function campo(item, sufixo) { return item.querySelector(`input[id$="${sufixo}"], input[name$="[${sufixo.replace(/^_/, '')}]"]`); }
   const desligado = b => !b || b.matches('[disabled]') || b.getAttribute('disabled') === 'disabled' || b.classList.contains('desativado');
 
@@ -191,7 +210,7 @@
   .om30bl-tag{display:inline-block;font-size:10.5px;font-weight:700;border-radius:5px;padding:1px 6px;background:#fff3cd;color:#7a5600;margin-top:2px}
   .om30bl-mot{margin-top:8px;border-top:1px solid #edf1f4;padding-top:8px}.om30bl-mot .rot{font-weight:700;font-size:12px;margin-bottom:4px;color:#8f2a22}
   .om30bl-chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px}.om30bl-chips button{border:1px solid #e3c4c0;background:#fff;border-radius:999px;padding:3px 8px;font:600 11px inherit;cursor:pointer;color:#7a2a22}
-  .om30bl-chips button.on{background:#c0392b;color:#fff;border-color:#c0392b}
+  .om30bl-chips button.on{background:#c0392b;color:#fff;border-color:#c0392b}.om30bl-chips button.sl{background:#fffaf3;border-color:#ecd9b8;color:#6b4a00}
   .om30bl textarea{width:100%;box-sizing:border-box;min-height:46px;border:1px solid #cfd8df;border-radius:7px;padding:6px;font:12.5px inherit;resize:vertical}
   .om30bl-reav{display:flex;gap:6px;align-items:flex-start;margin:8px 0 4px;font-weight:700;font-size:12px;cursor:pointer}
   .om30bl-msg{font-size:12px;margin-top:6px;white-space:pre-wrap}.om30bl-msg.erro{color:#a12a1f}.om30bl-msg.ok{color:#0f5132}
@@ -248,7 +267,7 @@
         return `<div class="om30bl-it ${v}" data-i="${x.i}"><div class="tx"><b>${esc(x.nome)}</b>${x.det ? `<small>${esc(x.det)}</small>` : ''}${x.estoque ? '<br><span class="om30bl-tag">pede almoxarifado/quantidade</span>' : ''}</div>
           <div class="tg"><button data-v="fez" class="${v === 'fez' ? 'on' : ''}" title="${esc(sala.s.verbo)}">✔ Fez</button><button data-v="nao" class="${v === 'nao' ? 'on' : ''}" title="Cancelar">✖ Não</button></div></div>`;
       }).join('') +
-      (nNao ? `<div class="om30bl-mot"><div class="rot">Motivo do que não foi feito (${nNao})</div><div class="om30bl-chips">${sala.s.motivos.map(m => `<button data-m="${esc(m)}" class="${m === motTxt ? 'on' : ''}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
+      (nNao ? `<div class="om30bl-mot"><div class="rot">Motivo do que não foi feito (${nNao})</div><div class="om30bl-chips">${motivosPara([sala.k]).map(m => `<button data-m="${esc(m.texto)}" title="${esc(m.texto)}" class="${m.sala ? 'sl ' : ''}${m.texto === motTxt ? 'on' : ''}">${esc(m.curto)}</button>`).join('')}</div>
         <textarea placeholder="Justificativa do cancelamento">${esc(motTxt)}</textarea></div>` : '');
     const porI = new Map(xs.map(x => [String(x.i), x]));
     corpo.querySelectorAll('.om30bl-it[data-i] .tg button').forEach(b => b.onclick = () => { escolha.set(porI.get(b.closest('[data-i]').dataset.i).item, b.dataset.v); corpo.dataset.a = ''; desenhar(sala); });
@@ -504,7 +523,7 @@
             if (cs.length < 2) continue;
             const nome = cs[0], sit = norm(cs[cs.length - 1]);
             if (!nome || /^(DESCRICAO|PROCEDIMENTO|EXAME|RADIOGRAFIA)$/.test(norm(nome))) continue;
-            xs.push({ nome, det: cs.length > 2 ? cs.slice(1, -1).filter(Boolean).join(' · ').slice(0, 90) : '', obs: '',
+            xs.push({ nome, det: cs.length > 2 ? cs.slice(1, -1).filter(t => t && !/^[-–—\s]*$/.test(t) && !/^0*\d{1,2}$/.test(t)).join(' · ').slice(0, 90) : '', obs: '',
               estado: /CANCEL/.test(sit) ? 'cancelado' : /COLETAD|REALIZAD|FINALIZAD|APLICAD/.test(sit) ? 'feito' : 'pendente' });
           }
           if (xs.length) { v = xs; break; }
@@ -662,7 +681,7 @@
   .om30x-cab .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.om30x-cab .tag{background:rgba(255,255,255,.16);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600}
   .om30x-cab .tag.s{background:#fff;color:#0f5132;font-weight:800}
   .om30x-corpo{flex:1;overflow:auto;padding:12px}
-  .om30x-barra{display:flex;gap:6px;margin-bottom:10px}.om30x-barra button{flex:1;border:1px solid #d3dce3;background:#fff;border-radius:8px;padding:7px;font:700 12px inherit;cursor:pointer;color:#33485a}
+  .om30x-barra{display:flex;justify-content:flex-end;margin:-2px 0 8px}.om30x-barra button{border:0;background:none;padding:2px 4px;font:700 12px inherit;cursor:pointer;color:#157347;text-decoration:underline}
   .om30x-barra button:hover{border-color:#198754;color:#0f5132}
   .om30x-sala{background:#fff;border-radius:12px;margin-bottom:10px;box-shadow:0 1px 4px rgba(10,25,40,.07);overflow:hidden}
   .om30x-sala .h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #eef2f5}
@@ -682,12 +701,17 @@
   .om30x-tag{display:inline-block;margin-top:3px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 6px;background:#fff3cd;color:#7a5600}
   .om30x-bloco{background:#fff;border-radius:12px;padding:11px 12px;margin-bottom:10px;box-shadow:0 1px 4px rgba(10,25,40,.07)}
   .om30x-bloco .rot{font-weight:800;font-size:12.5px;margin-bottom:6px}.om30x-bloco .rot.r{color:#8f2a22}
-  .om30x-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px}.om30x-chips button{border:1px solid #e6c9c5;background:#fff;border-radius:999px;padding:4px 10px;font:600 11.5px inherit;cursor:pointer;color:#7a2a22}
+  .om30x-chips{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px}.om30x-chips button{border:1px solid #e6c9c5;background:#fff;border-radius:8px;padding:6px 8px;font:700 12px inherit;cursor:pointer;color:#7a2a22;text-align:left;line-height:1.2}.om30x-chips button:hover{border-color:#c0392b}.om30x-chips button.sl{background:#fffaf3;border-color:#ecd9b8;color:#6b4a00}
   .om30x-chips button.on{background:#c0392b;border-color:#c0392b;color:#fff}
   .om30x textarea{width:100%;min-height:52px;border:1px solid #d3dce3;border-radius:8px;padding:7px 9px;font:13px inherit;resize:vertical}
   .om30x textarea:focus{outline:2px solid #19875455;border-color:#198754}
   .om30x-chk{display:flex;gap:8px;align-items:center;font-weight:700;font-size:12.5px;cursor:pointer}.om30x-chk input{width:16px;height:16px}
   .om30x-nota{font-size:12px;color:#62788a;margin-top:6px}
+  .om30x-mot{background:#fff6f5;border-top:1px dashed #f0c9c4;padding:8px 12px 10px}.om30x-mot .rot{font-weight:800;font-size:12px;color:#8f2a22;margin-bottom:6px}
+  .om30x-outro{display:flex;gap:6px}.om30x-outro input{flex:1;border:1px solid #d3dce3;border-radius:8px;padding:6px 9px;font:13px inherit}
+  .om30x-outro button{border:0;border-radius:8px;background:#c0392b;color:#fff;font:700 12px inherit;padding:0 14px;cursor:pointer}
+  .om30x-todos{margin-top:7px;font-size:12px;color:#7a2a22}
+  .om30x-motok{background:#fff6f5;padding:0 12px 8px 12px;font-size:12px;font-weight:700;color:#8f2a22;cursor:pointer}.om30x-motok span{color:#62788a;font-weight:600;text-decoration:underline;margin-left:4px}
   .om30x-erro{background:#fdecea;color:#8f2a22;border-radius:9px;padding:8px 10px;font-size:12.5px;margin-bottom:10px;white-space:pre-wrap}
   .om30x-rod{background:#fff;border-top:1px solid #e2e8ee;padding:12px}
   .om30x-res{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px;font-size:12px;font-weight:700}.om30x-res span{border-radius:999px;padding:3px 9px;background:#e9f6ee;color:#0f5132}.om30x-res span.n{background:#fdecea;color:#8f2a22}
@@ -834,7 +858,7 @@
   async function abrirPainel(it, tr) {
     montarPainelX();
     painelX.classList.add('on'); fundoX.classList.add('on');
-    estado = { at: String(it.atendimento_str), nome: clean(it.nome_municipe), senha: clean(it.senha), salas: [], escolha: new Map(), motivo: '', reav: false, just: '', carregando: true, erros: [] };
+    estado = { at: String(it.atendimento_str), nome: clean(it.nome_municipe), senha: clean(it.senha), salas: [], escolha: new Map(), motivos: new Map(), editando: '', outro: '', motivo: '', reav: false, just: '', carregando: true, erros: [] };
     pintarPainel();
     const st = estado;
     const pend = await pendenciasCache(true);
@@ -885,7 +909,10 @@
     if (e.carregando) { painelX.innerHTML = cab + '<div class="om30x-corpo"><div class="om30x-carr"><span class="om30x-spin"></span> Buscando o que o médico pediu…</div></div>'; ligarPainel(); return; }
     const pend = pendentesTodos();
     const nF = pend.filter(p => p.v === 'fez').length, nN = pend.length - nF;
-    const motivos = [...new Set(pend.filter(p => p.v === 'nao').flatMap(p => (SALAS[p.x.s.k] || SALAS.medicacao).motivos))];
+    // O motivo é por item: o 1º "Não" sem motivo abre a escolha; escolheu, fecha e passa para o próximo.
+    const semMotivo = pend.filter(p => p.v === 'nao' && !clean(e.motivos.get(p.k)));
+    const abrindo = e.editando && pend.some(p => p.k === e.editando && p.v === 'nao') ? e.editando : (semMotivo[0]?.k || '');
+    const curtoDe = t => motivosPara(Object.keys(MOTIVOS_SALA)).find(m => m.texto === t)?.curto || t;
     const salasHtml = e.salas.map((x, xi) => {
       const its = itensDaSala(x);
       const corpo = its === null
@@ -895,17 +922,25 @@
           const k = chave(x.s.k, x.enc, y.i), v = e.escolha.get(k);
           const tx = `<div class="tx"><b>${esc(y.nome)}</b>${y.det ? `<small>${esc(y.det)}</small>` : ''}${y.obs ? `<small class="obs">Obs.: ${esc(y.obs)}</small>` : ''}${y.estoque && y.pendente ? '<span class="om30x-tag">pede almoxarifado/quantidade: fazer pela ficha</span>' : ''}</div>`;
           if (!y.pendente) return `<div class="om30x-it res">${tx}<span class="om30x-feito ${y.estado === 'cancelado' ? 'c' : ''}">${y.estado === 'cancelado' ? '✖ cancelado' : '✔ já feito'}</span></div>`;
-          return `<div class="om30x-it ${v === 'nao' ? 'nao' : ''}">${tx}<div class="om30x-seg"><button class="f ${v === 'fez' ? 'on' : ''}" data-k="${esc(k)}" data-v="fez">✔ ${esc(x.s.k === 'medicacao' ? 'Aplicar' : x.s.k === 'exames' ? 'Coletar' : 'Realizar')}</button><button class="n ${v === 'nao' ? 'on' : ''}" data-k="${esc(k)}" data-v="nao">✖ Não</button></div></div>`;
+          const mot = clean(e.motivos.get(k));
+          const linha = `<div class="om30x-it ${v === 'nao' ? 'nao' : ''}">${tx}<div class="om30x-seg"><button class="f ${v === 'fez' ? 'on' : ''}" data-k="${esc(k)}" data-v="fez">✔ ${esc(x.s.k === 'medicacao' ? 'Aplicado' : x.s.k === 'exames' ? 'Coletado' : 'Realizado')}</button><button class="n ${v === 'nao' ? 'on' : ''}" data-k="${esc(k)}" data-v="nao">✖ Não</button></div></div>`;
+          if (v !== 'nao') return linha;
+          if (k !== abrindo) return linha + `<div class="om30x-motok" data-editar="${esc(k)}" title="Trocar o motivo">✖ ${esc(curtoDe(mot))} <span>trocar</span></div>`;
+          const outros = semMotivo.filter(p => p.k !== k).length;
+          return linha + `<div class="om30x-mot"><div class="rot">Por que não ${esc(x.s.k === 'medicacao' ? 'aplicou' : x.s.k === 'exames' ? 'coletou' : 'realizou')}?</div>
+            <div class="om30x-chips">${motivosPara([x.s.k]).map(m => `<button data-k="${esc(k)}" data-m="${esc(m.texto)}" title="${esc(m.texto)}" class="${m.sala ? 'sl ' : ''}${m.texto === mot ? 'on' : ''}">${esc(m.curto)}</button>`).join('')}</div>
+            <div class="om30x-outro"><input data-f="outro" data-k="${esc(k)}" placeholder="Outro motivo…" value="${esc(e.outro)}"><button data-ok="${esc(k)}">OK</button></div>
+            ${outros ? `<label class="om30x-chk om30x-todos"><input type="checkbox" data-f="todosmot"${e.todosMot ? ' checked' : ''}> Usar o mesmo motivo nos outros ${outros} item(ns)</label>` : ''}</div>`;
         }).join('');
       return `<div class="om30x-sala"><div class="h"><span class="ic">${ICONE[x.s.k] || '•'}</span><b>${esc(x.s.nome)}</b><span class="st ${/ANDAMENTO/.test(norm(x.status)) ? 'and' : ''}">${esc(x.status)}</span></div>${corpo}</div>`;
     }).join('');
     painelX.innerHTML = cab + `<div class="om30x-corpo">
       ${e.erros.map(t => `<div class="om30x-erro">⚠ ${esc(t)}</div>`).join('')}
       ${!e.salas.length ? '<div class="om30x-vazio">Nenhuma pendência em Medicação, Exames, Enfermagem ou Raio-X para este atendimento.</div>' : ''}
-      ${pend.length > 1 ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">✔ Fiz tudo</button><button data-a="todos" data-v="nao">✖ Não fiz nada</button></div>' : ''}
+      ${pend.some(p => p.v === 'nao') ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">↺ Voltar todos para feito</button></div>' : ''}
       ${salasHtml}
-      ${nN ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m)}" class="${m === e.motivo ? 'on' : ''}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
-        <textarea data-f="motivo" placeholder="Ou escreva a justificativa">${esc(e.motivo)}</textarea></div>` : ''}
+      ${'' ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m.texto)}" title="${esc(m.texto)}" class="${m.sala ? 'sl ' : ''}${m.texto === e.motivo ? 'on' : ''}">${m.sala ? (ICONE[m.sala] || '') + ' ' : ''}${esc(m.curto)}</button>`).join('')}</div>
+        <textarea data-f="motivo" placeholder="Toque num motivo acima ou escreva">${esc(e.motivo)}</textarea></div>` : ''}
       ${e.salas.length ? '<div class="om30x-nota" style="padding:0 4px">Depois da baixa o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div>' : ''}
     </div>
     <div class="om30x-rod">${pend.length ? `<div class="om30x-res"><span>✔ ${nF} ${nF === 1 ? 'feito' : 'feitos'}</span>${nN ? `<span class="n">✖ ${nN} não ${nN === 1 ? 'feito' : 'feitos'}</span>` : ''}</div>` : ''}
@@ -918,16 +953,27 @@
     const e = estado, go = painelX.querySelector('[data-a="go"]');
     if (!go || !e) return;
     const pend = pendentesTodos(), nN = pend.filter(p => p.v === 'nao').length;
-    const falta = ocupado ? 'Dando baixa…' : !pend.length ? 'Nada pendente' : nN && !clean(e.motivo) ? 'Escolha o motivo do que não foi feito' : '';
+    const sem = pend.filter(p => p.v === 'nao' && !clean(e.motivos.get(p.k))).length;
+    const falta = ocupado ? 'Dando baixa…' : !pend.length ? 'Nada pendente' : sem ? `Falta o motivo de ${sem} item(ns)` : '';
     go.disabled = !!falta;
-    go.textContent = falta || `Realizar tudo e dar baixa (${pend.length})`;
+    go.textContent = falta || `Dar baixa · ${pend.length} ${pend.length === 1 ? 'item' : 'itens'}`;
   }
   function ligarPainel() {
     const e = estado;
     painelX.querySelector('[data-a="fechar"]').onclick = () => fecharPainel();
-    painelX.querySelectorAll('.om30x-seg button').forEach(b => b.onclick = () => { e.escolha.set(b.dataset.k, b.dataset.v); pintarPainel(); });
+    painelX.querySelectorAll('.om30x-seg button').forEach(b => b.onclick = () => { e.escolha.set(b.dataset.k, b.dataset.v); e.editando = b.dataset.v === 'nao' && !clean(e.motivos.get(b.dataset.k)) ? b.dataset.k : ''; pintarPainel(); });
     painelX.querySelectorAll('[data-a="todos"]').forEach(b => b.onclick = () => { for (const p of pendentesTodos()) e.escolha.set(p.k, b.dataset.v); pintarPainel(); });
-    painelX.querySelectorAll('.om30x-chips button').forEach(b => b.onclick = () => { e.motivo = b.dataset.m; pintarPainel(); });
+    const definir = (k, texto) => {
+      e.motivos.set(k, texto); e.outro = ''; e.editando = '';
+      if (e.todosMot) for (const p of pendentesTodos()) if (p.v === 'nao' && !clean(e.motivos.get(p.k))) e.motivos.set(p.k, texto);
+      e.todosMot = false;
+      pintarPainel();
+    };
+    painelX.querySelectorAll('.om30x-mot .om30x-chips button').forEach(b => b.onclick = () => definir(b.dataset.k, b.dataset.m));
+    painelX.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => { const t = clean(e.outro); if (t) definir(b.dataset.ok, t); });
+    const ou = painelX.querySelector('[data-f="outro"]'); if (ou) { ou.oninput = () => { e.outro = ou.value; }; ou.onkeydown = ev => { if (ev.key === 'Enter' && clean(ou.value)) definir(ou.dataset.k, clean(ou.value)); }; }
+    const tm = painelX.querySelector('[data-f="todosmot"]'); if (tm) tm.onchange = () => { e.todosMot = tm.checked; };
+    painelX.querySelectorAll('[data-editar]').forEach(d => d.onclick = () => { e.editando = d.dataset.editar; pintarPainel(); });
     const mt = painelX.querySelector('[data-f="motivo"]'); if (mt) mt.oninput = () => { e.motivo = mt.value; painelX.querySelectorAll('.om30x-chips button').forEach(c => c.classList.toggle('on', c.dataset.m === mt.value)); validarPainel(); };
     const rv = painelX.querySelector('[data-f="reav"]'); if (rv) rv.onchange = () => { e.reav = rv.checked; pintarPainel(); };
     const ju = painelX.querySelector('[data-f="just"]'); if (ju) ju.oninput = () => { e.just = ju.value; validarPainel(); };
@@ -987,6 +1033,7 @@
           const fi = mapa.get(p.k);
           if (!fi || !fi.aberto) continue;   // já resolvido entre a consulta e agora
           fi.nome = p.y.nome || fi.nome;
+          if (p.v === 'nao') { fi.motivo = clean(e.motivos.get(p.k)); if (!fi.motivo) { pa.erro(); throw new Error(`"${fi.nome}" está sem motivo`); } }
           (p.v === 'fez' ? fez : nao).push(fi);
         }
         if (!f.bpaOk) { pa.erro(); throw new Error(`${x.s.nome}: faturamento em formato desconhecido`); }
@@ -1010,9 +1057,9 @@
 
     // 2) Confirmação com o resumo de cada sala e o faturamento.
     const resumo = plano.map(p => `<div class="om30x-rs"><div class="rh">${ICONE[p.x.s.k] || ''} ${esc(p.x.s.nome)}</div><ul>
-        ${p.fez.map(y => `<li>✔ ${esc(y.nome)}</li>`).join('')}${p.nao.map(y => `<li class="n">✖ ${esc(y.nome)}</li>`).join('')}</ul>
+        ${p.fez.map(y => `<li>✔ ${esc(y.nome)}</li>`).join('')}${p.nao.map(y => `<li class="n">✖ ${esc(y.nome)} <small style="color:#62788a">— ${esc(y.motivo)}</small></li>`).join('')}</ul>
         ${p.linhas.length ? `<div class="fat"><b>Faturamento</b>${p.linhas.map(l => esc(l.texto)).join('<br>')}</div>` : ''}</div>`).join('') +
-      (plano.some(p => p.nao.length) ? `<div class="om30x-nota"><b>Motivo:</b> ${esc(e.motivo)}</div>` : '');
+'';
     const ok = await janela({ tipo: 'aviso', icone: '📋', titulo: `Dar baixa em ${e.nome}?`, html: resumo, botoes: [{ txt: 'Voltar', valor: false }, { txt: 'Confirmar baixa', classe: 'p', valor: true }] });
     if (!ok) { ocupado = false; return pintarPainel(); }
 
@@ -1028,7 +1075,7 @@
         try {
           if (p.nao.length && !prof) throw new Error(`${p.x.s.nome}: profissional atual não encontrado na ficha`);
           for (const y of p.fez) p.x.s.fazer(y.it);
-          for (const y of p.nao) p.x.s.cancelar(y.it, { motivo: clean(e.motivo), momento, profissional: prof });
+          for (const y of p.nao) p.x.s.cancelar(y.it, { motivo: y.motivo, momento, profissional: prof });
           lancarFaturamento(p.f, p.linhas);
           const res = await salvarFicha(p.f);
           feitas.push(p.x.s.nome);

@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         OM30 - Rascunho de Evolução
 // @namespace    om30-guaruja
-// @version      1.2.0
+// @version      1.3.0
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
-// @description  Rascunho de evolução por paciente durante o atendimento (fila e ficha): anotações com horário e medicação; no final envia para a ficha certa (Motivo do atendimento + seção Medicamentos) e apaga o rascunho ao salvar.
+// @description  Rascunho de evolução por paciente durante o atendimento (fila e ficha): anotações com horário e medicação; no final envia para a ficha certa (Motivo do atendimento + seção Medicamentos) e apaga o rascunho ao salvar. Histórico compartilhado entre os profissionais do computador, com o nome de quem fez a 1ª evolução e de quem seguiu.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
 // @match        https://guarujahomolog.saudesimples.net/*
@@ -56,6 +56,8 @@
 
   // ---------- onde estou ----------
   const ehFila = () => /^\/prontuarios(\/urgencia_emergencia)?\/?$/i.test(location.pathname);
+  // Telas do Controle de Salas (enfermagem/técnicos): o painel abre só para consultar o histórico.
+  const ehControleSalas = () => /^\/(aplicacoes_medicamentos|encaminhamentos_(exames|radiografias|procedimentos_enfermagem|gessos?_imobilizac\w*|repousos?)|consultar_repousos_medicacoes)(\/|$)/i.test(location.pathname);
   function chaveFicha() {
     const rota = location.pathname.match(/\/atendimentos_pas\/(\d+)\/prontuario/i);
     const id = rota?.[1] || [
@@ -71,7 +73,7 @@
     return `${tipo}#${id}`;
   }
   // Ficha = qualquer tela (fora da fila) que tenha o campo de texto clínico. Não depende do endereço.
-  const ehFicha = () => !ehFila() && (!!chaveFicha() || /prontuario|atendimento/i.test(location.pathname)) && !!localizarCampoTexto();
+  const ehFicha = () => !ehFila() && !ehControleSalas() && (!!chaveFicha() || /prontuario|atendimento/i.test(location.pathname)) && !!localizarCampoTexto();
   // Chave da ficha: nº do atendimento quando a tela expõe; senão, o endereço da própria tela.
   const chaveAtual = () => chaveFicha() || ('pagina:' + location.pathname + location.search);
 
@@ -690,8 +692,9 @@
     prefixo: 'om30-rasc:',
     identificarMedico,
     instalar(painelApi) { api = painelApi; limparPacsAntigos(); instalarFila(); instalarFicha(); },
-    paginaRelevante: () => ehFila() || ehFicha(),
+    paginaRelevante: () => ehFila() || ehFicha() || (ehControleSalas() && window.EvolPainel?.qtdTotal?.() > 0),
     naFila: () => ehFila(),
+    naConsulta: () => ehControleSalas(),
     selecionar(p) { try { sessionStorage.setItem(SEL, JSON.stringify(p)); } catch {} },
     limparSelecao() { try { sessionStorage.removeItem(SEL); } catch {} },
     // Só o formulário da própria ficha conta como "salvar a ficha"
@@ -808,11 +811,46 @@
     },
   };
 
-  // Cada médico só enxerga os próprios rascunhos: a chave leva o id do profissional logado.
+  // v1.2.0: o rascunho é do PACIENTE, não do médico. Todos os profissionais deste computador veem
+  // o histórico; cada anotação guarda quem escreveu (autor). Só precisa de profissional logado para escrever.
   let medico = null;
-  const base = () => PREFIXO + 'm' + medico.id + ':';
-  const meus = () => medico ? store.todos(base()).filter(([, v]) => v?.paciente) : [];
+  const base = () => PREFIXO + 'c:';
+  const meus = () => store.todos(base()).filter(([, v]) => v?.paciente);
   const chaveDe = p => base() + p.atendimento;
+  const eu = () => medico ? { id: String(medico.id), nome: medico.nome || '' } : null;
+  const mesmoAutor = (a, b) => String(a?.id || '') === String(b?.id || '');
+  const ehMeu = e => !e.autor || mesmoAutor(e.autor, eu());   // anotação antiga (sem autor) = de quem está logado
+  // Autores na ordem em que entraram no rascunho
+  function autoresDe(entradas) {
+    const out = [];
+    for (const e of ordenar(entradas || [])) if (e.autor && !out.some(a => mesmoAutor(a, e.autor))) out.push(e.autor);
+    return out;
+  }
+  const nomeAutor = a => a?.nome || 'profissional não identificado';
+  // Rascunhos da versão 1.1 (um por médico: om30-rasc:m<id>:<atendimento>) viram compartilhados.
+  function migrarAntigos() {
+    for (const [k, v] of store.todos(PREFIXO + 'm')) {
+      const m = k.slice(PREFIXO.length).match(/^m(.+?):(.+)$/);
+      if (!m || !v?.paciente) { continue; }
+      const autor = { id: m[1], nome: medico && String(medico.id) === m[1] ? medico.nome || '' : '' };
+      for (const e of v.entradas || []) if (!e.autor) e.autor = autor;
+      const novo = PREFIXO + 'c:' + m[2];
+      const ja = store.get(novo);
+      if (ja?.paciente) { ja.entradas = [...(ja.entradas || []), ...(v.entradas || [])]; ja.atualizadoEm = Math.max(ja.atualizadoEm || 0, v.atualizadoEm || 0); store.set(novo, ja); }
+      else store.set(novo, v);
+      store.del(k);
+    }
+  }
+  // Anotações sem nome do autor ganham o nome quando esse profissional entra no computador.
+  function completarNomes() {
+    const me = eu();
+    if (!me?.nome) return;
+    for (const [k, v] of meus()) {
+      let mudou = false;
+      for (const e of v.entradas || []) if (e.autor && mesmoAutor(e.autor, me) && !e.autor.nome) { e.autor.nome = me.nome; mudou = true; }
+      if (mudou) store.set(k, v);
+    }
+  }
   const agoraHHMM = () => new Date().toTimeString().slice(0, 5);
   const norm = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim();
   const corDe = p => { let h = 0; for (const c of String(p.atendimento)) h = (h * 31 + c.charCodeAt(0)) % 360; return `hsl(${h} 60% 42%)`; };
@@ -838,11 +876,34 @@
     return t;
   }
   const ordenar = xs => [...xs].sort((a, b) => (momento(a) - momento(b)) || (a.id - b.id));
-  function montarTexto(entradas) {
+  // Um profissional só: texto sem nome (como sempre foi). Mais de um: o nome aparece quando o
+  // profissional muda — "1ª evolução: FULANO" no começo e "Seguimento: CICLANO (1ª evolução: FULANO)".
+  // "todas" = todas as anotações do rascunho, inclusive as já enviadas, para saber quem começou.
+  function montarTexto(entradas, todas = entradas) {
     // Raio X / Exames / Enfermagem não entram no texto da evolução (vão para as seções nativas)
     const xs = ordenar(entradas.filter(e => e.tipo !== 'exame'));
-    const linhas = xs.filter(e => !ehFechamento(e)).map(linhaEvolucao);
-    const fecho = xs.filter(ehFechamento).map(linhaEvolucao);
+    const autores = autoresDe(todas.filter(e => e.tipo !== 'exame'));
+    const varios = autores.length > 1;
+    const primeiro = autores[0];
+    const corpo = xs.filter(e => !ehFechamento(e)), fechoXs = xs.filter(ehFechamento);
+    const linhas = [];
+    if (varios) {
+      const seq = ordenar(todas).filter(e => e.tipo !== 'exame' && !ehFechamento(e));
+      for (const e of corpo) {
+        const i = seq.indexOf(e);
+        const anterior = i > 0 ? seq[i - 1] : null;
+        const precisa = !anterior || !mesmoAutor(anterior.autor, e.autor) || linhas.length === 0;
+        if (precisa) {
+          if (linhas.length) linhas.push('');
+          linhas.push(mesmoAutor(e.autor, primeiro)
+            ? `1ª evolução: ${nomeAutor(e.autor)}`
+            : `Seguimento: ${nomeAutor(e.autor)} (1ª evolução: ${nomeAutor(primeiro)})`);
+        }
+        linhas.push(linhaEvolucao(e));
+      }
+    } else linhas.push(...corpo.map(linhaEvolucao));
+    const ultimoAutor = corpo.length ? corpo[corpo.length - 1].autor : null;
+    const fecho = fechoXs.map(e => linhaEvolucao(e) + (varios && !mesmoAutor(e.autor, ultimoAutor) ? ` (${nomeAutor(e.autor)})` : ''));
     if (fecho.length) { if (linhas.length) linhas.push(''); linhas.push(...fecho); }
     return linhas.join('\n');
   }
@@ -925,6 +986,9 @@
     /* lista "Meus rascunhos" */
     .outros { cursor: pointer; }
     .outros:hover { color: #123f68; }
+    .bolha .autor { font-size: 10.5px; font-weight: 700; color: #5b7487; margin-bottom: 2px; }
+    .ver-info { font-size: 12px; color: #4a6272; background: #fff; border-radius: 9px; padding: 7px 9px; margin-bottom: 8px; line-height: 1.45; }
+    .ver-info span { color: #8796a0; font-size: 11px; }
     .lista-topo { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .lista-topo .t { flex: 1; font-size: 14px; font-weight: 700; color: #16324a; }
     .voltar { border: 0; background: #eef2f5; color: #3d5a70; border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 600; }
@@ -1052,7 +1116,7 @@
       <button class="ico" id="btnRecolher" title="Recolher">›</button>
     </div>
     <div class="menu" id="menu">
-      <button id="mLista">📋 Meus rascunhos</button>
+      <button id="mLista">📋 Rascunhos deste computador</button>
       <button id="mDiag">🔍 Diagnóstico (para suporte)</button>
       <button id="mRecolher">Recolher painel</button>
     </div>
@@ -1183,6 +1247,8 @@
     try { localStorage.setItem(PREFIXO + '_recolhido', sim ? '1' : '0'); } catch {}
   }
   try { if (localStorage.getItem(PREFIXO + '_recolhido') === '1') painelEl.classList.add('recolhido'); } catch {}
+  // No Controle de Salas o painel começa recolhido (só a lingueta), para não cobrir a lista.
+  if (C.naConsulta?.()) painelEl.classList.add('recolhido');
   $('btnRecolher').onclick = () => recolher(true);
   $('mRecolher').onclick = () => { $('menu').classList.remove('on'); recolher(true); };
   $('lingueta').onclick = () => recolher(false);
@@ -1301,7 +1367,7 @@
     let n = 0;
     for (const it of itens) {
       if (!digCod(it.codigo) || jaNoRascunho(it.codigo)) continue;
-      rascunho.entradas.push({ id: t0 + n, tipo: 'exame', grupo, exame: { codigo: digCod(it.codigo), nome: it.nome, tipoNativo: it.tipoNativo === 'procedimento' ? 'procedimento' : 'exame' }, hora });
+      rascunho.entradas.push({ id: t0 + n, tipo: 'exame', grupo, exame: { codigo: digCod(it.codigo), nome: it.nome, tipoNativo: it.tipoNativo === 'procedimento' ? 'procedimento' : 'exame' }, hora, autor: eu() });
       n++;
     }
     if (!n) {
@@ -1447,7 +1513,7 @@
     // profissional
     $('prof').innerHTML = medico
       ? (medico.nome ? `<span>Profissional:</span><b>${esc(medico.nome)}</b>` : '<b>Profissional identificado</b>')
-      : '<span>⚠ Profissional não identificado — rascunho desligado</span>';
+      : '<span>Só consulta — profissional não identificado</span>';
 
     const temPac = !!paciente;
     $('editor').classList.toggle('esconde', !temPac);
@@ -1466,10 +1532,12 @@
     else { b.disabled = false; b.textContent = `Enviar ${nPend} ${nPend === 1 ? 'item' : 'itens'} para a ficha`; }
     $('apagar').disabled = !rascunho || !rascunho.entradas.length;
     $('lingN').textContent = String(meus().length);
+    $('apagar').classList.toggle('esconde', !!rascunho && !podeApagar(rascunho));
 
     const tempo = $('tempo');
-    // lista "Meus rascunhos": pedida pelo médico, ou na fila sem paciente escolhido
-    if (medico && (modoLista || (!temPac && meus().length))) { renderLista(tempo, temPac); return; }
+    if (vendo) { renderVer(tempo, vendo); return; }
+    // lista: pedida no menu, ou sem paciente escolhido (inclui quem só consulta, sem profissional identificado)
+    if (modoLista || (!temPac && meus().length)) { renderLista(tempo, temPac); return; }
     if (!temPac) {
       tempo.innerHTML = medico
         ? '<div class="vazio">Clique em <b>📝</b> ao lado do nome do paciente na fila<br>ou abra a ficha dele.</div>'
@@ -1489,6 +1557,7 @@
     ].filter(Boolean).join('');
 
     tempo.innerHTML = '';
+    const variosAutores = autoresDe(rascunho.entradas).length > 1;
     if (!rascunho.entradas.length) {
       const outros = paciente.naFicha ? meus().filter(([k]) => k !== chaveDe(paciente)) : [];
       if (!outros.length) { tempo.innerHTML = '<div class="vazio">Nada anotado ainda para este paciente.</div>'; return; }
@@ -1502,10 +1571,11 @@
       d.innerHTML = `<div class="hora">${esc(e.hora)}</div><div class="ponto"></div><div class="bolha">${pill ? `<div class="pill">${pill}</div>` : ''}<div class="txt"></div></div>`;
       d.querySelector('.txt').textContent = textoEntrada(e);
       const bol = d.querySelector('.bolha');
+      if (variosAutores && e.autor) bol.insertAdjacentHTML('afterbegin', `<div class="autor">${esc(nomeAutor(e.autor))}</div>`);
       const tudo = e.tipo === 'exame' ? !!e.enviadoControle : e.enviadoEvolucao && (e.tipo !== 'med' || e.enviadoControle);
       if (tudo) bol.insertAdjacentHTML('beforeend', '<div class="feito">✓ na ficha</div>');
       else if (e.enviadoEvolucao) bol.insertAdjacentHTML('beforeend', '<div class="feito" style="color:#9a6a00">✓ no texto · falta na seção Medicamentos</div>');
-      else {
+      else if (medico && ehMeu(e)) {
         const x = document.createElement('button'); x.className = 'rem'; x.title = 'Remover'; x.textContent = '×';
         x.onclick = () => { rascunho.entradas = rascunho.entradas.filter(y => y !== e); salvar(); render(); };
         bol.appendChild(x);
@@ -1586,18 +1656,47 @@
     $('lingN').textContent = String(meus().length);
   }
 
-  // ---------- lista "Meus rascunhos": abrir ou apagar qualquer um, mesmo sem o paciente na fila ----------
+  // ---------- lista dos rascunhos do computador: abrir, ver ou apagar, mesmo sem o paciente na fila ----------
   let modoLista = false;
+  let vendo = null;   // chave do rascunho aberto só para leitura (ex.: enfermagem no Controle de Salas)
+  // Apaga quem escreveu alguma anotação nele (ou rascunho vazio). Os outros só veem.
+  const podeApagar = v => !!medico && (!(v?.entradas || []).length || (v.entradas || []).some(ehMeu));
+
+  function renderVer(tempo, k) {
+    const v = store.get(k);
+    $('card').classList.add('esconde'); $('editor').classList.add('esconde');
+    $('avisoFila').classList.remove('on'); $('outros').classList.remove('on');
+    tempo.innerHTML = '';
+    const topo = document.createElement('div');
+    topo.className = 'lista-topo';
+    topo.innerHTML = '<span class="t"></span><button class="voltar">← Voltar</button>';
+    topo.querySelector('.voltar').addEventListener('click', () => { vendo = null; modoLista = true; render(); });
+    if (!v?.paciente) { vendo = null; render(); return; }
+    topo.querySelector('.t').textContent = nomeExibido(v.paciente);
+    tempo.appendChild(topo);
+    const p = v.paciente;
+    const autores = autoresDe(v.entradas);
+    tempo.insertAdjacentHTML('beforeend', `<div class="ver-info">${[p.senha && `Senha <b>${esc(p.senha)}</b>`, p.nascimento && `Nasc. ${esc(p.nascimento)}`, autores.length && `1ª evolução: <b>${esc(nomeAutor(autores[0]))}</b>`, autores.length > 1 && `seguimento: ${autores.slice(1).map(a => esc(nomeAutor(a))).join(', ')}`].filter(Boolean).join(' · ')}<br><span>Só leitura neste computador.</span></div>`);
+    if (!(v.entradas || []).length) { tempo.insertAdjacentHTML('beforeend', '<div class="vazio">Nada anotado.</div>'); return; }
+    const varios = autores.length > 1;
+    for (const e of ordenar(v.entradas)) {
+      const d = document.createElement('div');
+      d.className = 'ent' + (e.tipo === 'med' ? ' med' : '');
+      d.innerHTML = `<div class="hora">${esc(e.hora)}</div><div class="ponto"></div><div class="bolha">${varios && e.autor ? `<div class="autor">${esc(nomeAutor(e.autor))}</div>` : ''}${e.tipo === 'med' ? '<div class="pill">MEDICAÇÃO</div>' : e.tipo === 'exame' ? `<div class="pill">${esc(ROTULO_CTL[e.grupo] || 'EXAME')}</div>` : ''}<div class="txt"></div>${(e.tipo === 'exame' ? e.enviadoControle : e.enviadoEvolucao) ? '<div class="feito">✓ na ficha</div>' : ''}</div>`;
+      d.querySelector('.txt').textContent = textoEntrada(e);
+      tempo.appendChild(d);
+    }
+  }
 
   function renderLista(tempo, temPac) {
     $('card').classList.add('esconde'); $('editor').classList.add('esconde');
     $('avisoFila').classList.remove('on'); $('outros').classList.remove('on');
-    const naTelaFila = !!(C.naFila && C.naFila());
+    const naTelaFila = !!(medico && C.naFila && C.naFila());
     const itens = meus().map(([k, v]) => ({ k, v })).sort((a, b) => b.v.atualizadoEm - a.v.atualizadoEm);
     tempo.innerHTML = '';
     const topo = document.createElement('div');
     topo.className = 'lista-topo';
-    topo.innerHTML = `<span class="t">Meus rascunhos (${itens.length})</span>${temPac ? '<button class="voltar">← Voltar</button>' : ''}`;
+    topo.innerHTML = `<span class="t">Rascunhos deste computador (${itens.length})</span>${temPac ? '<button class="voltar">← Voltar</button>' : ''}`;
     topo.querySelector('.voltar')?.addEventListener('click', () => { modoLista = false; render(); atualizarOutros(); });
     tempo.appendChild(topo);
     if (!itens.length) { tempo.insertAdjacentHTML('beforeend', '<div class="vazio">Nenhum rascunho aberto.</div>'); return; }
@@ -1608,11 +1707,14 @@
       const d = document.createElement('div');
       d.className = 'rasc';
       d.innerHTML = `<div class="fx" style="background:${corDe(p)}"></div><div class="info"><b></b><span class="resumo"></span></div>` +
-        (naTelaFila ? '<button class="mini abrir">Abrir</button>' : '') + '<button class="mini lixo" title="Apagar rascunho">🗑</button>';
+        (naTelaFila ? '<button class="mini abrir">Abrir</button>' : '<button class="mini ver">Ver</button>') +
+        (podeApagar(it.v) ? '<button class="mini lixo" title="Apagar rascunho">🗑</button>' : '');
       d.querySelector('b').textContent = nomeExibido(p);
-      d.querySelector('.resumo').textContent = [p.senha, `${n} ${n === 1 ? 'anotação' : 'anotações'}`, ult && 'última ' + ult].filter(Boolean).join(' · ');
+      const quem = autoresDe(it.v.entradas).map(nomeAutor).join(' → ');
+      d.querySelector('.resumo').textContent = [p.senha, `${n} ${n === 1 ? 'anotação' : 'anotações'}`, ult && 'última ' + ult, quem].filter(Boolean).join(' · ');
       d.querySelector('.abrir')?.addEventListener('click', () => { C.selecionar?.(p); modoLista = false; verificarPaciente(true); });
-      d.querySelector('.lixo').addEventListener('click', () => apagarDaLista(it));
+      d.querySelector('.ver')?.addEventListener('click', () => { vendo = it.k; render(); });
+      d.querySelector('.lixo')?.addEventListener('click', () => apagarDaLista(it));
       tempo.appendChild(d);
     }
   }
@@ -1629,7 +1731,7 @@
     render(); atualizarOutros();
   }
 
-  $('mLista').onclick = () => { $('menu').classList.remove('on'); recolher(false); modoLista = true; render(); };
+  $('mLista').onclick = () => { $('menu').classList.remove('on'); recolher(false); modoLista = true; vendo = null; render(); };
   $('outros').onclick = () => { modoLista = true; render(); };
 
   // ---------- troca de paciente ----------
@@ -1700,7 +1802,7 @@
     const texto = $('nota').value.trim();
     if (!texto) return;
     if (!aindaOMesmo()) { verificarPaciente(); msg('O paciente mudou. O texto ficou guardado no rascunho do paciente anterior.', 'erro'); return; }
-    rascunho.entradas.push({ id: Date.now(), hora: agoraHHMM(), tipo: 'nota', texto });
+    rascunho.entradas.push({ id: Date.now(), hora: agoraHHMM(), tipo: 'nota', texto, autor: eu() });
     $('nota').value = ''; rascunho.textoPendente = '';
     salvar(); render(); msg('');
     $('nota').focus();
@@ -1712,7 +1814,7 @@
     if (C.exigeItemDaLista && !med.item) { msg('Busque o medicamento e clique nele na lista do estoque.', 'erro'); $('medNome').focus(); return; }
     if (!med.nome || !med.posologia || !med.via) { msg('Preencha medicamento, dose e via.', 'erro'); return; }
     if (!aindaOMesmo()) { verificarPaciente(); msg('O paciente mudou. Confira antes de registrar.', 'erro'); return; }
-    rascunho.entradas.push({ id: Date.now(), hora: med.horario, tipo: 'med', med });
+    rascunho.entradas.push({ id: Date.now(), hora: med.horario, tipo: 'med', med, autor: eu() });
     limparMed();
     salvar(); render(); msg('');
   }
@@ -1741,7 +1843,7 @@
     const p = rascunho.paciente;
     const destino = (C.destinoTexto && C.destinoTexto()) || 'texto clínico';
     const destinoMed = (C.destinoMed && C.destinoMed()) || 'Medicamentos';
-    const texto = montarTexto(pe);
+    const texto = montarTexto(pe, rascunho.entradas);
     const nLinhas = pe.length;
     const nNotas = pe.filter(e => e.tipo !== 'med').length, nMedTxt = nLinhas - nNotas;
     const resumoTxt = [nNotas && `${nNotas} ${nNotas === 1 ? 'anotação' : 'anotações'}`, nMedTxt && `${nMedTxt} ${nMedTxt === 1 ? 'medicação' : 'medicações'}`].filter(Boolean).join(' + ');
@@ -1904,6 +2006,7 @@
       } else if (meus().length) msg('Escolha no painel qual rascunho é deste paciente.', 'ok');
       else msg('Você não tem nenhum rascunho aberto.', 'erro');
     },
+    qtdTotal() { return meus().length; },
     temRascunhoSenha(senha) { return this.qtdRascunhoSenha(senha) > 0; },
     qtdRascunhoSenha(senha) {
       const r = meus().find(([, v]) => v?.entradas?.length && norm(v.paciente?.senha) === norm(senha));
@@ -1915,9 +2018,10 @@
   async function conferirMedico() {
     let m = null;
     try { m = C.identificarMedico ? await C.identificarMedico() : { id: 'unico', nome: '' }; } catch {}
-    if ((m?.id || '') === (medico?.id || '')) { if (m && medico) medico.nome = m.nome || medico.nome; render(); return; }
+    if ((m?.id || '') === (medico?.id || '')) { if (m && medico) { medico.nome = m.nome || medico.nome; completarNomes(); } render(); return; }
     if (rascunho && medico) { rascunho.textoPendente = $('nota').value; salvar(); }
-    medico = m; rascunho = null; paciente = null; ultimoId = null;
+    medico = m; rascunho = null; paciente = null; ultimoId = null; vendo = null;
+    migrarAntigos(); completarNomes();
     verificarPaciente(true);
   }
 

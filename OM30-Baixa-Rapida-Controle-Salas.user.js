@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.2.2
+// @version      0.2.3
 // @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -399,12 +399,14 @@
 
   // 1) Pendências: lista de cada sala (Em Espera + Em Andamento, ontem e hoje), por atendimento.
   async function listarSala(s) {
+    // Quem está numa sala aparece nas outras como "Em Outra Sala" (não é Em Espera nem Em Andamento):
+    // por isso lê também sem filtro de situação e tira só Finalizado/Cancelado.
     const hoje = new Date(), ontem = new Date(hoje.getTime() - 864e5), out = [];
-    for (const st of ['1', '2']) for (let page = 1; page <= 5; page++) {
+    for (const st of ['1', '2', '']) for (let page = 1; page <= 5; page++) {
       const q = new URLSearchParams({ format: 'json', sortable: '{}', page: String(page), per_page: '100', profissional: '{}', status: st, grau_risco: '', dataInicial: dataBR(ontem), dataFinal: dataBR(hoje) });
       const arr = await getJSON(`${s.lista}?${q}`).catch(() => []);
       if (!Array.isArray(arr) || !arr.length) break;
-      out.push(...arr);
+      out.push(...arr.filter(x => !/FINALIZ|CANCEL|CONCLU/.test(norm(x.status))));
       if (arr.length < 100) break;
     }
     return out;
@@ -568,7 +570,7 @@
   .om30pd-lista{overflow:auto;flex:1;padding:0 12px 12px}.om30pd-p{background:#fff;border-radius:10px;padding:9px 10px;margin-bottom:7px;box-shadow:0 1px 3px rgba(15,35,55,.08);cursor:pointer}
   .om30pd-p:hover{box-shadow:0 0 0 2px #19875455}.om30pd-p .nm{font-weight:700}.om30pd-p .sub{color:#5f7383;font-size:11.5px;margin:1px 0 5px}
   .om30pd-s{display:inline-block;border-radius:6px;padding:2px 7px;margin:0 4px 4px 0;font-size:11.5px;font-weight:700;background:#e8eff5;color:#24435c}
-  .om30pd-s.and{background:#fff3cd;color:#7a5600}.om30pd-vazio{color:#6b7f8e;text-align:center;padding:30px 10px}
+  .om30pd-s.and{background:#fff3cd;color:#7a5600}.om30pd-abrir{margin-top:4px;font-size:12px;font-weight:700;color:#198754}.om30pd-vazio{color:#6b7f8e;text-align:center;padding:30px 10px}
   .om30pd-sala{background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 3px rgba(15,35,55,.08)}
   .om30pd-sala h4{margin:0 0 6px;font-size:13px;color:#0f5132;display:flex;gap:6px;align-items:center}.om30pd-sala h4 small{color:#6b7f8e;font-weight:600}
   .om30pd-fat{font-size:11.5px;color:#4a6272;background:#f1f6f9;border-radius:7px;padding:5px 7px;margin-top:4px}
@@ -613,7 +615,8 @@
       el.innerHTML = (dados.erros.length ? `<div class="om30pd-erro">Não li: ${esc(dados.erros.join(' · '))}</div>` : '') +
         (xs.length ? xs.map((p, i) => `<div class="om30pd-p" data-i="${dados.pacientes.indexOf(p)}"><div class="nm">${esc(p.nome)}</div>
           <div class="sub">${[p.senha && `Senha <b>${esc(p.senha)}</b>`, `Atend. ${esc(p.atendimento.split('#')[1])}`].filter(Boolean).join(' · ')}</div>
-          ${p.salas.map(s => `<span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}">${esc(s.s.nome)} · ${esc(s.status)}</span>`).join('')}</div>`).join('')
+          ${p.salas.map(s => `<span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}">${esc(s.s.nome)} · ${esc(s.status)}</span>`).join('')}
+          <div class="om30pd-abrir">Clique para ver os itens e dar baixa ›</div></div>`).join('')
           : '<div class="om30pd-vazio">Nenhum paciente pendente em Medicação, Exames ou Enfermagem.</div>');
       el.querySelectorAll('.om30pd-p').forEach(d => d.onclick = () => abrirPaciente(dados.pacientes[+d.dataset.i]));
     };

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.4.2
+// @version      0.4.3
 // @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem, Raio-X) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -660,8 +660,12 @@
   }
 
   // ---------- interface: botão "Pendências" em cada linha da fila + painel lateral do paciente ----------
-  const NOME_DESTINO = { atendimento: 'médico (retorno)', controle_de_salas_medicacao: 'Medicação', controle_de_salas_exames: 'Exames', controle_de_salas_raio_x: 'Raio-X', controle_de_salas_procedimento_enfermagem: 'Enfermagem', controle_de_salas_gesso_imobilizacao: 'Gesso' };
+  const NOME_DESTINO = { atendimento: 'o consultório médico', controle_de_salas_medicacao: 'Medicação', controle_de_salas_exames: 'Exames', controle_de_salas_raio_x: 'Raio-X', controle_de_salas_procedimento_enfermagem: 'Enfermagem', controle_de_salas_gesso_imobilizacao: 'Gesso' };
   const ICONE = { medicacao: '💊', exames: '🧪', enfermagem: '🩹', raio_x: '🩻' };
+  const pl = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+  const FEITO = { medicacao: ['aplicado', 'aplicados'], exames: ['coletado', 'coletados'] };
+  const feitos = (k, n) => pl(n, ...(FEITO[k] || ['realizado', 'realizados']));
+  const resumoSala = (k, f, c, l) => [f && feitos(k, f), c && pl(c, 'cancelado', 'cancelados'), l && pl(l, 'lançamento no faturamento', 'lançamentos no faturamento')].filter(Boolean).join(', ') || 'nada mudou';
   function ehListaControle() { return /^\/(aplicacoes_medicamentos|encaminhamentos_(exames|procedimentos_enfermagem|radiografias))\/?$/.test(location.pathname); }
 
   const CSS_X = `
@@ -715,7 +719,9 @@
   .om30x-motok{background:#fff6f5;padding:0 12px 8px 12px;font-size:12px;font-weight:700;color:#8f2a22;cursor:pointer}.om30x-motok span{color:#62788a;font-weight:600;text-decoration:underline;margin-left:4px}
   .om30x-erro{background:#fdecea;color:#8f2a22;border-radius:9px;padding:8px 10px;font-size:12.5px;margin-bottom:10px;white-space:pre-wrap}
   .om30x-rod{background:#fff;border-top:1px solid #e2e8ee;padding:12px}
-  .om30x-res{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px;font-size:12px;font-weight:700}.om30x-res span{border-radius:999px;padding:3px 9px;background:#e9f6ee;color:#0f5132}.om30x-res span.n{background:#fdecea;color:#8f2a22}
+  .om30x-res{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px;font-size:12px;font-weight:700}.om30x-res span{border-radius:999px;padding:3px 9px;background:#e9f6ee;color:#0f5132}.om30x-res span.n{background:#fdecea;color:#8f2a22}.om30x-res span.p{background:#eef2f5;color:#4a6272}
+  .om30x-pular{border:1px solid #d3dce3;background:#fff;border-radius:999px;padding:2px 9px;font:700 11px inherit;cursor:pointer;color:#4a6272}.om30x-pular:hover{border-color:#5f7383}
+  .om30x-sala.pulada{opacity:.75}.om30x-sala.pulada .h b{color:#62788a}
   .om30x-go{width:100%;border:0;border-radius:10px;background:#198754;color:#fff;padding:12px;font:800 14px inherit;cursor:pointer;box-shadow:0 4px 12px rgba(25,135,84,.3)}
   .om30x-go:hover{background:#157347}.om30x-go:disabled{background:#a9bdb1;box-shadow:none;cursor:default}
   .om30x-carr{display:flex;align-items:center;gap:10px;justify-content:center;padding:40px 10px;color:#5f7383}
@@ -820,7 +826,7 @@
         const n = p ? p.salas.length : 0;
         const html = `📋 Pendências${n > 1 ? ` <span class="n">${n} salas</span>` : ''}`;
         if (b.dataset.h !== html) { b.dataset.h = html; b.innerHTML = html; }
-        b.title = p ? `Pendências em: ${p.salas.map(s => s.s.nome).join(', ')}` : 'Ver e dar baixa em tudo deste paciente';
+        b.title = p ? `Pendente em: ${p.salas.map(s => s.s.nome).join(', ')}` : 'Ver e dar baixa em tudo deste paciente';
       }
     };
     setInterval(tick, 1200);
@@ -859,7 +865,7 @@
   async function abrirPainel(it, tr) {
     montarPainelX();
     painelX.classList.add('on'); fundoX.classList.add('on');
-    estado = { at: String(it.atendimento_str), nome: clean(it.nome_municipe), senha: clean(it.senha), salas: [], escolha: new Map(), motivos: new Map(), editando: '', outro: '', motivo: '', reav: false, just: '', carregando: true, erros: [] };
+    estado = { at: String(it.atendimento_str), nome: clean(it.nome_municipe), senha: clean(it.senha), salas: [], escolha: new Map(), motivos: new Map(), pular: new Set(), editando: '', outro: '', motivo: '', reav: false, just: '', carregando: true, erros: [] };
     pintarPainel();
     const st = estado;
     const pend = await pendenciasCache(true);
@@ -891,7 +897,7 @@
   }
   function pendentesTodos() {
     const out = [];
-    for (const x of estado.salas) for (const y of itensDaSala(x) || []) if (y.pendente) {
+    for (const x of estado.salas) if (!estado.pular.has(x)) for (const y of itensDaSala(x) || []) if (y.pendente) {
       const k = chave(x.s.k, x.enc, y.i);
       if (!estado.escolha.has(k)) estado.escolha.set(k, 'fez');
       out.push({ x, y, k, v: estado.escolha.get(k) });
@@ -907,7 +913,7 @@
     const cab = `<div class="om30x-cab"><div class="l1"><span class="t">Pendências do paciente</span><button class="x" data-a="fechar" title="Fechar (Esc)">✕</button></div>
       <div class="nm">${esc(e.nome || 'Paciente')}</div>
       <div class="tags">${e.senha ? `<span class="tag s">${esc(e.senha)}</span>` : ''}<span class="tag">Atend. ${esc(e.at.split('#')[1])}</span>${e.salas.length ? `<span class="tag">${e.salas.length} sala${e.salas.length > 1 ? 's' : ''}</span>` : ''}</div></div>`;
-    if (e.carregando) { painelX.innerHTML = cab + '<div class="om30x-corpo"><div class="om30x-carr"><span class="om30x-spin"></span> Buscando o que o médico pediu…</div></div>'; ligarPainel(); return; }
+    if (e.carregando) { painelX.innerHTML = cab + '<div class="om30x-corpo"><div class="om30x-carr"><span class="om30x-spin"></span> Carregando a prescrição do médico…</div></div>'; ligarPainel(); return; }
     const pend = pendentesTodos();
     const nF = pend.filter(p => p.v === 'fez').length, nN = pend.length - nF;
     // O motivo é por item: o 1º "Não" sem motivo abre a escolha; escolheu, fecha e passa para o próximo.
@@ -917,34 +923,37 @@
     const salasHtml = e.salas.map((x, xi) => {
       const its = itensDaSala(x);
       const corpo = its === null
-        ? `<div class="om30x-vazio">Não consegui ler os itens desta sala sem abrir a ficha.<br><button data-a="abrirficha" data-x="${xi}">Abrir a ficha desta sala</button><div class="om30x-nota">Abrir a ficha deixa o paciente "Em Andamento" nela, como o Atender.</div></div>`
+        ? `<div class="om30x-vazio">Os itens desta sala só aparecem com a ficha aberta.<br><button data-a="abrirficha" data-x="${xi}">Abrir a ficha desta sala</button><div class="om30x-nota">Ao abrir, o paciente fica "Em Andamento" nesta sala, como no Atender.</div></div>`
         : !its.length ? '<div class="om30x-vazio">Nenhum item.</div>'
         : its.map(y => {
           const k = chave(x.s.k, x.enc, y.i), v = e.escolha.get(k);
-          const tx = `<div class="tx"><b>${esc(y.nome)}</b>${y.det ? `<small>${esc(y.det)}</small>` : ''}${y.obs ? `<small class="obs">Obs.: ${esc(y.obs)}</small>` : ''}${y.estoque && y.pendente ? '<span class="om30x-tag">pede almoxarifado/quantidade: fazer pela ficha</span>' : ''}</div>`;
-          if (!y.pendente) return `<div class="om30x-it res">${tx}<span class="om30x-feito ${y.estado === 'cancelado' ? 'c' : ''}">${y.estado === 'cancelado' ? '✖ cancelado' : '✔ já feito'}</span></div>`;
+          const tx = `<div class="tx"><b>${esc(y.nome)}</b>${y.det ? `<small>${esc(y.det)}</small>` : ''}${y.obs ? `<small class="obs">Obs.: ${esc(y.obs)}</small>` : ''}${y.estoque && y.pendente ? '<span class="om30x-tag">tem baixa de estoque: dar baixa pela ficha</span>' : ''}</div>`;
+          if (!y.pendente) return `<div class="om30x-it res">${tx}<span class="om30x-feito ${y.estado === 'cancelado' ? 'c' : ''}">${y.estado === 'cancelado' ? '✖ cancelado' : '✔ já realizado'}</span></div>`;
           const mot = clean(e.motivos.get(k));
           const linha = `<div class="om30x-it ${v === 'nao' ? 'nao' : ''}">${tx}<div class="om30x-seg"><button class="f ${v === 'fez' ? 'on' : ''}" data-k="${esc(k)}" data-v="fez">✔ ${esc(x.s.k === 'medicacao' ? 'Aplicado' : x.s.k === 'exames' ? 'Coletado' : 'Realizado')}</button><button class="n ${v === 'nao' ? 'on' : ''}" data-k="${esc(k)}" data-v="nao">✖ Não</button></div></div>`;
           if (v !== 'nao') return linha;
-          if (k !== abrindo) return linha + `<div class="om30x-motok" data-editar="${esc(k)}" title="Trocar o motivo">✖ ${esc(curtoDe(mot))} <span>trocar</span></div>`;
+          if (k !== abrindo) return linha + `<div class="om30x-motok" data-editar="${esc(k)}" title="Trocar o motivo">✖ ${esc(curtoDe(mot))} <span>alterar</span></div>`;
           const outros = semMotivo.filter(p => p.k !== k).length;
           return linha + `<div class="om30x-mot"><div class="rot">Por que não ${esc(x.s.k === 'medicacao' ? 'aplicou' : x.s.k === 'exames' ? 'coletou' : 'realizou')}?</div>
             <div class="om30x-chips">${motivosPara([x.s.k]).map(m => `<button data-k="${esc(k)}" data-m="${esc(m.texto)}" title="${esc(m.texto)}" class="${m.sala ? 'sl ' : ''}${m.texto === mot ? 'on' : ''}">${esc(m.curto)}</button>`).join('')}</div>
-            <div class="om30x-outro"><input data-f="outro" data-k="${esc(k)}" placeholder="Outro motivo…" value="${esc(e.outro)}"><button data-ok="${esc(k)}">OK</button></div>
-            ${outros ? `<label class="om30x-chk om30x-todos"><input type="checkbox" data-f="todosmot"${e.todosMot ? ' checked' : ''}> Usar o mesmo motivo nos outros ${outros} item(ns)</label>` : ''}</div>`;
+            <div class="om30x-outro"><input data-f="outro" data-k="${esc(k)}" placeholder="Outro motivo (escreva e aperte Enter)" value="${esc(e.outro)}"><button data-ok="${esc(k)}">OK</button></div>
+            ${outros ? `<label class="om30x-chk om30x-todos"><input type="checkbox" data-f="todosmot"${e.todosMot ? ' checked' : ''}> Usar este motivo também ${outros === 1 ? 'no outro item' : `nos outros ${outros} itens`}</label>` : ''}</div>`;
         }).join('');
-      return `<div class="om30x-sala"><div class="h"><span class="ic">${ICONE[x.s.k] || '•'}</span><b>${esc(x.s.nome)}</b><span class="st ${/ANDAMENTO/.test(norm(x.status)) ? 'and' : ''}">${esc(x.status)}</span></div>${corpo}</div>`;
+      const pulada = e.pular.has(x), temPend = (its || []).some(y => y.pendente);
+      return `<div class="om30x-sala${pulada ? ' pulada' : ''}"><div class="h"><span class="ic">${ICONE[x.s.k] || '•'}</span><b>${esc(x.s.nome)}</b><span class="st ${/ANDAMENTO/.test(norm(x.status)) ? 'and' : ''}">${esc(x.status)}</span>
+        ${temPend ? `<button class="om30x-pular" data-pular="${xi}" title="${pulada ? 'Incluir esta sala na baixa' : 'Não mexer nesta sala agora: ela continua pendente'}">${pulada ? '↩ Incluir' : '⏭ Deixar para depois'}</button>` : ''}</div>
+        ${pulada ? '<div class="om30x-vazio">Esta sala continua pendente. Nada dela será alterado agora.</div>' : corpo}</div>`;
     }).join('');
     painelX.innerHTML = cab + `<div class="om30x-corpo">
       ${e.erros.map(t => `<div class="om30x-erro">⚠ ${esc(t)}</div>`).join('')}
-      ${!e.salas.length ? '<div class="om30x-vazio">Nenhuma pendência em Medicação, Exames, Enfermagem ou Raio-X para este atendimento.</div>' : ''}
+      ${!e.salas.length ? '<div class="om30x-vazio">Este paciente não tem nada pendente em Medicação, Exames, Enfermagem ou Raio-X.</div>' : ''}
       ${pend.length > 1 ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">✔ Marcar todos como realizados</button><button data-a="todos" data-v="nao">✖ Marcar todos como não realizados</button></div>' : ''}
       ${salasHtml}
       ${'' ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m.texto)}" title="${esc(m.texto)}" class="${m.sala ? 'sl ' : ''}${m.texto === e.motivo ? 'on' : ''}">${m.sala ? (ICONE[m.sala] || '') + ' ' : ''}${esc(m.curto)}</button>`).join('')}</div>
         <textarea data-f="motivo" placeholder="Toque num motivo acima ou escreva">${esc(e.motivo)}</textarea></div>` : ''}
-      ${e.salas.length ? '<div class="om30x-nota" style="padding:0 4px">Depois da baixa o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div>' : ''}
+      ${e.salas.length ? '<div class="om30x-nota" style="padding:0 4px">Após a baixa, o paciente segue o destino definido pelo médico (retorno ao consultório, Raio-X…).</div>' : ''}
     </div>
-    <div class="om30x-rod">${pend.length ? `<div class="om30x-res"><span>✔ ${nF} ${nF === 1 ? 'feito' : 'feitos'}</span>${nN ? `<span class="n">✖ ${nN} não ${nN === 1 ? 'feito' : 'feitos'}</span>` : ''}</div>` : ''}
+    <div class="om30x-rod">${pend.length ? `<div class="om30x-res"><span>✔ ${pl(nF, 'realizado', 'realizados')}</span>${nN ? `<span class="n">✖ ${pl(nN, 'não realizado', 'não realizados')}</span>` : ''}${e.pular.size ? `<span class="p">⏭ ${pl(e.pular.size, 'sala para depois', 'salas para depois')}</span>` : ''}</div>` : ''}
       <button class="om30x-go" data-a="go">Realizar tudo e dar baixa</button></div>`;
     ligarPainel();
     if (foco) { const t = painelX.querySelector(`[data-f="${foco}"]`); if (t) { t.focus(); try { t.setSelectionRange(t.value.length, t.value.length); } catch {} } }
@@ -955,7 +964,7 @@
     if (!go || !e) return;
     const pend = pendentesTodos(), nN = pend.filter(p => p.v === 'nao').length;
     const sem = pend.filter(p => p.v === 'nao' && !clean(e.motivos.get(p.k))).length;
-    const falta = ocupado ? 'Dando baixa…' : !pend.length ? 'Nada pendente' : sem ? `Falta o motivo de ${sem} item(ns)` : '';
+    const falta = ocupado ? 'Dando baixa…' : !pend.length ? (e.pular.size ? 'Todas as salas ficaram para depois' : 'Nenhum item pendente') : sem ? `Informe o motivo de ${pl(sem, 'item', 'itens')}` : '';
     go.disabled = !!falta;
     go.textContent = falta || `Dar baixa · ${pend.length} ${pend.length === 1 ? 'item' : 'itens'}`;
   }
@@ -974,6 +983,7 @@
     painelX.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => { const t = clean(e.outro); if (t) definir(b.dataset.ok, t); });
     const ou = painelX.querySelector('[data-f="outro"]'); if (ou) { ou.oninput = () => { e.outro = ou.value; }; ou.onkeydown = ev => { if (ev.key === 'Enter' && clean(ou.value)) definir(ou.dataset.k, clean(ou.value)); }; }
     const tm = painelX.querySelector('[data-f="todosmot"]'); if (tm) tm.onchange = () => { e.todosMot = tm.checked; };
+    painelX.querySelectorAll('[data-pular]').forEach(b => b.onclick = () => { const x = e.salas[+b.dataset.pular]; if (e.pular.has(x)) e.pular.delete(x); else e.pular.add(x); pintarPainel(); });
     painelX.querySelectorAll('[data-editar]').forEach(d => d.onclick = () => { e.editando = d.dataset.editar; pintarPainel(); });
     const mt = painelX.querySelector('[data-f="motivo"]'); if (mt) mt.oninput = () => { e.motivo = mt.value; painelX.querySelectorAll('.om30x-chips button').forEach(c => c.classList.toggle('on', c.dataset.m === mt.value)); validarPainel(); };
     const rv = painelX.querySelector('[data-f="reav"]'); if (rv) rv.onchange = () => { e.reav = rv.checked; pintarPainel(); };
@@ -1005,7 +1015,7 @@
     const iguais = daqui.every(p => p.v === daqui[0].v);
     const abertos = f.itens.filter(it => it.aberto);
     if (iguais && abertos.length === daqui.length) { daqui.forEach((p, i) => m.set(p.k, abertos[i])); return m; }
-    return { erro: `não consegui casar os itens da fila com os da ficha (${daqui.length} na fila, ${abertos.length} na ficha).` };
+    return { erro: `os itens da prescrição não conferem com os da ficha (${daqui.length} na prescrição, ${abertos.length} na ficha).` };
   }
 
   async function realizarTudo() {
@@ -1016,39 +1026,39 @@
     ocupado = true; validarPainel();
     let plano = [];
     // 1) Abrir as fichas e conferir tudo antes de salvar qualquer sala.
-    const prog = janelaProgresso('Conferindo antes de salvar');
+    const prog = janelaProgresso('Conferindo antes de dar baixa');
     try {
       for (const x of e.salas) {
         const daqui = pend.filter(p => p.x === x);
         if (!daqui.length) continue;
-        const pa = prog.passo(`${x.s.nome}: abrindo a ficha`);
+        const pa = prog.passo(`${x.s.nome}: abrindo a ficha…`);
         if (!x.ficha) x.ficha = await carregarFicha(x.s, x.enc);
         const f = x.ficha;
         // Item escolhido no painel → item da ficha. Pelo nome (seguro com qualquer ordem); pela posição só
         // quando a consulta tem o mesmo número de itens. Itens da fila sem nome que case: só se a escolha
         // for igual para todos (aí a ordem não importa).
         const mapa = mapearItens(x, f, daqui);
-        if (mapa.erro) { pa.erro(); throw new Error(`${x.s.nome}: ${mapa.erro} Faça esta sala pela ficha.`); }
+        if (mapa.erro) { pa.erro(); throw new Error(`${x.s.nome}: ${mapa.erro} Dê baixa nesta sala pela ficha.`); }
         const fez = [], nao = [];
         for (const p of daqui) {
           const fi = mapa.get(p.k);
           if (!fi || !fi.aberto) continue;   // já resolvido entre a consulta e agora
           fi.nome = p.y.nome || fi.nome;
-          if (p.v === 'nao') { fi.motivo = clean(e.motivos.get(p.k)); if (!fi.motivo) { pa.erro(); throw new Error(`"${fi.nome}" está sem motivo`); } }
+          if (p.v === 'nao') { fi.motivo = clean(e.motivos.get(p.k)); if (!fi.motivo) { pa.erro(); throw new Error(`informe o motivo de "${fi.nome}"`); } }
           (p.v === 'fez' ? fez : nao).push(fi);
         }
         if (!f.bpaOk) { pa.erro(); throw new Error(`${x.s.nome}: faturamento em formato desconhecido`); }
         for (const [lista, campos] of [[fez, REQUER[x.s.k].fez], [nao, REQUER[x.s.k].nao]])
           for (const y of lista) { const falta = campos.filter(c => ![].concat(c).some(z => inp(y.it, z))); if (falta.length) { pa.erro(); throw new Error(`${x.s.nome}: a ficha não tem o campo ${falta.map(c => [].concat(c).map(z => z.slice(1)).join(' ou ')).join(', ')} em "${y.nome}"`); } }
         const est = fez.filter(y => y.estoque);
-        if (est.length) { pa.erro(); throw new Error(`${x.s.nome}: ${est.map(y => y.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`); }
-        pa.ok(`${x.s.nome}: conferindo o faturamento`);
+        if (est.length) { pa.erro(); throw new Error(`${x.s.nome}: ${est.map(y => y.nome).join(', ')} tem baixa de estoque (almoxarifado e quantidade). Dê baixa nesta sala pela ficha.`); }
+        pa.ok(`${x.s.nome}: ficha conferida`);
         const linhas = fez.length && x.s.fatura !== false ? await montarFaturamento(f, fez) : [];
         plano.push({ x, f, fez, nao, linhas });
       }
     } catch (er) {
       prog.fechar(); ocupado = false;
-      await janela({ tipo: 'erro', icone: '⚠️', titulo: 'Nada foi salvo', html: `<div>${esc(er.message)}</div>` });
+      await janela({ tipo: 'erro', icone: '⚠️', titulo: 'A baixa não foi feita', html: `<div>${esc(er.message)}</div><div class="om30x-nota">Nenhuma sala foi alterada.</div>` });
       return pintarPainel();
     }
     prog.fechar();
@@ -1061,7 +1071,7 @@
         ${p.fez.map(y => `<li>✔ ${esc(y.nome)}</li>`).join('')}${p.nao.map(y => `<li class="n">✖ ${esc(y.nome)} <small style="color:#62788a">— ${esc(y.motivo)}</small></li>`).join('')}</ul>
         ${p.linhas.length ? `<div class="fat"><b>Faturamento</b>${p.linhas.map(l => esc(l.texto)).join('<br>')}</div>` : ''}</div>`).join('') +
 '';
-    const ok = await janela({ tipo: 'aviso', icone: '📋', titulo: `Dar baixa em ${e.nome}?`, html: resumo, botoes: [{ txt: 'Voltar', valor: false }, { txt: 'Confirmar baixa', classe: 'p', valor: true }] });
+    const ok = await janela({ tipo: 'aviso', icone: '📋', titulo: `Confirmar a baixa de ${e.nome}?`, html: resumo, botoes: [{ txt: 'Voltar', valor: false }, { txt: 'Confirmar baixa', classe: 'p', valor: true }] });
     if (!ok) { ocupado = false; return pintarPainel(); }
 
     // 3) Salvar sala por sala, concluir a senha e mandar para o destino final.
@@ -1071,7 +1081,7 @@
     try {
       const momento = momentoAgora();
       for (const p of plano) {
-        const pa = prog2.passo(`${p.x.s.nome}: salvando`);
+        const pa = prog2.passo(`${p.x.s.nome}: dando baixa…`);
         const prof = p.f.profissional;
         try {
           if (p.nao.length && !prof) throw new Error(`${p.x.s.nome}: profissional atual não encontrado na ficha`);
@@ -1082,26 +1092,26 @@
           feitas.push(p.x.s.nome);
           await concluirSenhaSala(res, p.f, e.at);
           ultimo = res;
-          pa.ok(`${p.x.s.nome}: ${p.fez.length} feito(s)${p.nao.length ? `, ${p.nao.length} cancelado(s)` : ''}${p.linhas.length ? ` · ${p.linhas.length} faturamento(s)` : ''}`);
-        } catch (er) { pa.erro(`${p.x.s.nome}: não salvou`); throw er; }
+          pa.ok(`${p.x.s.nome}: ${resumoSala(p.x.s.k, p.fez.length, p.nao.length, p.linhas.length)}`);
+        } catch (er) { pa.erro(`${p.x.s.nome}: a baixa não foi feita`); throw er; }
       }
       const destino = (ultimo?.destinos || []).filter(Boolean).pop() || '';
       if (destino && e.senha && !/^[-—]$/.test(e.senha)) {
-        const pa = prog2.passo(`Senha ${e.senha} → ${NOME_DESTINO[destino] || destino}`);
-        try { await senhaParaDestino(e.at, destino); pa.ok(); log.push(`Senha <b>${esc(e.senha)}</b> foi para <b>${esc(NOME_DESTINO[destino] || destino)}</b>.`); }
-        catch (er) { pa.erro(); log.push(`⚠ A senha não foi para ${esc(NOME_DESTINO[destino] || destino)} (${esc(er.message)}). Use Recuperar na fila de lá.`); }
-      } else if (destino) log.push(`Próximo destino: <b>${esc(NOME_DESTINO[destino] || destino)}</b>.`);
+        const pa = prog2.passo(`Enviando a senha ${e.senha} para ${NOME_DESTINO[destino] || destino}…`);
+        try { await senhaParaDestino(e.at, destino); pa.ok(`Senha ${e.senha} enviada para ${NOME_DESTINO[destino] || destino}`); log.push(`A senha <b>${esc(e.senha)}</b> foi enviada para <b>${esc(NOME_DESTINO[destino] || destino)}</b>.`); }
+        catch (er) { pa.erro(`A senha ${e.senha} não foi enviada`); log.push(`⚠ A senha não chegou em ${esc(NOME_DESTINO[destino] || destino)} (${esc(er.message)}). Use o Recuperar na fila de lá.`); }
+      } else if (destino) log.push(`O paciente segue para: <b>${esc(NOME_DESTINO[destino] || destino)}</b>.`);
       prog2.fechar();
       console.log('[OM30 Baixa Rápida] baixa pelo painel', { atendimento: e.at, salas: feitas });
       ocupado = false; fecharPainel();
-      await janela({ titulo: 'Baixa concluída', html: `<div style="font-weight:700;margin-bottom:6px">${esc(e.nome)}</div>${plano.map(p => `<div>${ICONE[p.x.s.k] || ''} ${esc(p.x.s.nome)}: ${p.fez.length} feito(s)${p.nao.length ? `, ${p.nao.length} cancelado(s)` : ''}</div>`).join('')}${log.length ? `<div class="om30x-nota">${log.join('<br>')}</div>` : ''}` });
+      await janela({ titulo: 'Baixa realizada', html: `<div style="font-weight:700;margin-bottom:6px">${esc(e.nome)}</div>${plano.map(p => `<div>${ICONE[p.x.s.k] || ''} <b>${esc(p.x.s.nome)}:</b> ${esc(resumoSala(p.x.s.k, p.fez.length, p.nao.length, p.linhas.length))}</div>`).join('')}${e.pular.size ? `<div>⏭ Continuam pendentes: ${esc([...e.pular].map(x => x.s.nome).join(', '))}</div>` : ''}${log.length ? `<div class="om30x-nota">${log.join('<br>')}</div>` : ''}` });
     } catch (er) {
       prog2.fechar();
       ocupado = false;
       console.warn('[OM30 Baixa Rápida] baixa pelo painel falhou', er);
       const resto = plano.map(p => p.x.s.nome).filter(n => !feitas.includes(n));
       fecharPainel();
-      await janela({ tipo: 'erro', icone: '⚠️', titulo: 'A baixa parou', html: `<div>${esc(er.message)}</div><div class="om30x-nota">${feitas.length ? `<b>Já salvo:</b> ${esc(feitas.join(', '))}<br>` : '<b>Nada foi salvo.</b><br>'}${resto.length ? `<b>Não salvo:</b> ${esc(resto.join(', '))}. Abra essas fichas para conferir.` : ''}</div>` });
+      await janela({ tipo: 'erro', icone: '⚠️', titulo: feitas.length ? 'A baixa ficou incompleta' : 'A baixa não foi feita', html: `<div>${esc(er.message)}</div><div class="om30x-nota">${feitas.length ? `<b>Baixa feita em:</b> ${esc(feitas.join(', '))}<br>` : '<b>Nenhuma sala foi alterada.</b><br>'}${resto.length ? `<b>Sem baixa:</b> ${esc(resto.join(', '))}. Abra a ficha dessas salas para conferir.` : ''}</div>` });
     } finally {
       PEND.em = 0; CACHE_ITENS.clear();
       try { for (const vm of document.querySelectorAll('.cs-fila')) vm.__vue__?.fetchCollection?.(); } catch (_) {}

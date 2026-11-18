@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.3.3
+// @version      0.3.4
 // @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem, Raio-X) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -472,8 +472,9 @@
     let v = null;
     try {
       const cfg = CONSULTA_ITENS[k];
-      const r = await fetch(cfg.url(enc), { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: { Accept: 'text/html' } });
-      if (r.ok && r.type !== 'opaqueredirect') {
+      // igual ao Controle de Salas: GET da consulta /{id} (nunca o /edit)
+      const r = await fetch(cfg.url(enc), { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html,application/xhtml+xml' } });
+      if (r.ok && !/\/edit(\b|$)|\/new(\b|$)/.test(new URL(r.url || cfg.url(enc), location.href).pathname)) {
         const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
         for (const t of doc.querySelectorAll('table')) {
           const ths = [...(t.querySelector('thead') || t).querySelectorAll('th')].map(th => norm(th.textContent));
@@ -491,6 +492,22 @@
             };
           }).filter(x => x.nome);
           break;
+        }
+        // Mesma leitura do Controle de Salas (extrairDetalhesShow, v3.x): a tabela com a coluna "Situação"
+        // (fora as de profissional/especialidade); 1ª célula = o que o médico pediu, última = situação.
+        if (!v) for (const t of doc.querySelectorAll('table')) {
+          const hs = [...t.querySelectorAll('thead th, tr:first-child th')].map(th => norm(th.textContent));
+          if (!hs.includes('SITUACAO') || hs.includes('PROFISSIONAL') || hs.includes('ESPECIALIDADE')) continue;
+          const xs = [];
+          for (const tr of t.querySelectorAll('tbody tr, tr')) {
+            const cs = [...tr.querySelectorAll(':scope > td')].map(td => clean(td.textContent));
+            if (cs.length < 2) continue;
+            const nome = cs[0], sit = norm(cs[cs.length - 1]);
+            if (!nome || /^(DESCRICAO|PROCEDIMENTO|EXAME|RADIOGRAFIA)$/.test(norm(nome))) continue;
+            xs.push({ nome, det: cs.length > 2 ? cs.slice(1, -1).filter(Boolean).join(' · ').slice(0, 90) : '', obs: '',
+              estado: /CANCEL/.test(sit) ? 'cancelado' : /COLETAD|REALIZAD|FINALIZAD|APLICAD/.test(sit) ? 'feito' : 'pendente' });
+          }
+          if (xs.length) { v = xs; break; }
         }
       }
     } catch (_) {}

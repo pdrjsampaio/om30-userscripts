@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.3.1
-// @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
+// @version      0.3.2
+// @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem, Raio-X) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
 // @match        https://guarujahomolog.saudesimples.net/*
@@ -331,12 +331,13 @@
   const MED_ABERTO = it => valor(it, '_pendente') === 'true' && !['_cancelada', '_cancelado', '_para_atendimento', '_para_cancelamento'].some(c => valor(it, c) === 'true');
   const MED_FAZER = it => { poe(it, '_pendente', 'true'); poe(it, '_cancelada', 'false'); poe(it, '_cancelado', 'false'); poe(it, '_para_atendimento', 'true'); poe(it, '_para_cancelamento', 'false'); };
   const MED_CANCELAR = (it, c) => { poe(it, '_pendente', 'false'); if (!poe(it, '_cancelada', 'true')) poe(it, '_cancelado', 'true'); poe(it, '_para_atendimento', 'false'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); };
-  const FORMATO_BPA_CONFIRMADO = { medicacao: true, exames: true, enfermagem: true };
+  const FORMATO_BPA_CONFIRMADO = { medicacao: true, exames: true, enfermagem: true, raio_x: true };
   // Campos que cada sala precisa ter na ficha. Conferidos ANTES de salvar qualquer sala.
   const REQUER = {
     medicacao: { fez: ['_tipo_uso_medicamento_id', '_para_atendimento'], nao: ['_cancelada', '_justificativa_cancelamento'] },   // [a, b] = um dos dois
     exames: { fez: ['_exame_id', '_coletado'], nao: ['_cancelado', '_justificativa_cancelamento'] },
     enfermagem: { fez: ['_procedimento_enfermagem_id', ['_para_atendimento', '_realizado']], nao: [['_cancelada', '_cancelado'], '_justificativa_cancelamento'] },
+    raio_x: { fez: [['_para_atendimento', '_realizado', '_realizada']], nao: [['_cancelada', '_cancelado'], '_justificativa_cancelamento'] },
   };
   const SALAS_API = [
     {
@@ -365,6 +366,17 @@
       aberto: it => estiloMed(it) ? MED_ABERTO(it) : valor(it, '_realizado') !== 'true' && valor(it, '_cancelado') !== 'true',
       fazer: it => { if (estiloMed(it)) return MED_FAZER(it); exigir(it, '_realizado'); poe(it, '_realizado', 'true'); poe(it, '_cancelado', 'false'); },
       cancelar: (it, c) => { if (estiloMed(it)) return MED_CANCELAR(it, c); poe(it, '_realizado', 'false'); exigir(it, '_cancelado'); poe(it, '_cancelado', 'true'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
+    },
+    {
+      // 18/11: Raio-X não é faturado (sem BPA) e a baixa não grava o nome de quem fez.
+      // Campos como a Medicação ("Realizar" no lugar de "Aplicar"); se vier o formato realizado/cancelado, usa esse.
+      k: 'raio_x', nome: 'Raio-X', codigo: 'controle_de_salas_raio_x', lista: '/encaminhamentos_radiografias', fatura: false,
+      abrir: id => `/encaminhamentos_radiografias/${encodeURIComponent(id)}/edit`,
+      form: 'form[id*="encaminhamento_radiografia"]',
+      proc: () => null,
+      aberto: it => estiloMed(it) ? MED_ABERTO(it) : !['_realizado', '_realizada', '_cancelado', '_cancelada'].some(c => valor(it, c) === 'true'),
+      fazer: it => { if (estiloMed(it)) return MED_FAZER(it); if (!poe(it, '_realizado', 'true')) { exigir(it, '_realizada'); poe(it, '_realizada', 'true'); } poe(it, '_cancelado', 'false'); poe(it, '_cancelada', 'false'); },
+      cancelar: (it, c) => { if (estiloMed(it)) return MED_CANCELAR(it, c); poe(it, '_realizado', 'false'); poe(it, '_realizada', 'false'); if (!poe(it, '_cancelado', 'true')) { exigir(it, '_cancelada'); poe(it, '_cancelada', 'true'); } poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
     },
   ];
   const inp = (it, suf) => it.querySelector(`input[id$="${suf}"], textarea[id$="${suf}"], select[id$="${suf}"]`);
@@ -435,6 +447,7 @@
     medicacao: { url: id => `/aplicacoes_medicamentos/${id}`, chave: 'MEDICAMENTO' },
     exames: { url: id => `/encaminhamentos_exames/${id}`, chave: 'EXAME' },
     enfermagem: { url: id => `/encaminhamentos_procedimentos_enfermagem/${id}`, chave: 'PROCEDIMENTO' },
+    raio_x: { url: id => `/encaminhamentos_radiografias/${id}`, chave: ['RADIOGRAFIA', 'EXAME', 'PROCEDIMENTO'] },
   };
   const CACHE_ITENS = new Map();
   async function itensDoMedico(k, enc) {
@@ -448,7 +461,7 @@
         const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
         for (const t of doc.querySelectorAll('table')) {
           const ths = [...(t.querySelector('thead') || t).querySelectorAll('th')].map(th => norm(th.textContent));
-          const iNome = ths.findIndex(h => h.includes(cfg.chave));
+          const iNome = ths.findIndex(h => [].concat(cfg.chave).some(c => h.includes(c)));
           if (iNome < 0) continue;
           const col = n => ths.findIndex(h => h.includes(n));
           const iVia = col('VIA'), iPos = col('POSOLOGIA'), iSit = col('SITUACAO'), iObs = col('OBSERVACAO'), iQt = col('QUANTIDADE');
@@ -596,7 +609,7 @@
 
   // ---------- interface: botão "Pendências" em cada linha da fila + painel lateral do paciente ----------
   const NOME_DESTINO = { atendimento: 'médico (retorno)', controle_de_salas_medicacao: 'Medicação', controle_de_salas_exames: 'Exames', controle_de_salas_raio_x: 'Raio-X', controle_de_salas_procedimento_enfermagem: 'Enfermagem', controle_de_salas_gesso_imobilizacao: 'Gesso' };
-  const ICONE = { medicacao: '💊', exames: '🧪', enfermagem: '🩹' };
+  const ICONE = { medicacao: '💊', exames: '🧪', enfermagem: '🩹', raio_x: '🩻' };
   function ehListaControle() { return /^\/(aplicacoes_medicamentos|encaminhamentos_(exames|procedimentos_enfermagem|radiografias))\/?$/.test(location.pathname); }
 
   const CSS_X = `
@@ -834,7 +847,7 @@
     }).join('');
     painelX.innerHTML = cab + `<div class="om30x-corpo">
       ${e.erros.map(t => `<div class="om30x-erro">⚠ ${esc(t)}</div>`).join('')}
-      ${!e.salas.length ? '<div class="om30x-vazio">Nenhuma pendência em Medicação, Exames ou Enfermagem para este atendimento.</div>' : ''}
+      ${!e.salas.length ? '<div class="om30x-vazio">Nenhuma pendência em Medicação, Exames, Enfermagem ou Raio-X para este atendimento.</div>' : ''}
       ${pend.length > 1 ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">✔ Fiz tudo</button><button data-a="todos" data-v="nao">✖ Não fiz nada</button></div>' : ''}
       ${salasHtml}
       ${nN ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m)}" class="${m === e.motivo ? 'on' : ''}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
@@ -903,7 +916,7 @@
         const est = fez.filter(y => y.estoque);
         if (est.length) { pa.erro(); throw new Error(`${x.s.nome}: ${est.map(y => y.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`); }
         pa.ok(`${x.s.nome}: conferindo o faturamento`);
-        const linhas = fez.length ? await montarFaturamento(f, fez) : [];
+        const linhas = fez.length && x.s.fatura !== false ? await montarFaturamento(f, fez) : [];
         plano.push({ x, f, fez, nao, linhas });
       }
     } catch (er) {

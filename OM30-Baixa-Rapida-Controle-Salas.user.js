@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.2.1
+// @version      0.2.2
 // @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -62,8 +62,8 @@
       form: 'form[id*="procedimento_enfermagem"], form[id*="procedimentoenfermagem"]',
       btnFez: null,   // botão "Realizar" achado pelo texto (classe ainda não capturada)
       btnCancelar: '.btn-cancelar-procedimento-enfermagem',
-      fez: it => ehSim(campo(it, '_realizado')) || ehSim(campo(it, '_realizada')),
-      cancelou: it => ehSim(campo(it, '_cancelado')) || ehSim(campo(it, '_cancelada')),
+      fez: it => ehSim(campo(it, '_realizado')) || ehSim(campo(it, '_realizada')) || ehSim(campo(it, '_para_atendimento')),
+      cancelou: it => ehSim(campo(it, '_cancelado')) || ehSim(campo(it, '_cancelada')) || ehSim(campo(it, '_para_cancelamento')),
       motivos: ['Procedimento realizado manualmente.', 'Paciente deixou a unidade antes da realização do procedimento.', 'Paciente recusou a realização do procedimento.'],
     },
     raio_x: {
@@ -329,12 +329,17 @@
   // [n][profissional_ocupacao_id|automatico=true|procedimento_id|procedimento_token=texto|quantidade=1|_destroy=false].
   // =====================================================================
   // 18/11: mesmo formato de faturamento da Medicação nas três salas (confirmado pelo usuário).
+  // Campos do item no formato da Medicação (mesmos que o Aplicar/Realizar e o Cancelar do sistema marcam).
+  const estiloMed = it => !!it.querySelector('input[id$="_para_atendimento"]');
+  const MED_ABERTO = it => valor(it, '_pendente') === 'true' && !['_cancelada', '_cancelado', '_para_atendimento', '_para_cancelamento'].some(c => valor(it, c) === 'true');
+  const MED_FAZER = it => { poe(it, '_pendente', 'true'); poe(it, '_cancelada', 'false'); poe(it, '_cancelado', 'false'); poe(it, '_para_atendimento', 'true'); poe(it, '_para_cancelamento', 'false'); };
+  const MED_CANCELAR = (it, c) => { poe(it, '_pendente', 'false'); if (!poe(it, '_cancelada', 'true')) poe(it, '_cancelado', 'true'); poe(it, '_para_atendimento', 'false'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); };
   const FORMATO_BPA_CONFIRMADO = { medicacao: true, exames: true, enfermagem: true };
   // Campos que cada sala precisa ter na ficha. Conferidos ANTES de salvar qualquer sala.
   const REQUER = {
-    medicacao: { fez: ['_tipo_uso_medicamento_id', '_para_atendimento'], nao: ['_cancelada', '_justificativa_cancelamento'] },
+    medicacao: { fez: ['_tipo_uso_medicamento_id', '_para_atendimento'], nao: ['_cancelada', '_justificativa_cancelamento'] },   // [a, b] = um dos dois
     exames: { fez: ['_exame_id', '_coletado'], nao: ['_cancelado', '_justificativa_cancelamento'] },
-    enfermagem: { fez: ['_procedimento_enfermagem_id', '_realizado'], nao: ['_cancelado', '_justificativa_cancelamento'] },
+    enfermagem: { fez: ['_procedimento_enfermagem_id', ['_para_atendimento', '_realizado']], nao: [['_cancelada', '_cancelado'], '_justificativa_cancelamento'] },
   };
   const SALAS_API = [
     {
@@ -342,9 +347,7 @@
       abrir: id => `/aplicacoes_medicamentos/new?encaminhamento_medicacao_id=${encodeURIComponent(id)}`,
       form: 'form[id^="edit_encaminhamento_medicacao_"]',
       proc: it => { const v = valor(it, '_tipo_uso_medicamento_id'); return v && `/aplicacoes_medicamentos/buscar_procedimentos_faturamento?tipo_uso_medicamento_id=${encodeURIComponent(v)}`; },
-      aberto: it => valor(it, '_pendente') === 'true' && valor(it, '_cancelada') !== 'true' && valor(it, '_para_atendimento') !== 'true' && valor(it, '_para_cancelamento') !== 'true',
-      fazer: it => { poe(it, '_pendente', 'true'); poe(it, '_cancelada', 'false'); poe(it, '_para_atendimento', 'true'); poe(it, '_para_cancelamento', 'false'); },
-      cancelar: (it, c) => { poe(it, '_pendente', 'false'); poe(it, '_cancelada', 'true'); poe(it, '_para_atendimento', 'false'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
+      aberto: it => MED_ABERTO(it), fazer: it => MED_FAZER(it), cancelar: (it, c) => MED_CANCELAR(it, c),
     },
     {
       k: 'exames', nome: 'Exames', codigo: 'controle_de_salas_exames', lista: '/encaminhamentos_exames',
@@ -360,9 +363,11 @@
       abrir: id => `/encaminhamentos_procedimentos_enfermagem/${encodeURIComponent(id)}/edit`,
       form: 'form[id*="procedimento_enfermagem"], form[id*="procedimentoenfermagem"]',
       proc: it => { const v = valor(it, '_procedimento_enfermagem_id'); return v && `/encaminhamentos_procedimentos_enfermagem/buscar_procedimentos_faturamento?procedimento_enfermagem_id=${encodeURIComponent(v)}`; },
-      aberto: it => valor(it, '_realizado') !== 'true' && valor(it, '_cancelado') !== 'true',
-      fazer: it => { exigir(it, '_realizado'); poe(it, '_realizado', 'true'); poe(it, '_cancelado', 'false'); },
-      cancelar: (it, c) => { poe(it, '_realizado', 'false'); exigir(it, '_cancelado'); poe(it, '_cancelado', 'true'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
+      // 18/11: igual à Medicação, só o botão muda de "Aplicar" para "Realizar" (mesmos campos).
+      // Se a ficha vier com o formato antigo (realizado/cancelado), usa esse.
+      aberto: it => estiloMed(it) ? MED_ABERTO(it) : valor(it, '_realizado') !== 'true' && valor(it, '_cancelado') !== 'true',
+      fazer: it => { if (estiloMed(it)) return MED_FAZER(it); exigir(it, '_realizado'); poe(it, '_realizado', 'true'); poe(it, '_cancelado', 'false'); },
+      cancelar: (it, c) => { if (estiloMed(it)) return MED_CANCELAR(it, c); poe(it, '_realizado', 'false'); exigir(it, '_cancelado'); poe(it, '_cancelado', 'true'); poe(it, '_para_cancelamento', 'true'); camposCancelamento(it, c); },
     },
   ];
   const inp = (it, suf) => it.querySelector(`input[id$="${suf}"], textarea[id$="${suf}"], select[id$="${suf}"]`);
@@ -690,7 +695,7 @@
       for (const p of plano) {
         if (!p.f.bpaOk) throw new Error(`${p.f.s.nome}: faturamento em formato desconhecido`);
         for (const [lista, campos] of [[p.fez, REQUER[p.f.s.k].fez], [p.nao, REQUER[p.f.s.k].nao]])
-          for (const x of lista) { const falta = campos.filter(c => !inp(x.it, c)); if (falta.length) throw new Error(`${p.f.s.nome}: a ficha não tem o campo ${falta.map(c => c.slice(1)).join(', ')} em "${x.nome}" (formato diferente do esperado)`); }
+          for (const x of lista) { const falta = campos.filter(c => ![].concat(c).some(y => inp(x.it, y))); if (falta.length) throw new Error(`${p.f.s.nome}: a ficha não tem o campo ${falta.map(c => [].concat(c).map(y => y.slice(1)).join(' ou ')).join(', ')} em "${x.nome}" (formato diferente do esperado)`); }
         const est = p.fez.filter(x => x.estoque);
         if (est.length) throw new Error(`${p.f.s.nome}: ${est.map(x => x.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`);
         passo(`Conferindo faturamento · ${p.f.s.nome}…`);

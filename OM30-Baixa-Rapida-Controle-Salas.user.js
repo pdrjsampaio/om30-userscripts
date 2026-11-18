@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.2.4
-// @description  Enfermagem/técnicos: aba "Pendências" com todos os pacientes pendentes e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
+// @version      0.3.0
+// @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
 // @match        https://guarujahomolog.saudesimples.net/*
@@ -283,7 +283,7 @@
     const fez = xs.filter(x => escolha.get(x.item) === 'fez'), nao = xs.filter(x => escolha.get(x.item) === 'nao');
     if (nao.length && !motivo) return msg('Escolha o motivo do que não foi feito.', 'erro');
     const resumo = [fez.length && `${sala.s.verbo.toUpperCase()} (${fez.length}):\n- ${fez.map(x => x.nome).join('\n- ')}`, nao.length && `CANCELAR (${nao.length}):\n- ${nao.map(x => x.nome).join('\n- ')}\nMotivo: ${motivo}`, reav && `Reavaliação médica: SIM — ${just}`].filter(Boolean).join('\n\n');
-    if (xs.length && !confirm(`Confirma a baixa desta ficha?\n\n${resumo}\n\nDepois a ficha é salva e o paciente segue para o próximo destino marcado pelo médico.`)) return;
+    if (xs.length && !await janela({ tipo: 'aviso', icone: '⚡', titulo: 'Dar baixa nesta ficha?', html: `<div style="white-space:pre-wrap;font-size:12.5px">${esc(resumo)}</div><div class="om30x-nota">Depois a ficha é salva e o paciente segue o destino que o médico deixou.</div>`, botoes: [{ txt: 'Voltar', valor: false }, { txt: 'Confirmar baixa', classe: 'p', valor: true }] })) return;
     rodando = true; atualizarBotao(sala, xs);
     const b = painel.querySelector('.om30bl-go');
     let etapa = '';
@@ -597,228 +597,387 @@
     return true;
   }
 
-  // ---------- interface da aba ----------
+  // ---------- interface: botão "Pendências" em cada linha da fila + painel lateral do paciente ----------
   const NOME_DESTINO = { atendimento: 'médico (retorno)', controle_de_salas_medicacao: 'Medicação', controle_de_salas_exames: 'Exames', controle_de_salas_raio_x: 'Raio-X', controle_de_salas_procedimento_enfermagem: 'Enfermagem', controle_de_salas_gesso_imobilizacao: 'Gesso' };
+  const ICONE = { medicacao: '💊', exames: '🧪', enfermagem: '🩹' };
   function ehListaControle() { return /^\/(aplicacoes_medicamentos|encaminhamentos_(exames|procedimentos_enfermagem|radiografias))\/?$/.test(location.pathname); }
-  let aba = null, dados = { pacientes: [], erros: [] }, carregando = false, aberto = null, ocupado = false;
-  const CSS_ABA = `
-  .om30pd-btn{position:fixed;right:14px;bottom:18px;z-index:2147482000;border:0;border-radius:999px;background:#0f5132;color:#fff;padding:10px 16px;font:700 13px "Segoe UI",Arial;box-shadow:0 8px 22px rgba(15,35,55,.3);cursor:pointer}
-  .om30pd-btn .n{background:#fff;color:#0f5132;border-radius:999px;padding:0 7px;margin-left:6px;font-size:12px}
-  .om30pd{position:fixed;top:0;right:0;bottom:0;width:470px;max-width:97vw;background:#f5f8fa;z-index:2147482001;box-shadow:-10px 0 30px rgba(15,35,55,.25);display:none;flex-direction:column;font:13px/1.35 "Segoe UI",Arial,sans-serif;color:#1f2f3c}
-  .om30pd.on{display:flex}.om30pd-topo{background:#0f5132;color:#fff;padding:11px 12px;display:flex;gap:8px;align-items:center}.om30pd-topo b{flex:1;font-size:14.5px}
-  .om30pd-topo button{border:0;background:rgba(255,255,255,.15);color:#fff;border-radius:7px;padding:5px 9px;cursor:pointer;font:600 12px inherit}
-  .om30pd-busca{padding:8px 12px}.om30pd-busca input{width:100%;box-sizing:border-box;border:1px solid #cfd8df;border-radius:8px;padding:7px 9px;font:13px inherit}
-  .om30pd-lista{overflow:auto;flex:1;padding:0 12px 12px}.om30pd-p{background:#fff;border-radius:10px;padding:9px 10px;margin-bottom:7px;box-shadow:0 1px 3px rgba(15,35,55,.08);cursor:pointer}
-  .om30pd-p:hover{box-shadow:0 0 0 2px #19875455}.om30pd-p .nm{font-weight:700}.om30pd-p .sub{color:#5f7383;font-size:11.5px;margin:1px 0 5px}
-  .om30pd-s{display:inline-block;border-radius:6px;padding:2px 7px;margin:0 4px 4px 0;font-size:11.5px;font-weight:700;background:#e8eff5;color:#24435c}
-  .om30pd-s.and{background:#fff3cd;color:#7a5600}.om30pd-abrir{margin-top:4px;font-size:12px;font-weight:700;color:#198754}.om30pd-vazio{color:#6b7f8e;text-align:center;padding:30px 10px}
-  .om30pd-sl{margin-top:3px}.om30pd-itens{margin:2px 0 4px 6px;border-left:2px solid #e2e8ee;padding-left:8px}
-  .om30pd-it{font-size:12px;line-height:1.35;margin:2px 0}.om30pd-it .mk{display:inline-block;width:14px;color:#8796a0}.om30pd-it small{color:#5f7383}
-  .om30pd-it.feito{color:#6b7f8e}.om30pd-it.feito .mk{color:#198754}.om30pd-it.cancelado{color:#9aa7b0;text-decoration:line-through}.om30pd-it.cancelado .mk{color:#c0392b}
-  .om30pd-it .obs{margin-left:14px;color:#7a5600;font-size:11.5px}.om30pd-it-nd{font-size:11.5px;color:#8796a0}
-  .om30bl-it .tx small{display:block}
-  .om30pd-sala{background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 3px rgba(15,35,55,.08)}
-  .om30pd-sala h4{margin:0 0 6px;font-size:13px;color:#0f5132;display:flex;gap:6px;align-items:center}.om30pd-sala h4 small{color:#6b7f8e;font-weight:600}
-  .om30pd-fat{font-size:11.5px;color:#4a6272;background:#f1f6f9;border-radius:7px;padding:5px 7px;margin-top:4px}
-  .om30pd-erro{color:#a12a1f;font-size:12px;white-space:pre-wrap;margin:4px 0}
-  .om30pd-pac{padding:2px 12px 8px}.om30pd-pac .nm{font-size:15px;font-weight:800}.om30pd-pac .sub{color:#5f7383;font-size:12px}
-  .om30pd-rod{padding:10px 12px;border-top:1px solid #e2e8ee;background:#fff}`;
-  function montarAba() {
-    css();
-    if (!document.getElementById('om30pd-css')) { const st = document.createElement('style'); st.id = 'om30pd-css'; st.textContent = CSS_ABA; document.head.appendChild(st); }
-    const btn = document.createElement('button');
-    btn.className = 'om30pd-btn';
-    btn.innerHTML = '📋 Pendências<span class="n">…</span>';
-    aba = document.createElement('div');
-    aba.className = 'om30pd';
-    aba.innerHTML = `<div class="om30pd-topo"><b>📋 Pendências das salas</b><button data-a="rec">↻</button><button data-a="x">✕</button></div><div class="om30pd-conteudo" style="display:flex;flex-direction:column;flex:1;min-height:0"></div>`;
-    document.body.append(btn, aba);
-    btn.onclick = () => { aba.classList.add('on'); if (!aberto) atualizarAba(); };
-    aba.querySelector('[data-a="x"]').onclick = () => { if (!ocupado) aba.classList.remove('on'); };
-    aba.querySelector('[data-a="rec"]').onclick = () => { if (!ocupado) { aberto = null; atualizarAba(); } };
-    ['keydown', 'keyup', 'keypress'].forEach(t => aba.addEventListener(t, e => e.stopPropagation()));
-    const ciclo = async () => { if (!document.hidden && !aberto) await atualizarAba(true); btn.querySelector('.n').textContent = String(dados.pacientes.length); };
-    ciclo(); setInterval(ciclo, 60000);
-  }
-  const conteudo = () => aba.querySelector('.om30pd-conteudo');
-  async function atualizarAba(silencioso) {
-    if (carregando || aberto) return;
-    carregando = true;
-    if (!silencioso) conteudo().innerHTML = '<div class="om30pd-vazio">Carregando…</div>';
-    try { dados = await carregarPendencias(); } finally { carregando = false; }
-    document.querySelector('.om30pd-btn .n').textContent = String(dados.pacientes.length);
-    if (!aberto) pintarLista();
-  }
-  function pintarLista() {
-    const c = conteudo();
-    const busca = c.querySelector('.om30pd-busca input')?.value || '';
-    c.innerHTML = '<div class="om30pd-busca"><input placeholder="Buscar nome ou senha…"></div><div class="om30pd-lista"></div>';
-    const input = c.querySelector('input'); input.value = busca;
-    const pinta = () => {
-      const q = norm(input.value);
-      const xs = dados.pacientes.filter(p => !q || norm(p.nome).includes(q) || norm(p.senha).includes(q));
-      const el = c.querySelector('.om30pd-lista');
-      el.innerHTML = (dados.erros.length ? `<div class="om30pd-erro">Não li: ${esc(dados.erros.join(' · '))}</div>` : '') +
-        (xs.length ? xs.map((p, i) => `<div class="om30pd-p" data-i="${dados.pacientes.indexOf(p)}"><div class="nm">${esc(p.nome)}</div>
-          <div class="sub">${[p.senha && `Senha <b>${esc(p.senha)}</b>`, `Atend. ${esc(p.atendimento.split('#')[1])}`].filter(Boolean).join(' · ')}</div>
-          ${p.salas.map(s => `<div class="om30pd-sl"><span class="om30pd-s ${/ANDAMENTO/.test(norm(s.status)) ? 'and' : ''}">${esc(s.s.nome)} · ${esc(s.status)}</span>
-            <div class="om30pd-itens" data-k="${s.s.k}" data-enc="${esc(s.enc)}">…</div></div>`).join('')}
-          <div class="om30pd-abrir">Dar baixa ›</div></div>`).join('')
-          : '<div class="om30pd-vazio">Nenhum paciente pendente em Medicação, Exames ou Enfermagem.</div>');
-      el.querySelectorAll('.om30pd-p').forEach(d => d.onclick = () => abrirPaciente(dados.pacientes[+d.dataset.i]));
-      preencherItens(el);
-    };
-    input.oninput = pinta; pinta();
-  }
 
-  const htmlItens = xs => xs === null ? '<span class="om30pd-it-nd">itens: abra para ver</span>'
-    : !xs.length ? '<span class="om30pd-it-nd">nenhum item</span>'
-    : xs.map(x => `<div class="om30pd-it ${x.estado}"><span class="mk">${x.estado === 'feito' ? '✔' : x.estado === 'cancelado' ? '✖' : '•'}</span><b>${esc(x.nome)}</b>${x.det ? ` <small>${esc(x.det)}</small>` : ''}${x.obs ? `<div class="obs">Obs.: ${esc(x.obs)}</div>` : ''}</div>`).join('');
-  async function preencherItens(raiz) {
-    const alvos = [...raiz.querySelectorAll('.om30pd-itens')];
-    let i = 0;
-    const trab = async () => { while (i < alvos.length) { const d = alvos[i++]; const xs = await itensDoMedico(d.dataset.k, d.dataset.enc); if (d.isConnected) d.innerHTML = htmlItens(xs); } };
-    await Promise.all([trab(), trab(), trab()]);   // 3 por vez
-  }
+  const CSS_X = `
+  .om30x-rowbtn{display:inline-flex;align-items:center;gap:5px;margin:3px 0 0;border:1px solid #9fd3b4;background:#effaf3;color:#0f5132;border-radius:6px;padding:3px 8px;font:700 11.5px "Segoe UI",Arial;cursor:pointer;white-space:nowrap;width:100%;justify-content:center;box-sizing:border-box}
+  .om30x-rowbtn:hover{background:#198754;color:#fff;border-color:#198754}.om30x-rowbtn .n{background:#198754;color:#fff;border-radius:999px;padding:0 6px;font-size:10.5px}
+  .om30x-rowbtn:hover .n{background:#fff;color:#198754}
+  .om30x-fundo{position:fixed;inset:0;background:rgba(10,25,40,.28);z-index:2147482000;opacity:0;pointer-events:none;transition:opacity .15s}
+  .om30x-fundo.on{opacity:1;pointer-events:auto}
+  .om30x{position:fixed;top:0;right:0;bottom:0;width:480px;max-width:97vw;background:#f3f6f8;z-index:2147482001;box-shadow:-14px 0 40px rgba(10,25,40,.25);display:flex;flex-direction:column;font:13.5px/1.4 "Segoe UI",Arial,sans-serif;color:#1d2d3a;transform:translateX(105%);transition:transform .18s ease}
+  .om30x.on{transform:none}
+  .om30x *{box-sizing:border-box}
+  .om30x-cab{background:linear-gradient(135deg,#0f5132,#157347);color:#fff;padding:14px 16px 12px}
+  .om30x-cab .l1{display:flex;align-items:center;gap:8px}.om30x-cab .t{font-size:11px;letter-spacing:.7px;text-transform:uppercase;opacity:.8;flex:1;font-weight:700}
+  .om30x-cab .x{border:0;background:rgba(255,255,255,.16);color:#fff;width:30px;height:30px;border-radius:8px;font-size:15px;cursor:pointer}
+  .om30x-cab .x:hover{background:rgba(255,255,255,.28)}
+  .om30x-cab .nm{font-size:18px;font-weight:800;margin-top:4px;line-height:1.2}
+  .om30x-cab .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.om30x-cab .tag{background:rgba(255,255,255,.16);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600}
+  .om30x-cab .tag.s{background:#fff;color:#0f5132;font-weight:800}
+  .om30x-corpo{flex:1;overflow:auto;padding:12px}
+  .om30x-barra{display:flex;gap:6px;margin-bottom:10px}.om30x-barra button{flex:1;border:1px solid #d3dce3;background:#fff;border-radius:8px;padding:7px;font:700 12px inherit;cursor:pointer;color:#33485a}
+  .om30x-barra button:hover{border-color:#198754;color:#0f5132}
+  .om30x-sala{background:#fff;border-radius:12px;margin-bottom:10px;box-shadow:0 1px 4px rgba(10,25,40,.07);overflow:hidden}
+  .om30x-sala .h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #eef2f5}
+  .om30x-sala .h .ic{font-size:16px}.om30x-sala .h b{flex:1;font-size:14px}.om30x-sala .h .st{font-size:11px;font-weight:700;border-radius:999px;padding:2px 8px;background:#e8eff5;color:#3d5a70}
+  .om30x-sala .h .st.and{background:#fff3cd;color:#7a5600}
+  .om30x-it{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #f1f4f6;transition:background .1s}
+  .om30x-it:last-child{border-bottom:0}.om30x-it.nao{background:#fff6f5}.om30x-it .tx{flex:1;min-width:0}
+  .om30x-it .tx b{display:block;font-size:13.5px;word-break:break-word}.om30x-it .tx small{display:block;color:#62788a;font-size:12px}
+  .om30x-it .tx .obs{color:#8a5a00;font-size:12px}.om30x-it.nao .tx b{color:#8f2a22;text-decoration:line-through}
+  .om30x-it.res{opacity:.55}.om30x-it.res .tx b{font-weight:600}
+  .om30x-seg{display:flex;border:1px solid #d3dce3;border-radius:9px;overflow:hidden;flex:none}
+  .om30x-seg button{border:0;background:#fff;padding:6px 10px;font:700 12px inherit;cursor:pointer;color:#5f7383}
+  .om30x-seg button+button{border-left:1px solid #d3dce3}
+  .om30x-seg button.on.f{background:#198754;color:#fff}.om30x-seg button.on.n{background:#c0392b;color:#fff}
+  .om30x-feito{font-size:11.5px;font-weight:700;color:#198754;flex:none}.om30x-feito.c{color:#c0392b}
+  .om30x-vazio{padding:12px;color:#6b7f8e;font-size:12.5px}.om30x-vazio button{margin-top:6px;border:1px solid #198754;background:#fff;color:#0f5132;border-radius:7px;padding:5px 10px;font:700 12px inherit;cursor:pointer}
+  .om30x-tag{display:inline-block;margin-top:3px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 6px;background:#fff3cd;color:#7a5600}
+  .om30x-bloco{background:#fff;border-radius:12px;padding:11px 12px;margin-bottom:10px;box-shadow:0 1px 4px rgba(10,25,40,.07)}
+  .om30x-bloco .rot{font-weight:800;font-size:12.5px;margin-bottom:6px}.om30x-bloco .rot.r{color:#8f2a22}
+  .om30x-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px}.om30x-chips button{border:1px solid #e6c9c5;background:#fff;border-radius:999px;padding:4px 10px;font:600 11.5px inherit;cursor:pointer;color:#7a2a22}
+  .om30x-chips button.on{background:#c0392b;border-color:#c0392b;color:#fff}
+  .om30x textarea{width:100%;min-height:52px;border:1px solid #d3dce3;border-radius:8px;padding:7px 9px;font:13px inherit;resize:vertical}
+  .om30x textarea:focus{outline:2px solid #19875455;border-color:#198754}
+  .om30x-chk{display:flex;gap:8px;align-items:center;font-weight:700;font-size:12.5px;cursor:pointer}.om30x-chk input{width:16px;height:16px}
+  .om30x-nota{font-size:12px;color:#62788a;margin-top:6px}
+  .om30x-erro{background:#fdecea;color:#8f2a22;border-radius:9px;padding:8px 10px;font-size:12.5px;margin-bottom:10px;white-space:pre-wrap}
+  .om30x-rod{background:#fff;border-top:1px solid #e2e8ee;padding:12px}
+  .om30x-res{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px;font-size:12px;font-weight:700}.om30x-res span{border-radius:999px;padding:3px 9px;background:#e9f6ee;color:#0f5132}.om30x-res span.n{background:#fdecea;color:#8f2a22}
+  .om30x-go{width:100%;border:0;border-radius:10px;background:#198754;color:#fff;padding:12px;font:800 14px inherit;cursor:pointer;box-shadow:0 4px 12px rgba(25,135,84,.3)}
+  .om30x-go:hover{background:#157347}.om30x-go:disabled{background:#a9bdb1;box-shadow:none;cursor:default}
+  .om30x-carr{display:flex;align-items:center;gap:10px;justify-content:center;padding:40px 10px;color:#5f7383}
+  .om30x-spin{width:18px;height:18px;border:3px solid #cfe3d7;border-top-color:#198754;border-radius:50%;animation:om30xg .8s linear infinite}
+  @keyframes om30xg{to{transform:rotate(360deg)}}
+  /* janela própria (no lugar do confirm/alert do navegador) */
+  .om30x-dlgf{position:fixed;inset:0;background:rgba(10,25,40,.45);z-index:2147483600;display:flex;align-items:center;justify-content:center;padding:16px;font:13.5px/1.4 "Segoe UI",Arial,sans-serif;color:#1d2d3a}
+  .om30x-dlg{background:#fff;border-radius:14px;width:min(460px,96vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden}
+  .om30x-dlg .dh{padding:14px 16px 10px;display:flex;gap:10px;align-items:center}.om30x-dlg .dh .ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:17px;background:#e9f6ee;flex:none}
+  .om30x-dlg.erro .dh .ic{background:#fdecea}.om30x-dlg.aviso .dh .ic{background:#fff3cd}
+  .om30x-dlg .dh b{font-size:15.5px}.om30x-dlg .dc{padding:0 16px 6px;overflow:auto}
+  .om30x-dlg .db{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px 14px}
+  .om30x-dlg .db button{border:0;border-radius:9px;padding:9px 16px;font:700 13px inherit;cursor:pointer;background:#eef2f5;color:#33485a}
+  .om30x-dlg .db button.p{background:#198754;color:#fff}.om30x-dlg .db button.d{background:#c0392b;color:#fff}
+  .om30x-rs{border:1px solid #eef2f5;border-radius:10px;margin-bottom:8px;overflow:hidden}
+  .om30x-rs .rh{background:#f6f9fb;padding:6px 10px;font-weight:800;font-size:12.5px}
+  .om30x-rs ul{margin:0;padding:6px 10px 6px 26px;font-size:12.5px}.om30x-rs li{margin:2px 0}.om30x-rs li.n{color:#8f2a22}
+  .om30x-rs .fat{padding:6px 10px;border-top:1px dashed #e2e8ee;font-size:11.5px;color:#3d5a70}.om30x-rs .fat b{display:block;font-size:11px;color:#62788a;text-transform:uppercase;letter-spacing:.4px}
+  .om30x-passos{list-style:none;margin:0;padding:0}.om30x-passos li{display:flex;gap:8px;align-items:center;padding:5px 0;font-size:13px}
+  .om30x-passos .b{width:18px;text-align:center}`;
+  function cssX() { if (document.getElementById('om30x-css')) return; const st = document.createElement('style'); st.id = 'om30x-css'; st.textContent = CSS_X; document.head.appendChild(st); }
 
-  async function abrirPaciente(p) {
-    const salasTxt = p.salas.map(s => s.s.nome).join(', ');
-    if (!confirm(`Abrir as fichas de ${p.nome}?\n\nSalas: ${salasTxt}\n\nComo ao clicar em Atender, o paciente fica "Em Andamento" nessas salas.`)) return;
-    aberto = { p, fichas: [], erros: [], escolha: new Map() };
-    const c = conteudo();
-    c.innerHTML = '<div class="om30pd-vazio">Abrindo as fichas…</div>';
-    for (const s of p.salas) {
-      try {
-        const f = await carregarFicha(s.s, s.enc);
-        // nome, dose e via como o médico escreveu (consulta da sala), na mesma ordem da ficha
-        const med = await itensDoMedico(s.s.k, s.enc);
-        if (med && med.length === f.itens.length) f.itens.forEach((x, i) => { x.nome = med[i].nome || x.nome; x.det = med[i].det; x.obs = med[i].obs; });
-        aberto.fichas.push(f);
-      } catch (e) { aberto.erros.push(e.message); }
-    }
-    pintarPaciente();
-  }
-  function pintarPaciente(msgTxt = '', tipo = '') {
-    const a = aberto, c = conteudo();
-    const motAnt = c.querySelector('.om30pd-mot')?.value || '', reavAnt = !!c.querySelector('.om30pd-reav')?.checked, justAnt = c.querySelector('.om30pd-just')?.value || '';
-    const abertos = a.fichas.flatMap(f => f.itens.filter(x => x.aberto).map(x => ({ f, x })));
-    for (const { x } of abertos) if (!a.escolha.has(x.it)) a.escolha.set(x.it, 'fez');
-    const nNao = abertos.filter(({ x }) => a.escolha.get(x.it) === 'nao').length;
-    const motivosSala = [...new Set(abertos.filter(({ x }) => a.escolha.get(x.it) === 'nao').flatMap(({ f }) => (SALAS[f.s.k] || SALAS.medicacao).motivos))];
-    c.innerHTML = `<div class="om30pd-pac"><button class="om30pd-voltar" style="border:0;background:none;color:#0f5132;font-weight:700;cursor:pointer;padding:6px 0">← Voltar</button>
-        <div class="nm">${esc(a.p.nome)}</div><div class="sub">${[a.p.senha && 'Senha ' + esc(a.p.senha), 'Atend. ' + esc(a.p.atendimento.split('#')[1])].filter(Boolean).join(' · ')}</div></div>
-      <div class="om30pd-lista">
-        ${a.erros.map(e => `<div class="om30pd-erro">⚠ ${esc(e)}</div>`).join('')}
-        ${abertos.length > 1 ? '<div class="om30bl-acoesgerais"><button data-todos="fez">✔ Tudo feito</button><button data-todos="nao">✖ Nada feito</button></div>' : ''}
-        ${a.fichas.map((f, fi) => `<div class="om30pd-sala"><h4>${esc(f.s.nome)} <small>${f.itens.filter(x => x.aberto).length} pendente(s)</small></h4>
-          ${f.itens.map(x => {
-            if (!x.aberto) return `<div class="om30bl-it feito"><div class="tx"><b>${esc(x.nome)}</b><small>já resolvido</small></div></div>`;
-            const v = a.escolha.get(x.it);
-            return `<div class="om30bl-it ${v}" data-f="${fi}" data-i="${x.i}"><div class="tx"><b>${esc(x.nome)}</b>${x.det ? `<small>${esc(x.det)}</small>` : ''}${x.obs ? `<small>Obs.: ${esc(x.obs)}</small>` : ''}${x.estoque ? '<br><span class="om30bl-tag">baixa de estoque: fazer pela ficha</span>' : ''}</div>
-              <div class="tg"><button data-v="fez" class="${v === 'fez' ? 'on' : ''}">✔ Fez</button><button data-v="nao" class="${v === 'nao' ? 'on' : ''}">✖ Não</button></div></div>`;
-          }).join('') || '<div class="om30pd-vazio" style="padding:8px">Nada pendente nesta sala.</div>'}
-          ${!f.bpaOk ? '<div class="om30pd-erro">Faturamento desta sala ainda não confirmado: esta sala fica para a ficha (painel ⚡ Baixa rápida) até a captura dela.</div>' : ''}</div>`).join('')}
-        ${nNao ? `<div class="om30pd-sala"><h4 style="color:#8f2a22">Motivo do que não foi feito (${nNao})</h4><div class="om30bl-chips">${motivosSala.map(m => `<button data-m="${esc(m)}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
-          <textarea class="om30pd-mot" placeholder="Justificativa do cancelamento">${esc(motAnt)}</textarea></div>` : ''}
-        <div class="om30pd-sala"><label class="om30bl-reav"><input type="checkbox" class="om30pd-reav"${reavAnt ? ' checked' : ''}> <span>Encaminhar para reavaliação médica</span></label>
-          <textarea class="om30pd-just" placeholder="Justificativa para o médico"${reavAnt ? '' : ' hidden'}>${esc(justAnt)}</textarea>
-          <div class="om30pd-fat">Sem marcar, o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div></div>
-        <div class="om30bl-msg ${tipo}">${esc(msgTxt)}</div>
-      </div>
-      <div class="om30pd-rod"><button class="om30bl-go">Dar baixa em tudo</button></div>`;
-    c.querySelector('.om30pd-voltar').onclick = () => { if (ocupado) return; aberto = null; atualizarAba(); };
-    c.querySelectorAll('.om30bl-it[data-f] .tg button').forEach(b => b.onclick = () => {
-      const d = b.closest('[data-f]'); a.escolha.set(a.fichas[+d.dataset.f].itens[+d.dataset.i].it, b.dataset.v); pintarPaciente();
+  // Janela: { tipo: 'ok'|'aviso'|'erro', icone, titulo, html, botoes: [{ txt, classe, valor }] } → valor do botão
+  function janela({ tipo = 'ok', icone = '✅', titulo, html = '', botoes = [{ txt: 'OK', classe: 'p', valor: true }] }) {
+    cssX();
+    return new Promise(res => {
+      const f = document.createElement('div');
+      f.className = 'om30x-dlgf';
+      f.innerHTML = `<div class="om30x-dlg ${tipo}"><div class="dh"><span class="ic">${icone}</span><b>${esc(titulo)}</b></div><div class="dc">${html}</div><div class="db"></div></div>`;
+      const db = f.querySelector('.db');
+      const fechar = v => { f.remove(); document.removeEventListener('keydown', tecla, true); res(v); };
+      for (const b of botoes) { const e = document.createElement('button'); e.textContent = b.txt; if (b.classe) e.className = b.classe; e.onclick = () => fechar(b.valor); db.appendChild(e); }
+      const tecla = ev => { if (ev.key === 'Escape') { ev.stopPropagation(); fechar(botoes.find(b => b.valor === false || b.valor === null)?.valor ?? null); } };
+      document.addEventListener('keydown', tecla, true);
+      document.body.appendChild(f);
+      setTimeout(() => db.querySelector('button.p, button.d, button:last-child')?.focus(), 30);
     });
-    c.querySelectorAll('[data-todos]').forEach(b => b.onclick = () => { abertos.forEach(({ x }) => a.escolha.set(x.it, b.dataset.todos)); pintarPaciente(); });
-    c.querySelectorAll('.om30bl-chips button').forEach(b => b.onclick = () => { c.querySelector('.om30pd-mot').value = b.dataset.m; validar(); });
-    const rv = c.querySelector('.om30pd-reav'); rv.onchange = () => { c.querySelector('.om30pd-just').hidden = !rv.checked; validar(); };
-    c.querySelectorAll('textarea').forEach(t => t.oninput = validar);
-    const go = c.querySelector('.om30bl-go');
-    go.onclick = () => darBaixaTudo();
-    function validar() {
-      const mot = clean(c.querySelector('.om30pd-mot')?.value), reav = rv.checked, just = clean(c.querySelector('.om30pd-just').value);
-      const f = abertos.length - nNao;
-      go.disabled = ocupado || !abertos.length || (nNao && !mot) || (reav && !just);
-      go.textContent = !abertos.length ? 'Nada pendente' : `Dar baixa em tudo: ${f} feito(s)${nNao ? ` + ${nNao} cancelado(s)` : ''}`;
-    }
-    validar();
+  }
+  function janelaProgresso(titulo) {
+    cssX();
+    const f = document.createElement('div');
+    f.className = 'om30x-dlgf';
+    f.innerHTML = `<div class="om30x-dlg"><div class="dh"><span class="ic"><span class="om30x-spin"></span></span><b>${esc(titulo)}</b></div><div class="dc"><ul class="om30x-passos"></ul></div><div class="db"></div></div>`;
+    document.body.appendChild(f);
+    const ul = f.querySelector('ul');
+    return {
+      passo(txt) { const li = document.createElement('li'); li.innerHTML = `<span class="b"><span class="om30x-spin" style="width:13px;height:13px;border-width:2px"></span></span><span>${esc(txt)}</span>`; ul.appendChild(li); return { ok: (t) => { li.querySelector('.b').textContent = '✔'; li.querySelector('.b').style.color = '#198754'; if (t) li.lastChild.textContent = t; }, erro: (t) => { li.querySelector('.b').textContent = '✖'; li.querySelector('.b').style.color = '#c0392b'; if (t) li.lastChild.textContent = t; } }; },
+      fechar() { f.remove(); },
+    };
   }
 
-  async function darBaixaTudo() {
-    const a = aberto, c = conteudo();
-    const motivo = clean(c.querySelector('.om30pd-mot')?.value), reav = !!c.querySelector('.om30pd-reav')?.checked, just = clean(c.querySelector('.om30pd-just')?.value);
-    const plano = a.fichas.map(f => {
-      const abertos = f.itens.filter(x => x.aberto);
-      return { f, fez: abertos.filter(x => a.escolha.get(x.it) === 'fez'), nao: abertos.filter(x => a.escolha.get(x.it) === 'nao') };
-    }).filter(p => p.fez.length || p.nao.length);
-    if (!plano.length) return;
-    ocupado = true;
-    const go = c.querySelector('.om30bl-go'); go.disabled = true;
-    const passo = t => { go.textContent = t; };
-    // Conferência de tudo ANTES de salvar qualquer sala.
-    try {
-      for (const p of plano) {
-        if (!p.f.bpaOk) throw new Error(`${p.f.s.nome}: faturamento em formato desconhecido`);
-        for (const [lista, campos] of [[p.fez, REQUER[p.f.s.k].fez], [p.nao, REQUER[p.f.s.k].nao]])
-          for (const x of lista) { const falta = campos.filter(c => ![].concat(c).some(y => inp(x.it, y))); if (falta.length) throw new Error(`${p.f.s.nome}: a ficha não tem o campo ${falta.map(c => [].concat(c).map(y => y.slice(1)).join(' ou ')).join(', ')} em "${x.nome}" (formato diferente do esperado)`); }
-        const est = p.fez.filter(x => x.estoque);
-        if (est.length) throw new Error(`${p.f.s.nome}: ${est.map(x => x.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`);
-        passo(`Conferindo faturamento · ${p.f.s.nome}…`);
-        p.linhas = p.fez.length ? await montarFaturamento(p.f, p.fez) : [];
+  // ---------- linha da fila → atendimento ----------
+  // Itens que o Vue da fila do Controle de Salas tem (nome, senha, atendimento_str, encaminhamento_id).
+  function itensDaFila() {
+    const vistos = new Set(), out = [];
+    for (const el of document.querySelectorAll('table, tbody, tr')) {
+      const vm = el.__vue__;
+      if (!vm || vistos.has(vm)) continue;
+      vistos.add(vm);
+      for (let v = vm, n = 0; v && n < 4; v = v.$parent, n++) {
+        for (const arr of [v.items, v.$data?.items, v.$props?.items, v.colecao, v.collection])
+          if (Array.isArray(arr)) for (const it of arr) if (it?.atendimento_str && !out.includes(it)) out.push(it);
       }
-    } catch (e) {
-      ocupado = false;
-      return pintarPaciente(`Nada foi salvo. ${e.message}`, 'erro');
     }
-    const resumo = plano.map(p => `${p.f.s.nome.toUpperCase()}\n` +
-      (p.fez.length ? `  ✔ ${p.fez.map(x => x.nome).join('\n  ✔ ')}\n` : '') +
-      (p.nao.length ? `  ✖ ${p.nao.map(x => x.nome).join('\n  ✖ ')}\n` : '') +
-      (p.linhas.length ? `  Faturamento: ${p.linhas.map(l => l.texto).join(' | ')}\n` : '')).join('\n');
-    if (!confirm(`Dar baixa em ${a.p.nome}?\n\n${resumo}${plano.some(p => p.nao.length) ? `\nMotivo: ${motivo}\n` : ''}${reav ? `Reavaliação médica: ${just}\n` : ''}`)) { ocupado = false; return pintarPaciente(); }
+    return out;
+  }
+  function itemDaLinha(tr, itens) {
+    const t = norm(tr.textContent);
+    const cands = itens.filter(it => it.nome_municipe && t.includes(norm(it.nome_municipe)));
+    if (cands.length <= 1) return cands[0] || null;
+    const porSenha = cands.filter(it => it.senha && t.includes(norm(it.senha)));
+    return porSenha.length === 1 ? porSenha[0] : null;
+  }
+  let PEND = { em: 0, por: new Map(), promessa: null };
+  async function pendenciasCache(forcar) {
+    if (!forcar && Date.now() - PEND.em < 30e3) return PEND;
+    if (PEND.promessa) return PEND.promessa;
+    PEND.promessa = carregarPendencias().then(d => { PEND = { em: Date.now(), por: new Map(d.pacientes.map(p => [p.atendimento, p])), erros: d.erros, promessa: null }; return PEND; })
+      .catch(() => { PEND.promessa = null; return PEND; });
+    return PEND.promessa;
+  }
+  function instalarBotoesLinhas() {
+    cssX();
+    const tick = () => {
+      if (document.hidden) return;
+      const linhas = [...document.querySelectorAll('tr')].filter(tr => tr.querySelector('.botao-atender, .botao-chamar'));
+      if (!linhas.length) return;
+      const itens = itensDaFila();
+      for (const tr of linhas) {
+        const it = itemDaLinha(tr, itens);
+        let b = tr.querySelector('.om30x-rowbtn');
+        if (!it) { b?.remove(); continue; }
+        if (!b) {
+          b = document.createElement('button');
+          b.type = 'button'; b.className = 'om30x-rowbtn';
+          b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); abrirPainel(b._it); }, true);
+          const alvo = tr.querySelector('.botao-atender')?.closest('td') || tr.cells[tr.cells.length - 1];
+          alvo?.appendChild(b);
+        }
+        b._it = it;
+        const p = PEND.por.get(String(it.atendimento_str));
+        const n = p ? p.salas.length : 0;
+        const html = `📋 Pendências${n > 1 ? ` <span class="n">${n} salas</span>` : ''}`;
+        if (b.dataset.h !== html) { b.dataset.h = html; b.innerHTML = html; }
+        b.title = p ? `Pendências em: ${p.salas.map(s => s.s.nome).join(', ')}` : 'Ver e dar baixa em tudo deste paciente';
+      }
+    };
+    setInterval(tick, 1200);
+    const ciclo = async () => { if (!document.hidden) { await pendenciasCache(true); tick(); } };
+    ciclo(); setInterval(ciclo, 45000);
+  }
 
+  // ---------- painel lateral do paciente ----------
+  let painelX = null, fundoX = null, estado = null, ocupado = false;
+  function montarPainelX() {
+    if (painelX) return;
+    cssX(); css();
+    fundoX = document.createElement('div'); fundoX.className = 'om30x-fundo';
+    painelX = document.createElement('div'); painelX.className = 'om30x';
+    document.body.append(fundoX, painelX);
+    fundoX.onclick = () => fecharPainel();
+    ['keydown', 'keyup', 'keypress'].forEach(t => painelX.addEventListener(t, e => e.stopPropagation()));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && painelX.classList.contains('on') && !document.querySelector('.om30x-dlgf')) fecharPainel(); });
+  }
+  function fecharPainel() { if (ocupado) return; painelX?.classList.remove('on'); fundoX?.classList.remove('on'); estado = null; }
+  const chave = (k, enc, i) => `${k}#${enc}#${i}`;
+
+  async function abrirPainel(it) {
+    montarPainelX();
+    painelX.classList.add('on'); fundoX.classList.add('on');
+    estado = { at: String(it.atendimento_str), nome: clean(it.nome_municipe), senha: clean(it.senha), salas: [], escolha: new Map(), motivo: '', reav: false, just: '', carregando: true, erros: [] };
+    pintarPainel();
+    const st = estado;
+    const pend = await pendenciasCache(true);
+    if (estado !== st) return;
+    const p = pend.por.get(st.at);
+    if (pend.erros?.length) st.erros.push(...pend.erros.map(e => 'Não li ' + e));
+    st.salas = (p ? p.salas : []).map(x => ({ s: x.s, enc: x.enc, status: x.status, med: undefined, ficha: null }));
+    if (p?.senha && !st.senha) st.senha = p.senha;
+    // ordem: Medicação, Exames, Enfermagem (como o médico costuma mandar)
+    await Promise.all(st.salas.map(async x => { x.med = await itensDoMedico(x.s.k, x.enc); }));
+    if (estado !== st) return;
+    st.carregando = false;
+    pintarPainel();
+  }
+
+  // Itens que o técnico decide: da consulta (o que o médico pediu); sem consulta, da ficha aberta.
+  function itensDaSala(x) {
+    if (x.med) return x.med.map((m, i) => ({ i, nome: m.nome, det: m.det, obs: m.obs, pendente: m.estado === 'pendente', estado: m.estado, estoque: x.ficha?.itens[i]?.estoque }));
+    if (x.ficha) return x.ficha.itens.map(f => ({ i: f.i, nome: f.nome, det: f.det || '', obs: f.obs || '', pendente: f.aberto, estado: f.aberto ? 'pendente' : 'feito', estoque: f.estoque }));
+    return null;
+  }
+  function pendentesTodos() {
+    const out = [];
+    for (const x of estado.salas) for (const y of itensDaSala(x) || []) if (y.pendente) {
+      const k = chave(x.s.k, x.enc, y.i);
+      if (!estado.escolha.has(k)) estado.escolha.set(k, 'fez');
+      out.push({ x, y, k, v: estado.escolha.get(k) });
+    }
+    return out;
+  }
+
+  function pintarPainel() {
+    const e = estado;
+    if (!e || !painelX) return;
+    const ativo = document.activeElement;
+    const foco = ativo && painelX.contains(ativo) && ativo.dataset.f ? ativo.dataset.f : '';
+    const cab = `<div class="om30x-cab"><div class="l1"><span class="t">Pendências do paciente</span><button class="x" data-a="fechar" title="Fechar (Esc)">✕</button></div>
+      <div class="nm">${esc(e.nome || 'Paciente')}</div>
+      <div class="tags">${e.senha ? `<span class="tag s">${esc(e.senha)}</span>` : ''}<span class="tag">Atend. ${esc(e.at.split('#')[1])}</span>${e.salas.length ? `<span class="tag">${e.salas.length} sala${e.salas.length > 1 ? 's' : ''}</span>` : ''}</div></div>`;
+    if (e.carregando) { painelX.innerHTML = cab + '<div class="om30x-corpo"><div class="om30x-carr"><span class="om30x-spin"></span> Buscando o que o médico pediu…</div></div>'; ligarPainel(); return; }
+    const pend = pendentesTodos();
+    const nF = pend.filter(p => p.v === 'fez').length, nN = pend.length - nF;
+    const motivos = [...new Set(pend.filter(p => p.v === 'nao').flatMap(p => (SALAS[p.x.s.k] || SALAS.medicacao).motivos))];
+    const salasHtml = e.salas.map((x, xi) => {
+      const its = itensDaSala(x);
+      const corpo = its === null
+        ? `<div class="om30x-vazio">Não consegui ler os itens desta sala sem abrir a ficha.<br><button data-a="abrirficha" data-x="${xi}">Abrir a ficha desta sala</button><div class="om30x-nota">Abrir a ficha deixa o paciente "Em Andamento" nela, como o Atender.</div></div>`
+        : !its.length ? '<div class="om30x-vazio">Nenhum item.</div>'
+        : its.map(y => {
+          const k = chave(x.s.k, x.enc, y.i), v = e.escolha.get(k);
+          const tx = `<div class="tx"><b>${esc(y.nome)}</b>${y.det ? `<small>${esc(y.det)}</small>` : ''}${y.obs ? `<small class="obs">Obs.: ${esc(y.obs)}</small>` : ''}${y.estoque && y.pendente ? '<span class="om30x-tag">pede almoxarifado/quantidade: fazer pela ficha</span>' : ''}</div>`;
+          if (!y.pendente) return `<div class="om30x-it res">${tx}<span class="om30x-feito ${y.estado === 'cancelado' ? 'c' : ''}">${y.estado === 'cancelado' ? '✖ cancelado' : '✔ já feito'}</span></div>`;
+          return `<div class="om30x-it ${v === 'nao' ? 'nao' : ''}">${tx}<div class="om30x-seg"><button class="f ${v === 'fez' ? 'on' : ''}" data-k="${esc(k)}" data-v="fez">✔ ${esc(x.s.k === 'medicacao' ? 'Aplicar' : x.s.k === 'exames' ? 'Coletar' : 'Realizar')}</button><button class="n ${v === 'nao' ? 'on' : ''}" data-k="${esc(k)}" data-v="nao">✖ Não</button></div></div>`;
+        }).join('');
+      return `<div class="om30x-sala"><div class="h"><span class="ic">${ICONE[x.s.k] || '•'}</span><b>${esc(x.s.nome)}</b><span class="st ${/ANDAMENTO/.test(norm(x.status)) ? 'and' : ''}">${esc(x.status)}</span></div>${corpo}</div>`;
+    }).join('');
+    painelX.innerHTML = cab + `<div class="om30x-corpo">
+      ${e.erros.map(t => `<div class="om30x-erro">⚠ ${esc(t)}</div>`).join('')}
+      ${!e.salas.length ? '<div class="om30x-vazio">Nenhuma pendência em Medicação, Exames ou Enfermagem para este atendimento.</div>' : ''}
+      ${pend.length > 1 ? '<div class="om30x-barra"><button data-a="todos" data-v="fez">✔ Fiz tudo</button><button data-a="todos" data-v="nao">✖ Não fiz nada</button></div>' : ''}
+      ${salasHtml}
+      ${nN ? `<div class="om30x-bloco"><div class="rot r">Por que não foi feito? (${nN})</div><div class="om30x-chips">${motivos.map(m => `<button data-m="${esc(m)}" class="${m === e.motivo ? 'on' : ''}">${esc(m.replace(/\.$/, ''))}</button>`).join('')}</div>
+        <textarea data-f="motivo" placeholder="Ou escreva a justificativa">${esc(e.motivo)}</textarea></div>` : ''}
+      ${e.salas.length ? `<div class="om30x-bloco"><label class="om30x-chk"><input type="checkbox" data-f="reav"${e.reav ? ' checked' : ''}> Encaminhar para reavaliação médica</label>
+        ${e.reav ? `<textarea data-f="just" style="margin-top:7px" placeholder="Justificativa para o médico">${esc(e.just)}</textarea>` : ''}
+        <div class="om30x-nota">Sem marcar, o paciente segue o destino que o médico deixou (retorno ao médico, Raio-X…).</div></div>` : ''}
+    </div>
+    <div class="om30x-rod">${pend.length ? `<div class="om30x-res"><span>✔ ${nF} ${nF === 1 ? 'feito' : 'feitos'}</span>${nN ? `<span class="n">✖ ${nN} não ${nN === 1 ? 'feito' : 'feitos'}</span>` : ''}</div>` : ''}
+      <button class="om30x-go" data-a="go">Realizar tudo e dar baixa</button></div>`;
+    ligarPainel();
+    if (foco) { const t = painelX.querySelector(`[data-f="${foco}"]`); if (t) { t.focus(); try { t.setSelectionRange(t.value.length, t.value.length); } catch {} } }
+    validarPainel();
+  }
+  function validarPainel() {
+    const e = estado, go = painelX.querySelector('[data-a="go"]');
+    if (!go || !e) return;
+    const pend = pendentesTodos(), nN = pend.filter(p => p.v === 'nao').length;
+    const falta = ocupado ? 'Dando baixa…' : !pend.length ? 'Nada pendente' : nN && !clean(e.motivo) ? 'Escolha o motivo do que não foi feito' : e.reav && !clean(e.just) ? 'Escreva a justificativa para o médico' : '';
+    go.disabled = !!falta;
+    go.textContent = falta || `Realizar tudo e dar baixa (${pend.length})`;
+  }
+  function ligarPainel() {
+    const e = estado;
+    painelX.querySelector('[data-a="fechar"]').onclick = () => fecharPainel();
+    painelX.querySelectorAll('.om30x-seg button').forEach(b => b.onclick = () => { e.escolha.set(b.dataset.k, b.dataset.v); pintarPainel(); });
+    painelX.querySelectorAll('[data-a="todos"]').forEach(b => b.onclick = () => { for (const p of pendentesTodos()) e.escolha.set(p.k, b.dataset.v); pintarPainel(); });
+    painelX.querySelectorAll('.om30x-chips button').forEach(b => b.onclick = () => { e.motivo = b.dataset.m; pintarPainel(); });
+    const mt = painelX.querySelector('[data-f="motivo"]'); if (mt) mt.oninput = () => { e.motivo = mt.value; painelX.querySelectorAll('.om30x-chips button').forEach(c => c.classList.toggle('on', c.dataset.m === mt.value)); validarPainel(); };
+    const rv = painelX.querySelector('[data-f="reav"]'); if (rv) rv.onchange = () => { e.reav = rv.checked; pintarPainel(); };
+    const ju = painelX.querySelector('[data-f="just"]'); if (ju) ju.oninput = () => { e.just = ju.value; validarPainel(); };
+    painelX.querySelectorAll('[data-a="abrirficha"]').forEach(b => b.onclick = async () => {
+      const x = e.salas[+b.dataset.x];
+      b.disabled = true; b.textContent = 'Abrindo…';
+      try { x.ficha = await carregarFicha(x.s, x.enc); } catch (er) { e.erros.push(er.message); }
+      pintarPainel();
+    });
+    const go = painelX.querySelector('[data-a="go"]'); if (go) go.onclick = () => realizarTudo();
+  }
+
+  async function realizarTudo() {
+    const e = estado;
+    if (!e || ocupado) return;
+    const pend = pendentesTodos();
+    if (!pend.length) return;
+    ocupado = true; validarPainel();
+    let plano = [];
+    // 1) Abrir as fichas e conferir tudo antes de salvar qualquer sala.
+    const prog = janelaProgresso('Conferindo antes de salvar');
+    try {
+      for (const x of e.salas) {
+        const daqui = pend.filter(p => p.x === x);
+        if (!daqui.length) continue;
+        const pa = prog.passo(`${x.s.nome}: abrindo a ficha`);
+        if (!x.ficha) x.ficha = await carregarFicha(x.s, x.enc);
+        const f = x.ficha;
+        if (x.med && x.med.length !== f.itens.length) { pa.erro(); throw new Error(`${x.s.nome}: a ficha tem ${f.itens.length} itens e a consulta mostra ${x.med.length}. Faça esta sala pela ficha.`); }
+        const fez = [], nao = [];
+        for (const p of daqui) {
+          const fi = f.itens[p.y.i];
+          if (!fi || !fi.aberto) continue;   // já resolvido entre a consulta e agora
+          fi.nome = p.y.nome || fi.nome;
+          (p.v === 'fez' ? fez : nao).push(fi);
+        }
+        if (!f.bpaOk) { pa.erro(); throw new Error(`${x.s.nome}: faturamento em formato desconhecido`); }
+        for (const [lista, campos] of [[fez, REQUER[x.s.k].fez], [nao, REQUER[x.s.k].nao]])
+          for (const y of lista) { const falta = campos.filter(c => ![].concat(c).some(z => inp(y.it, z))); if (falta.length) { pa.erro(); throw new Error(`${x.s.nome}: a ficha não tem o campo ${falta.map(c => [].concat(c).map(z => z.slice(1)).join(' ou ')).join(', ')} em "${y.nome}"`); } }
+        const est = fez.filter(y => y.estoque);
+        if (est.length) { pa.erro(); throw new Error(`${x.s.nome}: ${est.map(y => y.nome).join(', ')} pede almoxarifado/quantidade (baixa de estoque). Faça esta sala pela ficha.`); }
+        pa.ok(`${x.s.nome}: conferindo o faturamento`);
+        const linhas = fez.length ? await montarFaturamento(f, fez) : [];
+        plano.push({ x, f, fez, nao, linhas });
+      }
+    } catch (er) {
+      prog.fechar(); ocupado = false;
+      await janela({ tipo: 'erro', icone: '⚠️', titulo: 'Nada foi salvo', html: `<div>${esc(er.message)}</div>` });
+      return pintarPainel();
+    }
+    prog.fechar();
+    if (!plano.length) { ocupado = false; return pintarPainel(); }
+    // Salva por último a Medicação: se Exames/Enfermagem forem recusados, a Medicação ainda não mudou.
+    plano.sort((a, b) => (a.x.s.k === 'medicacao') - (b.x.s.k === 'medicacao'));
+
+    // 2) Confirmação com o resumo de cada sala e o faturamento.
+    const resumo = plano.map(p => `<div class="om30x-rs"><div class="rh">${ICONE[p.x.s.k] || ''} ${esc(p.x.s.nome)}</div><ul>
+        ${p.fez.map(y => `<li>✔ ${esc(y.nome)}</li>`).join('')}${p.nao.map(y => `<li class="n">✖ ${esc(y.nome)}</li>`).join('')}</ul>
+        ${p.linhas.length ? `<div class="fat"><b>Faturamento</b>${p.linhas.map(l => esc(l.texto)).join('<br>')}</div>` : ''}</div>`).join('') +
+      (plano.some(p => p.nao.length) ? `<div class="om30x-nota"><b>Motivo:</b> ${esc(e.motivo)}</div>` : '') +
+      (e.reav ? `<div class="om30x-nota"><b>Reavaliação médica:</b> ${esc(e.just)}</div>` : '');
+    const ok = await janela({ tipo: 'aviso', icone: '📋', titulo: `Dar baixa em ${e.nome}?`, html: resumo, botoes: [{ txt: 'Voltar', valor: false }, { txt: 'Confirmar baixa', classe: 'p', valor: true }] });
+    if (!ok) { ocupado = false; return pintarPainel(); }
+
+    // 3) Salvar sala por sala, concluir a senha e mandar para o destino final.
+    const prog2 = janelaProgresso('Dando baixa');
     const feitas = [], log = [];
     let ultimo = null;
     try {
       const momento = momentoAgora();
-      for (const [k, p] of plano.entries()) {
-        passo(`Salvando ${p.f.s.nome} (${k + 1}/${plano.length})…`);
+      for (const p of plano) {
+        const pa = prog2.passo(`${p.x.s.nome}: salvando`);
         const prof = p.f.profissional;
-        if (p.nao.length && !prof) throw new Error(`${p.f.s.nome}: profissional atual não encontrado na ficha`);
-        for (const x of p.fez) p.f.s.fazer(x.it);
-        for (const x of p.nao) p.f.s.cancelar(x.it, { motivo, momento, profissional: prof });
-        lancarFaturamento(p.f, p.linhas);
-        if (reav && !marcarReavaliacao(p.f, true, just) && k === plano.length - 1) log.push(`${p.f.s.nome}: ficha sem opção de reavaliação`);
-        const res = await salvarFicha(p.f);
-        feitas.push(p.f.s.nome);
-        await concluirSenhaSala(res, p.f, a.p.atendimento);
-        ultimo = res;
-        log.push(`✔ ${p.f.s.nome}: ${p.fez.length} feito(s), ${p.nao.length} cancelado(s)${p.linhas.length ? `, faturamento ${p.linhas.length} linha(s)` : ''}`);
+        try {
+          if (p.nao.length && !prof) throw new Error(`${p.x.s.nome}: profissional atual não encontrado na ficha`);
+          for (const y of p.fez) p.x.s.fazer(y.it);
+          for (const y of p.nao) p.x.s.cancelar(y.it, { motivo: clean(e.motivo), momento, profissional: prof });
+          lancarFaturamento(p.f, p.linhas);
+          if (e.reav) marcarReavaliacao(p.f, true, clean(e.just));
+          const res = await salvarFicha(p.f);
+          feitas.push(p.x.s.nome);
+          await concluirSenhaSala(res, p.f, e.at);
+          ultimo = res;
+          pa.ok(`${p.x.s.nome}: ${p.fez.length} feito(s)${p.nao.length ? `, ${p.nao.length} cancelado(s)` : ''}${p.linhas.length ? ` · ${p.linhas.length} faturamento(s)` : ''}`);
+        } catch (er) { pa.erro(`${p.x.s.nome}: não salvou`); throw er; }
       }
-      // Senha para o destino final da última sala salva (o que o sistema faria na tela).
       const destino = (ultimo?.destinos || []).filter(Boolean).pop() || '';
-      if (destino && a.p.senha && !/^[-—]$/.test(a.p.senha)) {
-        passo('Encaminhando a senha…');
-        try { await senhaParaDestino(a.p.atendimento, destino); log.push(`Senha ${a.p.senha} → ${NOME_DESTINO[destino] || destino}`); }
-        catch (e) { log.push(`⚠ Senha não foi para ${NOME_DESTINO[destino] || destino} (${e.message}). Use Recuperar na fila de lá.`); }
-      } else if (destino) log.push(`Destino: ${NOME_DESTINO[destino] || destino}`);
-      console.log('[OM30 Baixa Rápida] baixa pela aba', { atendimento: a.p.atendimento, log });
-      aberto = null; ocupado = false;
-      alert(`✔ Baixa concluída — ${a.p.nome}\n\n${log.join('\n')}`);
-      atualizarAba();
-    } catch (e) {
+      if (destino && e.senha && !/^[-—]$/.test(e.senha)) {
+        const pa = prog2.passo(`Senha ${e.senha} → ${NOME_DESTINO[destino] || destino}`);
+        try { await senhaParaDestino(e.at, destino); pa.ok(); log.push(`Senha <b>${esc(e.senha)}</b> foi para <b>${esc(NOME_DESTINO[destino] || destino)}</b>.`); }
+        catch (er) { pa.erro(); log.push(`⚠ A senha não foi para ${esc(NOME_DESTINO[destino] || destino)} (${esc(er.message)}). Use Recuperar na fila de lá.`); }
+      } else if (destino) log.push(`Próximo destino: <b>${esc(NOME_DESTINO[destino] || destino)}</b>.`);
+      prog2.fechar();
+      console.log('[OM30 Baixa Rápida] baixa pelo painel', { atendimento: e.at, salas: feitas });
+      ocupado = false; fecharPainel();
+      await janela({ titulo: 'Baixa concluída', html: `<div style="font-weight:700;margin-bottom:6px">${esc(e.nome)}</div>${plano.map(p => `<div>${ICONE[p.x.s.k] || ''} ${esc(p.x.s.nome)}: ${p.fez.length} feito(s)${p.nao.length ? `, ${p.nao.length} cancelado(s)` : ''}</div>`).join('')}${log.length ? `<div class="om30x-nota">${log.join('<br>')}</div>` : ''}` });
+    } catch (er) {
+      prog2.fechar();
       ocupado = false;
-      console.warn('[OM30 Baixa Rápida] baixa pela aba falhou', e);
-      const resto = plano.map(p => p.f.s.nome).filter(n => !feitas.includes(n));
-      aberto = null;
-      alert(`⚠ Parou: ${e.message}\n\n${feitas.length ? `Já salvo: ${feitas.join(', ')}\n` : 'Nada foi salvo.\n'}${resto.length ? `Não salvo: ${resto.join(', ')} — abra essas fichas para conferir.` : ''}`);
-      atualizarAba();
+      console.warn('[OM30 Baixa Rápida] baixa pelo painel falhou', er);
+      const resto = plano.map(p => p.x.s.nome).filter(n => !feitas.includes(n));
+      fecharPainel();
+      await janela({ tipo: 'erro', icone: '⚠️', titulo: 'A baixa parou', html: `<div>${esc(er.message)}</div><div class="om30x-nota">${feitas.length ? `<b>Já salvo:</b> ${esc(feitas.join(', '))}<br>` : '<b>Nada foi salvo.</b><br>'}${resto.length ? `<b>Não salvo:</b> ${esc(resto.join(', '))}. Abra essas fichas para conferir.` : ''}</div>` });
+    } finally {
+      PEND.em = 0; CACHE_ITENS.clear();
+      try { for (const vm of document.querySelectorAll('.cs-fila')) vm.__vue__?.fetchCollection?.(); } catch (_) {}
     }
   }
 
   // ---------- início ----------
   function iniciar() {
-    if (ehListaControle()) { montarAba(); return; }
+    if (ehListaControle()) { instalarBotoesLinhas(); return; }
     let tent = 0;
     const t = setInterval(() => {
       const sala = salaDaFicha();

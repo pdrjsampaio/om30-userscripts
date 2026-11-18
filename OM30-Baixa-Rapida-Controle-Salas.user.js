@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Baixa Rápida do Controle de Salas
 // @namespace    om30-guaruja
-// @version      0.3.2
+// @version      0.3.3
 // @description  Enfermagem/técnicos: botão "Pendências" em cada paciente da fila, com o que o médico pediu em cada sala e baixa de TUDO do paciente (Medicação, Exames, Enfermagem, Raio-X) pela API, com o faturamento (BPA) uma linha por procedimento; na ficha, baixa de tudo de uma vez (marca o que fez, cancela o que não fez com motivo, salva). Usa os próprios botões do Saúde Simples: faturamento (BPA), estoque e senha seguem o fluxo do sistema; a volta para o médico é a que o médico marcou.
 // @author       Pedro Sampaio
 // @match        https://guaruja.saudesimples.net/*
@@ -429,7 +429,7 @@
           if (!/^\w+#\d+$/.test(at) || !/^\d+$/.test(enc)) continue;
           if (!por.has(at)) por.set(at, { atendimento: at, nome: clean(x.nome_municipe), senha: clean(x.senha), salas: [] });
           const p = por.get(at);
-          if (!p.salas.some(y => y.s.k === s.k && y.enc === enc)) p.salas.push({ s, enc, status: clean(x.status) });
+          if (!p.salas.some(y => y.s.k === s.k && y.enc === enc)) p.salas.push({ s, enc, status: clean(x.status), raw: x });
           if (!p.senha && x.senha) p.senha = clean(x.senha);
         }
       } catch (e) { erros.push(`${s.nome}: ${e.message}`); }
@@ -450,6 +450,22 @@
     raio_x: { url: id => `/encaminhamentos_radiografias/${id}`, chave: ['RADIOGRAFIA', 'EXAME', 'PROCEDIMENTO'] },
   };
   const CACHE_ITENS = new Map();
+  // O que a fila do sistema já traz em cada linha (coluna "Exames", "Medicamentos", "Procedimentos"…),
+  // como o Controle de Salas mostra. Lido do próprio item da lista, sem abrir nada.
+  function nomesDaLista(raw) {
+    if (!raw || typeof raw !== 'object') return [];
+    const out = [];
+    const nomeDe = o => typeof o === 'string' ? o : o && (o.nome || o.descricao || o.name || o.procedimento_text || o.text || o.produto || o.exame?.nome || o.exame?.descricao || o.procedimento?.nome || o.procedimento?.descricao || o.radiografia?.nome || o.produto?.nome);
+    const chaveOk = k => /exame|procedimento|radiograf|medicament|produto|prescri|item/i.test(k) && !/_id$|^id$|data|hora|status|senha|municipe|profissional|medico|risco|atendimento/i.test(k);
+    for (const [k, v] of Object.entries(raw)) {
+      if (!chaveOk(k)) continue;
+      if (Array.isArray(v)) for (const o of v) { const n = clean(nomeDe(o)); if (n) out.push(n); }
+      else if (typeof v === 'string' && clean(v).length > 2 && !/^\d+$/.test(v) && !/#\d+$/.test(v)) out.push(...v.split(/\s*(?:<br\s*\/?>|\n|;|\|)\s*/i).map(t => clean(t.replace(/<[^>]+>/g, ' '))).filter(Boolean));
+      else if (v && typeof v === 'object') { const n = clean(nomeDe(v)); if (n) out.push(n); }
+    }
+    if (!out.length) console.info('[OM30 Baixa Rápida] campos do item da fila (para achar os itens):', Object.keys(raw).join(', '));
+    return [...new Set(out)];
+  }
   async function itensDoMedico(k, enc) {
     const ck = `${k}#${enc}`, c = CACHE_ITENS.get(ck);
     if (c && Date.now() - c.em < 60e3) return c.v;
@@ -753,7 +769,7 @@
         if (!b) {
           b = document.createElement('button');
           b.type = 'button'; b.className = 'om30x-rowbtn';
-          b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); abrirPainel(b._it); }, true);
+          b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); abrirPainel(b._it, b.closest('tr')); }, true);
           const alvo = tr.querySelector('.botao-atender')?.closest('td') || tr.cells[tr.cells.length - 1];
           alvo?.appendChild(b);
         }
@@ -785,7 +801,20 @@
   function fecharPainel() { if (ocupado) return; painelX?.classList.remove('on'); fundoX?.classList.remove('on'); estado = null; }
   const chave = (k, enc, i) => `${k}#${enc}#${i}`;
 
-  async function abrirPainel(it) {
+  // Coluna "Exames"/"Medicamentos"/"Procedimentos" da própria linha da fila (o que o médico pediu, como aparece na tela).
+  function nomesDaLinha(tr) {
+    if (!tr) return [];
+    const tab = tr.closest('table');
+    const ths = [...(tab?.querySelectorAll('thead th') || [])];
+    const i = ths.findIndex(th => /EXAME|MEDICAMENTO|MEDICACAO|PROCEDIMENTO|RADIOGRAF/.test(norm(th.textContent)) && !/MEDICO/.test(norm(th.textContent)));
+    const td = i >= 0 ? tr.cells[i] : null;
+    if (!td) return [];
+    const partes = [...td.querySelectorAll('li, span, div, p')].filter(e => !e.children.length).map(e => clean(e.textContent)).filter(t => t.length > 2);
+    const lista = partes.length ? partes : clean(td.innerText || td.textContent).split(/\n|;/).map(clean).filter(t => t.length > 2);
+    return [...new Set(lista)];
+  }
+
+  async function abrirPainel(it, tr) {
     montarPainelX();
     painelX.classList.add('on'); fundoX.classList.add('on');
     estado = { at: String(it.atendimento_str), nome: clean(it.nome_municipe), senha: clean(it.senha), salas: [], escolha: new Map(), motivo: '', reav: false, just: '', carregando: true, erros: [] };
@@ -798,7 +827,15 @@
     st.salas = (p ? p.salas : []).map(x => ({ s: x.s, enc: x.enc, status: x.status, med: undefined, ficha: null }));
     if (p?.senha && !st.senha) st.senha = p.senha;
     // ordem: Medicação, Exames, Enfermagem (como o médico costuma mandar)
-    await Promise.all(st.salas.map(async x => { x.med = await itensDoMedico(x.s.k, x.enc); }));
+    await Promise.all(st.salas.map(async x => {
+      x.med = await itensDoMedico(x.s.k, x.enc);
+      x.fonte = x.med ? 'consulta' : '';
+      if (!x.med) {   // sem tela de consulta: o que a fila mostra (ex.: coluna "Exames")
+        let nomes = nomesDaLista(x.raw);
+        if (!nomes.length && location.pathname.replace(/\/$/, '') === x.s.lista) nomes = nomesDaLinha(tr);
+        if (nomes.length) { x.med = nomes.map(n => ({ nome: n, det: '', obs: '', estado: 'pendente' })); x.fonte = 'lista'; }
+      }
+    }));
     if (estado !== st) return;
     st.carregando = false;
     pintarPainel();
@@ -886,6 +923,27 @@
     const go = painelX.querySelector('[data-a="go"]'); if (go) go.onclick = () => realizarTudo();
   }
 
+  function mapearItens(x, f, daqui) {
+    const m = new Map();
+    const nf = f.itens.map(it => norm(it.nome));
+    const usados = new Set();
+    let porNome = true;
+    for (const p of daqui) {
+      const alvo = norm(p.y.nome);
+      const cands = f.itens.filter((it, i) => !usados.has(i) && nf[i] && !/^ITEM \d+$/.test(nf[i]) && (nf[i] === alvo || nf[i].includes(alvo) || alvo.includes(nf[i])));
+      if (cands.length !== 1) { porNome = false; break; }
+      usados.add(cands[0].i); m.set(p.k, cands[0]);
+    }
+    if (porNome) return m;
+    m.clear();
+    if (x.fonte === 'consulta' && x.med.length === f.itens.length) { for (const p of daqui) m.set(p.k, f.itens[p.y.i]); return m; }
+    if (!x.med) { for (const p of daqui) m.set(p.k, f.itens[p.y.i]); return m; }   // itens vieram da própria ficha
+    const iguais = daqui.every(p => p.v === daqui[0].v);
+    const abertos = f.itens.filter(it => it.aberto);
+    if (iguais && abertos.length === daqui.length) { daqui.forEach((p, i) => m.set(p.k, abertos[i])); return m; }
+    return { erro: `não consegui casar os itens da fila com os da ficha (${daqui.length} na fila, ${abertos.length} na ficha).` };
+  }
+
   async function realizarTudo() {
     const e = estado;
     if (!e || ocupado) return;
@@ -902,10 +960,14 @@
         const pa = prog.passo(`${x.s.nome}: abrindo a ficha`);
         if (!x.ficha) x.ficha = await carregarFicha(x.s, x.enc);
         const f = x.ficha;
-        if (x.med && x.med.length !== f.itens.length) { pa.erro(); throw new Error(`${x.s.nome}: a ficha tem ${f.itens.length} itens e a consulta mostra ${x.med.length}. Faça esta sala pela ficha.`); }
+        // Item escolhido no painel → item da ficha. Pelo nome (seguro com qualquer ordem); pela posição só
+        // quando a consulta tem o mesmo número de itens. Itens da fila sem nome que case: só se a escolha
+        // for igual para todos (aí a ordem não importa).
+        const mapa = mapearItens(x, f, daqui);
+        if (mapa.erro) { pa.erro(); throw new Error(`${x.s.nome}: ${mapa.erro} Faça esta sala pela ficha.`); }
         const fez = [], nao = [];
         for (const p of daqui) {
-          const fi = f.itens[p.y.i];
+          const fi = mapa.get(p.k);
           if (!fi || !fi.aberto) continue;   // já resolvido entre a consulta e agora
           fi.nome = p.y.nome || fi.nome;
           (p.v === 'fez' ? fez : nao).push(fi);

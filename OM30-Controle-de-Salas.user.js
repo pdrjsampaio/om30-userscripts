@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.14
+// @version      3.1.15
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -33,6 +33,7 @@
     }
 
     /* OM30 - CONTROLE DE SALAS v3.1.14
+     * v3.1.15: Baixa automática da medicação: depois do "Aplicar", o remédio que dá baixa no estoque já vem com o almoxarifado e o centro de custo da unidade e a quantidade 1; os lotes são gerados pelo sistema. A enfermagem confere e salva.
      * v3.1.14: Consulta de pacientes: lupa e botão Consultar alinhados com a caixa de pesquisa (a página aplicava margem e altura próprias nos campos).
      * v3.1.13: Consulta de pacientes com visual novo: campo "Consultar paciente por nome ou senha" com botão Consultar, resultado num painel logo abaixo do campo (fecha com Esc ou clicando fora), situação em etiqueta (Em atendimento, Chamado, Aguardando, Aguardando médico) e posição na fila. Textos de sistema, sem códigos técnicos.
      * v3.1.12: "Onde está o paciente?" na tela do Controle de Salas: digite o nome ou a senha e veja onde a pessoa está agora (em atendimento em qual sala, aguardando qual sala e quantos na frente, chamada e ainda não entrou, aguardando o médico ou o acolhimento) e por quais salas já passou (ontem e hoje). Só lê as listas que o sistema já tem, apenas quando alguém busca (no máximo 1 vez a cada 2 min, botão Atualizar), e não grava nada no navegador. Lista que não pôde ser lida aparece como "não consegui ler".
@@ -10926,3 +10927,89 @@
   }
 })();
 // ===== FIM OM30 SENHA POR ABA =====
+
+// ===== OM30 BAIXA AUTOMÁTICA DA MEDICAÇÃO =====
+// v3.1.15 (pedido do dono, 19/11): na tela de aplicação de medicação, o "Aplicar" do sistema abre, para
+// remédio que dá baixa no estoque, almoxarifado + quantidade e depois centro de custo (obrigatórios).
+// Este bloco preenche sozinho o almoxarifado e o centro de custo LIBERADOS (o sistema só libera os da
+// unidade) e a quantidade 1 (decisão do dono). Os lotes continuam sendo gerados pelo próprio sistema: a
+// troca do almoxarifado chama o gerar_lotes_prescricao_interna nativo, que depois mostra o centro de custo.
+// Regras: só campo vazio; só com exatamente UMA opção liberada (senão a enfermagem escolhe); se a pessoa
+// mexer num desses campos, o bloco não mexe mais nele naquele item; nada é salvo (Salvar continua com a enfermagem).
+(function OM30BaixaAutomaticaMedicacao() {
+  'use strict';
+  if (window.__OM30_BAIXA_AUTO_MED__) return;
+  window.__OM30_BAIXA_AUTO_MED__ = true;
+  if (!/^\/aplicacoes_medicamentos\/(new|\d+\/edit)\b/.test(location.pathname)) return;   // só a tela de aplicação (não a lista)
+
+  const ITEM = '.encaminhamento_medicacao_atendimento_prescricao_interna';
+  const ALMOX = '.almoxarifado-prescricao-container';
+  const CENTRO = '.centro-custo-prescricao-container';
+  const visivel = el => !!el && el.isConnected && getComputedStyle(el).display !== 'none';
+  const liberadas = sel => [...sel.options].filter(o => o.value !== '' && !o.disabled);
+
+  // Mesma troca que a pessoa faria: o jQuery da página dispara os handlers nativos (.change).
+  function escolherUnica(sel) {
+    if (!sel || sel.value) return false;
+    const ops = liberadas(sel);
+    if (ops.length !== 1) return false;
+    const jq = window.jQuery;
+    if (jq) jq(sel).val(ops[0].value).trigger('change');
+    else { sel.value = ops[0].value; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+    return sel.value === ops[0].value;
+  }
+
+  function preencher(item) {
+    const almox = item.querySelector(ALMOX);
+    if (!visivel(almox)) {
+      // Desfez ou cancelou o "Aplicar": na próxima aplicação deste item preenche de novo.
+      delete item.dataset.om30BaixaAlmox; delete item.dataset.om30BaixaCentro;
+      delete item.dataset.om30BaixaMexeuAlmox; delete item.dataset.om30BaixaMexeuCentro;
+      return;
+    }
+    if (item.dataset.om30BaixaAlmox !== '1' && item.dataset.om30BaixaMexeuAlmox !== '1') {
+      const qtd = almox.querySelector('input[id$="_quantidade"]');
+      const sel = almox.querySelector('select[id$="_almoxarifado_id"]');
+      if (qtd && sel && !sel.value && liberadas(sel).length === 1) {
+        item.dataset.om30BaixaAlmox = '1';
+        if (!String(qtd.value || '').trim()) qtd.value = '1';   // antes do almoxarifado: o sistema precisa dos dois para gerar os lotes
+        escolherUnica(sel);
+      }
+    }
+    const centro = item.querySelector(CENTRO);
+    if (item.dataset.om30BaixaCentro !== '1' && item.dataset.om30BaixaMexeuCentro !== '1' && visivel(centro)) {
+      const sel = centro.querySelector('select[id$="_centro_custo_id"]');
+      if (sel && !sel.value && liberadas(sel).length === 1) { item.dataset.om30BaixaCentro = '1'; escolherUnica(sel); }
+    }
+  }
+
+  // A pessoa mexeu (evento real, não o do script): respeita a escolha dela naquele campo do item.
+  function marcarMexeu(ev) {
+    if (!ev.isTrusted) return;
+    const alvo = ev.target;
+    if (!alvo || !alvo.closest) return;
+    const item = alvo.closest(ITEM);
+    if (!item) return;
+    if (alvo.closest(ALMOX)) item.dataset.om30BaixaMexeuAlmox = '1';
+    else if (alvo.closest(CENTRO)) item.dataset.om30BaixaMexeuCentro = '1';
+  }
+
+  let agendado = 0;
+  function revisar() {
+    agendado = 0;
+    document.querySelectorAll(ITEM).forEach(it => { try { preencher(it); } catch (e) { console.warn('[OM30 BAIXA] item', e?.message || e); } });
+  }
+  function agendar() { if (!agendado) agendado = setTimeout(revisar, 150); }
+
+  function iniciar() {
+    if (!document.body) return false;
+    document.addEventListener('change', marcarMexeu, true);
+    document.addEventListener('input', marcarMexeu, true);
+    // Os campos aparecem por .show() (style) e o centro de custo depois da resposta dos lotes (conteúdo novo).
+    new MutationObserver(agendar).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
+    agendar();
+    return true;
+  }
+  if (!iniciar()) document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+})();
+// ===== FIM OM30 BAIXA AUTOMÁTICA DA MEDICAÇÃO =====

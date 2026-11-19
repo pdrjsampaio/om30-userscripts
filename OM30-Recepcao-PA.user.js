@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Recepção PA | Especialidade, Chamadas e Cadastro
 // @namespace    https://om30.com.br/
-// @version      1.9.0
+// @version      1.9.1
 // @description  Recepção do PA (v3): mostra só Clínico, Pediatra e Dentista no select de especialidade (+ Outras especialidades), registra as chamadas de cada senha e mostra cadastro desatualizado (sem CPF, sem CNS, CPF/CNS inválido, muito tempo sem atualizar). Ao clicar em "Criar Ficha", se a especialidade não bate com a senha ou o cadastro está desatualizado, pede confirmação: dá para continuar mesmo assim.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Recepcao-PA.user.js
@@ -15,6 +15,13 @@
 (() => {
   'use strict';
 
+  // v1.9.1
+  // - "Atualizar cadastro": ao salvar (ou cancelar), o sistema volta para a ficha recarregando a página
+  //   na aba da edição. Antes a aba ficava aberta e a ficha de origem continuava com o aviso antigo.
+  //   Agora a aba da edição avisa a ficha e fecha também nesse caso, e a ficha mostra o cadastro
+  //   atualizado na hora (com a data do salvamento). Ao voltar para a ficha depois de abrir a edição,
+  //   o aviso do cadastro é conferido de novo.
+  //
   // v1.9.0
   // - Chamadas e fichas vão para o Worker om30-senhas (https://ps.worker-senhas.workers.dev): histórico
   //   central por senha, lido pelo Rastreamento de Senhas e pelo painel da coordenação.
@@ -127,7 +134,7 @@
   if (window.__OM30_RECEPCAO_PA__) return;
   window.__OM30_RECEPCAO_PA__ = true;
 
-  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '1.9.0';
+  const VERSAO = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '1.9.1';
   const PREFIX = 'om30-recepcao-pa';
   const STORAGE_CHAMADAS = `${PREFIX}:chamadas-v1`;
   const RETENCAO_MS = 48 * 3600 * 1000;
@@ -867,6 +874,9 @@
       ultima = ms(b.updated_at) || ms(b.created_at);
       if (ultima) fonte = 'data do cadastro';
     }
+    // v1.9.1: salvo agora pela aba de edição aberta daqui (o histórico pode demorar a mostrar).
+    const salvo = salvosAgora.get(String(id)) || 0;
+    if (salvo > (ultima || 0)) { ultima = salvo; fonte = 'salvo agora'; }
     const cpf = digitos(m.cpf_numero), cns = digitos(m.codigo_cns), prov = digitos(m.cartao_provisorio);
     const itens = [];
     const cpfOk = !!cpf && cpfValido(cpf), cnsOk = !!cns && cnsValido(cns);
@@ -955,17 +965,22 @@
   // navegador cria uma janela separada). Ao salvar, a aba avisa a ficha e fecha sozinha.
   const CANAL_CADASTRO = `${PREFIX}:cadastro`;
   const SESSAO_AUTOFECHAR = `${PREFIX}:autofechar`;
+  const SESSAO_SALVO = `${PREFIX}:autofechar-salvo-em`;
   const ROTA_EDICAO = /^\/municipes\/(\d+)\/edit\/?$/;
   const canalCadastro = typeof BroadcastChannel === 'function' ? new BroadcastChannel(CANAL_CADASTRO) : null;
+  const salvosAgora = new Map();   // municipeId -> instante em que a aba de edição viu o salvar dar certo
+  let edicaoAberta = null;         // { id, em } — esta ficha abriu a edição
 
   function abrirEdicaoCadastro(id) {
     const url = `/municipes/${id}/edit?redirect_uri=${encodeURIComponent(rotaAtual())}&om30_autofechar=1`;
+    edicaoAberta = { id: String(id), em: Date.now() };
     const aba = window.open(url, `${PREFIX}-edicao-${id}`);
     aba?.focus();
   }
 
-  // Na ficha: a aba de edição avisou que salvou.
-  function recarregarCadastro(id) {
+  // Na ficha: a aba de edição avisou que saiu da edição (salvando ou não).
+  function recarregarCadastro(id, salvoEm) {
+    if (Number(salvoEm) > 0) salvosAgora.set(String(id), Number(salvoEm));
     glosaCache.delete(String(id));
     glosaRender = null; glosaAtual = null;
     try {   // atualiza também o cartão nativo "Informações do Cidadão"
@@ -983,8 +998,10 @@
   function avisarEFechar() {
     const id = idAutofechar();
     if (!id) return;
-    try { sessionStorage.removeItem(SESSAO_AUTOFECHAR); } catch {}
-    try { canalCadastro?.postMessage({ tipo: 'cadastro-atualizado', id }); } catch {}
+    let salvoEm = 0;
+    try { salvoEm = Number(sessionStorage.getItem(SESSAO_SALVO)) || 0; } catch {}
+    try { sessionStorage.removeItem(SESSAO_AUTOFECHAR); sessionStorage.removeItem(SESSAO_SALVO); } catch {}
+    try { canalCadastro?.postMessage({ tipo: 'cadastro-atualizado', id, salvoEm }); } catch {}
     setTimeout(() => window.close(), 400);
   }
   function prepararAutofechar() {
@@ -993,13 +1010,18 @@
       try { sessionStorage.setItem(SESSAO_AUTOFECHAR, m[1]); } catch {}
     }
     if (!idAutofechar()) return;
-    // Depois de salvar, o Saúde Simples sai da edição (redirect_uri): é a hora de fechar.
+    // v1.9.1: depois de salvar (ou cancelar), o sistema volta para a ficha RECARREGANDO a página nesta
+    // aba (redirect_uri): ela já chega fora da edição. Avisa a ficha de origem e fecha.
+    if (!ROTA_EDICAO.test(rotaAtual())) { avisarEFechar(); return; }
+    // Saída da edição sem recarregar a página: a mesma coisa.
     nx()?.$router?.afterEach(to => { if (!ROTA_EDICAO.test(to.path)) avisarEFechar(); });
   }
   function observarSalvarMunicipe(url, metodo, status) {
     if (!idAutofechar() || !/PUT|PATCH|POST/i.test(metodo || '') || !(status >= 200 && status < 300)) return;
     if (!/\/municipes\/\d+(?:\/[a-z_]+)?\/?(?:\?|$)/.test(String(url))) return;
     edicaoSalva = true;
+    // v1.9.1: guardado na aba, porque a volta para a ficha recarrega a página e a memória se perde.
+    try { sessionStorage.setItem(SESSAO_SALVO, String(Date.now())); } catch {}
     // Reserva: se a tela não sair da edição sozinha depois de salvar, fecha mesmo assim.
     setTimeout(() => { if (edicaoSalva && idAutofechar() && ROTA_EDICAO.test(rotaAtual())) avisarEFechar(); }, 2500);
   }
@@ -1187,8 +1209,19 @@
     canalCadastro?.addEventListener('message', ev => {
       const d = ev.data;
       const m = ROTA_FICHA.exec(rotaAtual());
-      if (d?.tipo === 'cadastro-atualizado' && m && String(d.id) === m[1]) recarregarCadastro(d.id);
+      if (d?.tipo === 'cadastro-atualizado' && m && String(d.id) === m[1]) { edicaoAberta = null; recarregarCadastro(d.id, d.salvoEm); }
     });
+    // v1.9.1: de volta à ficha depois de abrir a edição (aviso perdido, aba fechada na mão): confere de novo.
+    let ultimaConferencia = 0;
+    const conferirAoVoltar = () => {
+      if (document.hidden || !edicaoAberta || Date.now() - edicaoAberta.em > 30 * 60000) return;
+      const m = ROTA_FICHA.exec(rotaAtual());
+      if (!m || m[1] !== edicaoAberta.id || Date.now() - ultimaConferencia < 5000) return;
+      ultimaConferencia = Date.now();
+      recarregarCadastro(m[1]);
+    };
+    document.addEventListener('visibilitychange', conferirAoVoltar);
+    window.addEventListener('focus', conferirAoVoltar);
     // Ao voltar da edição do munícipe, a data/CPF/CNS podem ter mudado.
     nx()?.$router?.afterEach(() => { glosaCache.clear(); glosaRender = null; glosaAtual = null; setTimeout(aplicar, 300); });
     document.addEventListener('click', interceptarCriarFicha, true);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Rascunho de Evolução
 // @namespace    om30-guaruja
-// @version      1.3.0
+// @version      1.3.1
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @description  Rascunho de evolução por paciente durante o atendimento (fila e ficha): anotações com horário e medicação; no final envia para a ficha certa (Motivo do atendimento + seção Medicamentos) e apaga o rascunho ao salvar. Histórico compartilhado entre os profissionais do computador, com o nome de quem fez a 1ª evolução e de quem seguiu.
@@ -785,6 +785,8 @@
 //         Favoritos = os do Procedimentos PA neste computador (só leitura); Raio X com as 8 regiões do PA
 //         (cada uma lista todas as radiografias dela); Medicação também com os medicamentos do PA.
 //         Raio X com as regiões do PA; Raio X, Exames e Enfermagem pesquisam no sistema como no Procedimentos PA, em lista que fica aberta.
+// v1.3.1: menu ⋯ → Configurações → tamanho do painel (Normal, Grande, Muito grande), guardado por profissional neste computador.
+//         Medicação só com a pesquisa: saíram os botões de medicamentos comuns (pedido do dono: pequenos demais).
 // =====================================================================
 (() => {
   if (document.getElementById('evol-painel-host')) return;
@@ -1107,6 +1109,13 @@
     .caixa h3 { font-size: 14px; color: #123f68; margin-bottom: 4px; }
     .caixa p { font-size: 12px; color: #6c808c; margin-bottom: 8px; line-height: 1.4; }
     .caixa textarea { min-height: 220px; font: 11px/1.35 Consolas, monospace; }
+    /* configurações */
+    .cfg-rot { font-size: 12.5px; color: #42545e; font-weight: 600; margin: 6px 0 6px; }
+    .cfg-ops { display: flex; gap: 6px; margin-bottom: 10px; }
+    .cfg-op { flex: 1; border: 1px solid #c4d3dc; background: #fff; color: #263942; border-radius: 9px; padding: 9px 6px; font-weight: 600; }
+    .cfg-op[data-z="1.2"] { font-size: 15px; }
+    .cfg-op[data-z="1.4"] { font-size: 17px; }
+    .cfg-op.on { background: #123f68; border-color: #123f68; color: #fff; }
   </style>
 
   <div class="painel" id="painel">
@@ -1117,6 +1126,7 @@
     </div>
     <div class="menu" id="menu">
       <button id="mLista">📋 Rascunhos deste computador</button>
+      <button id="mCfg">⚙️ Configurações</button>
       <button id="mDiag">🔍 Diagnóstico (para suporte)</button>
       <button id="mRecolher">Recolher painel</button>
     </div>
@@ -1160,7 +1170,6 @@
         </div>
       </div>
       <div id="paneMed" class="esconde">
-        <div class="chips" id="favoritos"></div>
         <div class="busca">
           <input id="medNome" placeholder="Buscar medicamento…" autocomplete="off">
           <div class="resultados" id="medRes"></div>
@@ -1188,6 +1197,19 @@
         <p>Só a estrutura da tela (nomes de campos e seções), sem nome, CNS ou texto do paciente. Copie e mande para o suporte.</p>
         <textarea id="diagTxt" readonly></textarea>
         <div class="linha"><span class="dica" id="diagOk"></span><button class="btn" id="diagFechar" style="background:#6c808c">Fechar</button><button class="btn" id="diagCopiar">Copiar</button></div>
+      </div>
+    </div>
+
+    <div class="modal" id="modalCfg">
+      <div class="caixa">
+        <h3>Configurações</h3>
+        <div class="cfg-rot">Tamanho do texto e dos botões</div>
+        <div class="cfg-ops" id="cfgTam">
+          <button class="cfg-op" data-z="1">Normal</button>
+          <button class="cfg-op" data-z="1.2">Grande</button>
+          <button class="cfg-op" data-z="1.4">Muito grande</button>
+        </div>
+        <div class="linha"><span class="dica"></span><button class="btn" id="cfgFechar">Fechar</button></div>
       </div>
     </div>
   </div>
@@ -1273,7 +1295,7 @@
     root.querySelectorAll('#subAbas .aba').forEach(b => b.classList.toggle('on', b.dataset.g === g));
     $('paneMed').classList.toggle('esconde', g !== 'med');
     $('paneCtl').classList.toggle('esconde', g === 'med');
-    if (g === 'med') { renderFavMedPA(); if (foco) $('medNome').focus(); return; }
+    if (g === 'med') { if (foco) $('medNome').focus(); return; }   // v1.3.1: Medicação só com a pesquisa (sem botões de medicamento)
     grupoCtl = g;
     limparCtl();
     renderFavCtl();
@@ -1335,19 +1357,6 @@
   }
   $('medNome').addEventListener('input', () => { clearTimeout(tBusca); tBusca = setTimeout(() => buscarMed($('medNome').value.trim()), 300); });
   $('medNome').addEventListener('blur', () => setTimeout(() => $('medRes').classList.remove('on'), 200));
-  (C.favoritos || []).forEach(f => {
-    const b = document.createElement('button');
-    b.className = 'chip';
-    const nome = f.busca || f.nome;
-    b.textContent = `${nome.charAt(0) + nome.slice(1).toLowerCase()} ${f.posologia}`;
-    b.onclick = () => {
-      limparMed();
-      $('medPos').value = f.posologia; $('medVia').value = f.via;
-      if (C.buscarMedicamento) { $('medNome').value = nome; $('medNome').focus(); buscarMed(nome); }
-      else escolherMed({ id: null, nome: f.nome });
-    };
-    $('favoritos').appendChild(b);
-  });
 
   // ---------- Controle de Salas: Raio X, Exames, Enfermagem ----------
   // Cada item vira uma entrada do rascunho; no "Enviar para a ficha" entra na seção nativa da ficha
@@ -1425,32 +1434,6 @@
   // Mantém o ✓ da lista em dia quando o rascunho muda (item apagado, enviado, outro paciente).
   function marcarFeitosCtl() {
     for (const d of Array.from($('ctlRes').children)) if (d.dataset && d.dataset.codigo) d.classList.toggle('feito', jaNoRascunho(d.dataset.codigo));
-  }
-  // Medicação: além dos favoritos com dose, os do Procedimentos PA (padrão/unidade/estrelas do médico).
-  // O item é achado no estoque pelo código do PA; sem ele, a busca pelo nome fica aberta para escolher.
-  function renderFavMedPA() {
-    const box = $('favoritos');
-    box.querySelectorAll('.chip.pa').forEach(b => b.remove());
-    for (const f of listaFavoritos().filter(f => f.group === 'medicacao')) {
-      const b = document.createElement('button');
-      b.className = 'chip pa';
-      b.textContent = rotuloItem(f.name);
-      b.onclick = async () => {
-        limparMed();
-        $('medNome').value = f.name;
-        if (!C.buscarMedicamento) { escolherMed({ id: null, nome: f.name }); return; }
-        const seq = ++buscaSeq;
-        let exato = null;
-        if (digCod(f.code)) {
-          try { exato = (await C.buscarMedicamento(f.code)).find(x => digCod(x.raw?.codigo ?? x.raw?.codigo_externo ?? x.codigo) === digCod(f.code)) || null; }
-          catch (e) { console.warn('[OM30 Rascunho] medicamento do PA', e); }
-        }
-        if (seq !== buscaSeq) return;
-        if (exato) escolherMed(exato);
-        else { $('medNome').focus(); buscarMed(f.name.split(/[\s,]+/).slice(0, 2).join(' ')); }
-      };
-      box.appendChild(b);
-    }
   }
   function atualizarBuscaCtl() {
     const inp = $('ctlBusca');
@@ -1932,6 +1915,33 @@
     $('diagTxt').select();
   };
   $('diagFechar').onclick = () => $('modal').classList.remove('on');
+
+  // ---------- configurações: tamanho do painel ----------
+  // v1.3.1: para quem enxerga pouco. Aumenta o painel inteiro (texto, botões e largura) com zoom no host.
+  // Guardado neste computador para cada profissional (o mesmo PC é usado por vários); sem profissional, vale o último escolhido.
+  const CHAVE_CFG = 'om30-rasc-cfg';
+  const TAMANHOS = [1, 1.2, 1.4];
+  const lerCfg = () => { try { const c = JSON.parse(localStorage.getItem(CHAVE_CFG) || '{}'); return c && typeof c === 'object' ? c : {}; } catch { return {}; } };
+  function tamanhoAtual() {
+    const c = lerCfg();
+    const z = medico && c.porProfissional ? c.porProfissional[String(medico.id)] : undefined;
+    const v = Number(z ?? c.ultimo ?? 1);
+    return TAMANHOS.includes(v) ? v : 1;
+  }
+  function aplicarTamanho(z = tamanhoAtual()) {
+    host.style.zoom = z === 1 ? '' : String(z);
+    root.querySelectorAll('#cfgTam .cfg-op').forEach(b => b.classList.toggle('on', Number(b.dataset.z) === z));
+  }
+  function guardarTamanho(z) {
+    const c = lerCfg();
+    c.ultimo = z;
+    if (medico) { c.porProfissional = c.porProfissional && typeof c.porProfissional === 'object' ? c.porProfissional : {}; c.porProfissional[String(medico.id)] = z; }
+    try { localStorage.setItem(CHAVE_CFG, JSON.stringify(c)); } catch {}
+  }
+  $('mCfg').onclick = () => { $('menu').classList.remove('on'); aplicarTamanho(); $('modalCfg').classList.add('on'); };
+  $('cfgFechar').onclick = () => $('modalCfg').classList.remove('on');
+  root.querySelectorAll('#cfgTam .cfg-op').forEach(b => { b.onclick = () => { const z = Number(b.dataset.z); guardarTamanho(z); aplicarTamanho(z); }; });
+  aplicarTamanho();
   $('diagCopiar').onclick = async () => {
     try { await navigator.clipboard.writeText($('diagTxt').value); $('diagOk').textContent = 'Copiado ✓'; }
     catch { $('diagTxt').select(); document.execCommand?.('copy'); $('diagOk').textContent = 'Copiado ✓'; }
@@ -2021,6 +2031,7 @@
     if ((m?.id || '') === (medico?.id || '')) { if (m && medico) { medico.nome = m.nome || medico.nome; completarNomes(); } render(); return; }
     if (rascunho && medico) { rascunho.textoPendente = $('nota').value; salvar(); }
     medico = m; rascunho = null; paciente = null; ultimoId = null; vendo = null;
+    aplicarTamanho();   // v1.3.1: tamanho escolhido por este profissional
     migrarAntigos(); completarNomes();
     verificarPaciente(true);
   }

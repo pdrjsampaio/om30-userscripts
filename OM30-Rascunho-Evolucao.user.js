@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Rascunho de Evolução
 // @namespace    om30-guaruja
-// @version      1.1.0
+// @version      1.2.0
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rascunho-Evolucao.user.js
 // @description  Rascunho de evolução por paciente durante o atendimento (fila e ficha): anotações com horário e medicação; no final envia para a ficha certa (Motivo do atendimento + seção Medicamentos) e apaga o rascunho ao salvar.
@@ -330,6 +330,303 @@
     if (!entrou) throw new Error(`O Saúde Simples não criou a linha de ${m.nome}.`);
   }
 
+  // ---------- Controle de Salas: Raio X, Exames e Enfermagem ----------
+  // Mesmo jeito do Procedimentos PA: o item entra nas seções nativas da ficha (Exames / Procedimentos)
+  // pelo tokenInput e pelo "+ Incluir" do próprio sistema, um por vez. Nada é salvo nem encaminhado
+  // aqui: o encaminhamento para o Controle de Salas acontece quando o médico salva a ficha.
+  // Lista padrão do Procedimentos PA (favoritosPadraoPA), sem a medicação (que tem o registro próprio).
+  const FAVORITOS_CONTROLE = [
+    { type: 'exame', group: 'raiox', code: '0204030153', name: 'RADIOGRAFIA DE TORAX (PA E PERFIL)', query: '0204030153' },
+    { type: 'exame', group: 'raiox', code: '0204050120', name: 'RADIOGRAFIA DE ABDOMEN AGUDO (MINIMO DE 3 INCIDENCIAS)', query: '0204050120' },
+
+    { type: 'exame', group: 'exames', code: '0202020380', name: 'HEMOGRAMA COMPLETO', query: '0202020380' },
+    { type: 'exame', group: 'exames', code: '0202010694', name: 'DOSAGEM DE UREIA', query: '0202010694' },
+    { type: 'exame', group: 'exames', code: '0202010317', name: 'DOSAGEM DE CREATININA', query: '0202010317' },
+    { type: 'exame', group: 'exames', code: '0202010635', name: 'DOSAGEM DE SODIO', query: '0202010635' },
+    { type: 'exame', group: 'exames', code: '0202010600', name: 'DOSAGEM DE POTASSIO', query: '0202010600' },
+    { type: 'exame', group: 'exames', code: '0202010643', name: 'DOSAGEM DE TRANSAMINASE GLUTAMICO-OXALACETICA (TGO)', query: '0202010643' },
+    { type: 'exame', group: 'exames', code: '0202010651', name: 'DOSAGEM DE TRANSAMINASE GLUTAMICO-PIRUVICA (TGP)', query: '0202010651' },
+    { type: 'exame', group: 'exames', code: '0202030202', name: 'DOSAGEM DE PROTEINA C REATIVA', query: '0202030202' },
+    { type: 'exame', group: 'exames', code: '0202050017', name: 'ANALISE DE CARACTERES FISICOS, ELEMENTOS E SEDIMENTO DA URINA', query: '0202050017' },
+
+    { type: 'procedimento', group: 'enfermagem', code: '0214010015', name: 'GLICEMIA CAPILAR', query: '0214010015' },
+    { type: 'procedimento', group: 'enfermagem', code: '0301100039', name: 'AFERIÇÃO DE PRESSÃO ARTERIAL', query: '0301100039' },
+    { type: 'procedimento', group: 'enfermagem', code: '0301100284', name: 'CURATIVO SIMPLES', query: '0301100284' },
+    { type: 'procedimento', group: 'enfermagem', code: '0401010066', name: 'EXCISÃO E/OU SUTURA SIMPLES DE PEQUENAS LESÕES / FERIMENTOS DE PELE / ANEXOS E MUCOSA', query: '0401010066' },
+  ];
+  // Grupo rápido do Procedimentos PA (gruposExamesPA)
+  const GRUPOS_EXAMES = [
+    {
+      id: 'sadt-clinico-porta',
+      nome: 'CLÍNICO PORTA',
+      codigos: [
+        '0202020380', // HEMOGRAMA COMPLETO
+        '0202010317', // CREATININA
+        '0202010694', // UREIA
+        '0202010651', // TGP
+        '0202010643', // TGO
+        '0202030202', // PCR
+        '0202050017', // URINA
+        '0202010635', // SODIO
+        '0202010600', // POTASSIO
+      ],
+    },
+  ];
+  // Regiões do Raio X do Procedimentos PA (gruposRX): [rótulo, termo]. O termo é pedido ao sistema, que devolve as radiografias dela.
+  const REGIOES_RX = [
+    ['Tórax', 'RADIOGRAFIA TORAX'], ['Cabeça / Crânio', 'RADIOGRAFIA CRANIO'], ['Face', 'RADIOGRAFIA FACE'], ['Coluna', 'RADIOGRAFIA COLUNA'],
+    ['Membro superior', 'RADIOGRAFIA MAO'], ['Membro inferior', 'RADIOGRAFIA PE'], ['Abdome', 'RADIOGRAFIA ABDOME'], ['Bacia / Pelve / Quadril', 'RADIOGRAFIA BACIA'],
+  ];
+  // Medicações da lista padrão do Procedimentos PA (favoritosPadraoPA, grupo medicação).
+  const FAVORITOS_MED_PA = [
+    { type: 'medicamento', group: 'medicacao', code: '1035', name: 'DIPIRONA 500 MG CP' },
+    { type: 'medicamento', group: 'medicacao', code: '1681', name: 'DIPIRONA SODICA 500 MG/ML INJ' },
+    { type: 'medicamento', group: 'medicacao', code: '1680', name: 'DEXAMETASONA 4 MG/ML, INJ - 2,5 ML' },
+    { type: 'medicamento', group: 'medicacao', code: '1678', name: 'DICLOFENACO SAL SODICO, 25 MG/ML SOLUCAO INJETAVE' },
+    { type: 'medicamento', group: 'medicacao', code: '1271', name: 'ESCOPOLAMINA BUTILBROMETO, 20MG/ML, SOL INJ 1ML' },
+    { type: 'medicamento', group: 'medicacao', code: '1672', name: 'ONDANSETRONA CLORIDRATO, 2MG/ML, INJ, 4ML' },
+    { type: 'medicamento', group: 'medicacao', code: '937', name: 'DIMENIDRATO ASSOCIADO COM PIRIDOXINA' },
+    { type: 'medicamento', group: 'medicacao', code: '966', name: 'CETOPROFENO 1MG/ML' },
+    { type: 'medicamento', group: 'medicacao', code: '1660', name: 'TENOXICAM 20 MG INJETAVEL' },
+    { type: 'medicamento', group: 'medicacao', code: '1545', name: 'TRAMADOL CLORIDRATO 50 MG/ML SOLUCAO INJETAVEL 2 M' },
+    { type: 'medicamento', group: 'medicacao', code: '1519', name: 'PROMETAZINA CLORIDRATO 25 MG' },
+  ];
+  // Favoritos do Procedimentos PA neste computador, SÓ LEITURA (mesmas chaves e regras de defs/renderFavs):
+  // lista importada pela unidade, ou a padrão sem os que a unidade escondeu; mais as estrelas do médico.
+  // Com o PA instalado, o localStorage.getItem dele já devolve as chaves pessoais do profissional logado.
+  const PA_STORE = 'OM30_PA_FAVORITOS_PC_V1', PA_STORE_UNIT = 'OM30_PA_FAVORITOS_UNIDADE_V2', PA_STORE_OCULTOS = 'OM30_PA_FAVORITOS_PADRAO_OCULTOS_V1';
+  const lerJsonLocal = k => { try { const v = JSON.parse(localStorage.getItem(k) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } };
+  const unidadePA = () => norm(qa('a.nav-link,.navbar a,.navbar-nav a').map(x => clean(x.innerText)).find(t => /\b(UPA|PRONTO|UNIDADE|USAFA|UBS|CAPS|CENTRO|PS\b|PA\b)/i.test(t)) || 'UNIDADE NÃO IDENTIFICADA');
+  const grupoFavPA = (type, nome) => type === 'procedimento' ? 'enfermagem' : type === 'medicamento' ? 'medicacao' : /RADIOGRAFIA/i.test(nome) ? 'raiox' : 'exames';
+  // Escondido no PA: "grupo|codigo|NOME" (antigo) ou "@OM30CODE|GRUPO|CODIGO" (estável), em qualquer chave de unidade.
+  function escondidosPA() {
+    const out = new Set();
+    for (const lista of Object.values(lerJsonLocal(PA_STORE_OCULTOS))) for (const raw of (Array.isArray(lista) ? lista : [])) {
+      const p = String(raw || '').split('|');
+      const [g, c] = p[0].startsWith('@') ? [p[1], p[2]] : [p[0], p[1]];
+      if (g && dig(c)) out.add(norm(g) + '|' + dig(c));
+    }
+    return out;
+  }
+  function favoritosPA() {
+    const un = unidadePA();
+    const imp = lerJsonLocal(PA_STORE_UNIT)[un];
+    const importados = Array.isArray(imp) ? imp.filter(x => x && x.name) : [];
+    const oc = importados.length ? new Set() : escondidosPA();
+    const base = importados.length ? importados
+      : [...FAVORITOS_CONTROLE, ...FAVORITOS_MED_PA].filter(x => !oc.has(norm(x.group) + '|' + dig(x.code)));
+    const locais = Object.values(lerJsonLocal(PA_STORE)).filter(x => x && x.unit === un && x.item).map(x => {
+      const nome = clean(x.type === 'medicamento' ? (x.item.nome || x.item.descricao) : x.item.nome);
+      return { type: x.type, code: clean(x.item.codigo || x.item.codigo_externo || ''), name: nome };
+    });
+    const vistos = new Set(), out = [];
+    for (const x of [...base, ...locais]) {
+      const type = x.type === 'procedimento' || x.type === 'medicamento' ? x.type : 'exame';
+      const name = clean(x.name);
+      const group = ['raiox', 'exames', 'medicacao', 'enfermagem'].includes(x.group) ? x.group : grupoFavPA(type, name);
+      if (!name) continue;
+      if (type === 'exame' && (group === 'raiox') !== /RADIOGRAFIA/i.test(name)) continue; // como o defs do PA
+      const k = group + '|' + dig(x.code) + '|' + norm(name);
+      if (vistos.has(k)) continue;
+      vistos.add(k); out.push({ type, group, code: clean(x.code), name });
+    }
+    return out;
+  }
+
+  // Ocupação do profissional na ficha (campo do bloco PROCEDIMENTOS/CIDS), como no Procedimentos PA.
+  function occupationValue(v) {
+    const s = clean(v);
+    if (!s) return null;
+    const m = s.match(/-(\d+)$/);
+    if (m) return m[1];
+    if (/^\d+$/.test(s)) return s;
+    return null;
+  }
+  function occupation() {
+    const diretoId = occupationValue(q('#prontuario_ocupacao_id')?.value);
+    if (diretoId) return diretoId;
+    const seletores = ['input[name*="[ocupacao_id]"]', 'select[name*="[ocupacao_id]"]', 'input[name*="profissional_ocupacao_id"]', 'input[id*="profissional_ocupacao_id"]'];
+    for (const sel of seletores) for (const el of qa(sel)) { const id = occupationValue(el.value); if (id) return id; }
+    return null;
+  }
+
+  async function apiJson(url) {
+    const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json, text/javascript, */*; q=0.01', 'X-Requested-With': 'XMLHttpRequest' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+  const listaJson = xs => (Array.isArray(xs) ? xs : []);
+  const codigoItem = x => clean(x?.codigo || x?.codigo_externo || '');
+  const nomeItem = x => clean(x?.nome);
+  const urlExame = t => '/procedimentos/search.json?exame=1&q=' + encodeURIComponent(t);
+  const urlProcedimento = (occ, t) => '/procedimentos/procedimentos_ocupacoes.json?' + new URLSearchParams({ ocupacao_id: occ, q: t });
+  function mergeLista(listas) {
+    const map = new Map();
+    for (const xs of listas) for (const x of listaJson(xs)) {
+      const k = codigoItem(x) || String(x.id || '') + '|' + nomeItem(x);
+      if (!map.has(k)) map.set(k, x);
+    }
+    return [...map.values()];
+  }
+  function filtroCodigoExato(xs, termo) {
+    const n = dig(termo);
+    if (n.length !== 10) return xs;
+    return xs.filter(x => dig(codigoItem(x)) === n);
+  }
+  const ehEletrocardiograma = (cd, nm) => dig(cd).slice(0, 10) === '0211020036' || /ELETROCARDIOGRAMA/i.test(String(nm || ''));
+  // Exames de diagnóstico não são pedidos em Enfermagem (coleta 0201, ECG 0211 e glicemia capilar ficam).
+  const ehPedidoEmExames = cd => {
+    const c = dig(cd).slice(0, 10);
+    if (!/^02\d{8}$/.test(c)) return false;
+    if (/^0201|^0211/.test(c) || c === '0214010015') return false;
+    return true;
+  };
+  // Busca do Raio-X do Procedimentos PA (buscarRaioX): tira rx/raio x/radiografia/de, busca
+  // "RADIOGRAFIA DE <parte>", "<parte>" e cada palavra, e fica só com as radiografias.
+  const STOP_RX = new Set(['RX', 'RAIO', 'X', 'RAIOX', 'RADIOGRAFIA', 'RADIOGRAFIAS', 'RADIO', 'DE', 'DO', 'DA', 'DOS', 'DAS', 'E', 'EM', 'NO', 'NA']);
+  async function buscarRaioX(termo) {
+    const somenteNomeRx = xs => xs.filter(x => /RADIOGRAFIA/i.test(nomeItem(x)));
+    if (/^\d{10}$/.test(dig(termo))) return somenteNomeRx(filtroCodigoExato(listaJson(await apiJson(urlExame(clean(termo))).catch(() => [])), termo));
+    const palavras = norm(termo).replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(w => w && !STOP_RX.has(w));
+    const resto = palavras.join(' ');
+    const SIN_RX = { LOMBAR: ['LOMBAR', 'LOMBO'], TORACICA: ['TORACICA', 'TORACO'], SACRO: ['SACRO', 'SACRA'], CERVICAL: ['CERVICAL'], CRANIO: ['CRANIO'], FACE: ['FACE', 'SEIOS'], SEIOS: ['SEIOS'], DEDO: ['DEDO', 'DEDOS'], DEDOS: ['DEDOS', 'DEDO'], OMBRO: ['OMBRO', 'ESCAPULO'], TORNOZELO: ['TORNOZELO', 'TIBIO'], COXA: ['COXA', 'FEMUR'], FEMUR: ['FEMUR', 'COXA'], QUADRIL: ['QUADRIL', 'COXO', 'BACIA'] };
+    const formas = w => SIN_RX[w] || [w];
+    const consultas = resto
+      ? ['RADIOGRAFIA DE ' + resto, 'RADIOGRAFIA ' + resto, resto, ...palavras.flatMap(w => formas(w)).filter(w => w.length >= 3)]
+      : ['RADIOGRAFIA'];
+    const listas = await Promise.all([...new Set(consultas)].map(t => apiJson(urlExame(t)).catch(() => [])));
+    let xs = somenteNomeRx(mergeLista(listas));
+    if (palavras.length) {
+      const nomeN = x => ' ' + norm(nomeItem(x)).replace(/[^A-Z0-9]+/g, ' ') + ' ';
+      // Palavra curta (PE, PA) tem que bater inteira; as outras podem ser começo de palavra.
+      const bate = (n, w) => formas(w).some(f => f.length <= 2 ? n.includes(' ' + f + ' ') : n.includes(' ' + f));
+      const fortes = xs.filter(x => palavras.every(w => bate(nomeN(x), w)));
+      if (fortes.length) xs = fortes;
+      const pontos = x => { const n = nomeN(x); let p = 0; for (const w of palavras) { if (n.includes(' ' + w + ' ')) p += 3; else if (formas(w).some(f => n.includes(' ' + f + ' '))) p += 2; else if (bate(n, w)) p += 1; } if (n.includes(' RADIOGRAFIA DE ' + resto + ' ')) p += 5; return p; };
+      xs.sort((a, b) => pontos(b) - pontos(a) || nomeItem(a).length - nomeItem(b).length);
+    }
+    return xs;
+  }
+  // grupo: 'raiox' | 'exames' | 'enfermagem' → [{ codigo, nome, tipoNativo }]
+  async function buscarControle(grupo, termo) {
+    const t = clean(termo);
+    let xs = [], tipoNativo = 'exame';
+    if (grupo === 'raiox') xs = await buscarRaioX(t);
+    else if (grupo === 'exames') {
+      xs = filtroCodigoExato(listaJson(await apiJson(urlExame(t))), t)
+        .filter(x => !/RADIOGRAFIA/i.test(nomeItem(x)) && !ehEletrocardiograma(codigoItem(x), nomeItem(x)));
+    } else if (grupo === 'enfermagem') {
+      const occ = occupation();
+      if (!occ) throw new Error('Ocupação profissional não identificada na ficha.');
+      tipoNativo = 'procedimento';
+      xs = filtroCodigoExato(listaJson(await apiJson(urlProcedimento(occ, t))), t).filter(x => !ehPedidoEmExames(codigoItem(x)));
+    }
+    return mergeLista([xs]).map(x => ({ codigo: codigoItem(x), nome: nomeItem(x), tipoNativo })).filter(x => x.codigo && x.nome);
+  }
+  // Item nativo pelo código exato (o que o tokenInput da ficha espera)
+  async function resolverItemNativo(ex) {
+    const cd = dig(ex.codigo);
+    let xs;
+    if (ex.tipoNativo === 'procedimento') {
+      const occ = occupation();
+      if (!occ) throw new Error('Ocupação profissional não identificada na ficha.');
+      xs = await apiJson(urlProcedimento(occ, cd));
+    } else xs = await apiJson(urlExame(cd));
+    return listaJson(xs).find(x => dig(codigoItem(x)) === cd) || null;
+  }
+
+  const TOKEN_EXAME = '#prontuario_exame_token', TOKEN_PROC = '#prontuario_procedimento_token';
+  const LINHA_EXAME = 'tr.prontuario-exame-row', LINHA_PROC = 'tr.prontuario-lancamento-bpa-row';
+  const botaoIncluirExame = () => q('#addFieldsButton a[onclick*="add_prontuarios_exames_fields"]');
+  const botaoIncluirProcedimento = () => q('#add_fields_lancamento_bpa_procedimentos_cids a[onclick*="add_lancamentos_bpa_fields"]');
+  function rowAtiva(row) {
+    if (!row) return false;
+    const dv = clean(q('input[name$="[_destroy]"]', row)?.value).toLowerCase();
+    if (dv === '1' || dv === 'true') return false;
+    return getComputedStyle(row).display !== 'none';
+  }
+  function codigoLinhaExame(row) {
+    if (!row) return '';
+    const direto = dig(row.dataset.om30Codigo || q('.codigo_exame', row)?.value || q('input[name*="[exame_token_codigo]"]', row)?.value || '');
+    if (direto.length >= 10) return direto.slice(0, 10);
+    return qa('input', row).map(el => dig(el.value || '')).find(v => v.length === 10) || '';
+  }
+  function codigoLinhaProcedimento(row) {
+    if (!row) return '';
+    const ds = dig(row.dataset.om30Codigo || '');
+    if (ds.length >= 10) return ds.slice(0, 10);
+    const fv = dig(q('input[name*="[procedimento_token]"]', row)?.value || '');
+    if (fv.length >= 10) return fv.slice(0, 10);
+    return qa('input', row).map(el => dig(el.value || '')).find(v => v.length === 10) || '';
+  }
+  const linhaExameComCodigo = cd => qa(LINHA_EXAME).find(r => rowAtiva(r) && codigoLinhaExame(r) === dig(cd)) || null;
+  const linhaProcedimentoComCodigo = cd => qa(LINHA_PROC).find(r => rowAtiva(r) && codigoLinhaProcedimento(r) === dig(cd)) || null;
+  // Linhas ativas na seção nativa (null = seção não está nesta tela). Usado para devolver a pendente
+  // o que foi incluído numa ficha recarregada sem salvar (mesma regra da medicação: só com a seção vazia).
+  const qtdLinhasAtivas = (token, linha) => q(token) ? qa(linha).filter(rowAtiva).length : null;
+  function tokenGet(sel) {
+    const $ = window.jQuery || window.$;
+    try { const xs = $(sel).tokenInput('get'); return Array.isArray(xs) ? xs : (xs ? [xs] : []); } catch { return []; }
+  }
+  function tokenTemCodigo(sel, cd) {
+    const alvo = dig(cd);
+    return tokenGet(sel).some(x => dig(x?.codigo || x?.codigo_externo || x?.name || x?.nome || '').includes(alvo));
+  }
+  function tokenClear(sel) {
+    const $ = window.jQuery || window.$;
+    try { $(sel).tokenInput('clear'); } catch { const el = q(sel); if (el) el.value = ''; }
+  }
+  async function esperarNovaLinha(sel, antes, timeout = 3500, passo = 50) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const nova = qa(sel).find(r => !antes.has(r));
+      if (nova) return nova;
+      await sleep(passo);
+    }
+    return qa(sel).find(r => !antes.has(r)) || null;
+  }
+  // ex: { codigo, nome, tipoNativo: 'exame' | 'procedimento' }. Inclui na seção nativa (Exames ou
+  // Procedimentos/CIDs) como o incluirSimples do Procedimentos PA. Se já existe linha com o mesmo
+  // código, não inclui de novo. Nunca clica em salvar/encaminhar.
+  async function incluirExame(ex) {
+    const $ = window.jQuery || window.$;
+    const proc = ex?.tipoNativo === 'procedimento';
+    const cd = dig(ex?.codigo).slice(0, 10);
+    if (cd.length !== 10) throw new Error('Código inválido: ' + (ex?.codigo || ''));
+    const sel = proc ? TOKEN_PROC : TOKEN_EXAME, linhaSel = proc ? LINHA_PROC : LINHA_EXAME;
+    const linhaCom = proc ? linhaProcedimentoComCodigo : linhaExameComCodigo;
+    if (!q(sel)) throw new Error('Seção ' + (proc ? 'Procedimentos' : 'Exames') + ' não encontrada nesta ficha.');
+    if (!$ || typeof $(sel).tokenInput !== 'function') throw new Error('TokenInput não disponível.');
+    if (linhaCom(cd)) return { jaEstava: true };
+    const item = await resolverItemNativo(ex);
+    if (!item) throw new Error('Código ' + cd + ' não localizado na busca do sistema.');
+    const nm = nomeItem(item) || clean(ex.nome);
+    if (!proc) {
+      const interno = q('#prontuario_exame_externo_false');
+      if (interno) { interno.checked = true; interno.dispatchEvent(new Event('change', { bubbles: true })); }
+    }
+    const mesmo = tokenTemCodigo(sel, cd);
+    if (tokenGet(sel).length && !mesmo) throw new Error('Existe outro item aguardando inclusão na seção nativa.');
+    const antes = new Set(qa(linhaSel));
+    if (!mesmo) $(sel).tokenInput('add', { ...item, id: item.id, name: cd + ' - ' + nm });
+    await sleep(100);
+    const b = proc ? botaoIncluirProcedimento() : botaoIncluirExame();
+    if (!b) { if (tokenTemCodigo(sel, cd)) tokenClear(sel); throw new Error('Botão nativo + Incluir não encontrado.'); }
+    b.click();
+    let row = await esperarNovaLinha(linhaSel, antes, 3500);
+    if (!row) row = linhaCom(cd);
+    if (!row) {
+      // o próprio sistema consumiu o token: inclusão feita (a lista nativa é a fonte real)
+      if (!tokenTemCodigo(sel, cd)) return { jaEstava: false, confirmadoPeloToken: true };
+      tokenClear(sel);
+      throw new Error('Não foi possível confirmar a inclusão de ' + cd + '.');
+    }
+    row.dataset.om30Codigo = cd;
+    row.dataset.om30Nome = nm;
+    if (tokenTemCodigo(sel, cd)) tokenClear(sel);
+    return { jaEstava: false };
+  }
+
   // ---------- usuário logado ----------
   function nomeNaBarra() {
     const t = qa('.navbar a,.navbar button,.navbar .dropdown-toggle,nav a,nav button,.topbar a,.topbar button')
@@ -377,6 +674,11 @@
         token: !!q('#prontuario_medicamento_token'), tokenInput: !!($ && q('#prontuario_medicamento_token') && typeof $(q('#prontuario_medicamento_token')).tokenInput === 'function'),
         via: !!q('#prontuario_tipo_uso_medicamento_id'), posologia: !!q('#prontuario_posologia_medicamento'),
         incluir: !!q('a.incluir_prontuario_medicamento'), linhas: qa('tr.prontuario-medicamento-row').length,
+      },
+      controleSalas: {
+        tokenExame: !!q(TOKEN_EXAME), incluirExame: !!botaoIncluirExame(), linhasExame: qa(LINHA_EXAME).length,
+        tokenProcedimento: !!q(TOKEN_PROC), incluirProcedimento: !!botaoIncluirProcedimento(), linhasProcedimento: qa(LINHA_PROC).length,
+        ocupacao: !!occupation(),
       },
       formularios: qa('form').map(f => ({ id: f.id, acao: (f.getAttribute('action') || '').replace(/\d+/g, '<n>') })).slice(0, 10),
       botoes: qa('input[type=submit],button[type=submit],a.btn,button.btn').filter(fora).map(b => clean(b.value || b.textContent)).filter(Boolean).slice(0, 25),
@@ -446,6 +748,17 @@
     adicionarMedicacao,
     vias,
     diagnostico,
+    // Controle de Salas (Raio X / Exames / Enfermagem): entra nas seções nativas da ficha no envio
+    favoritosControle: favoritosPA,
+    favoritosControlePadrao: FAVORITOS_CONTROLE,
+    gruposExames: GRUPOS_EXAMES,
+    regioesRaioX: REGIOES_RX,
+    buscarControle,
+    // a busca de Enfermagem depende da ocupação do profissional, que só existe na ficha
+    buscaControleDisponivel: grupo => grupo !== 'enfermagem' || (ehFicha() && !!occupation()),
+    incluirExame,
+    qtdExamesFicha: () => qtdLinhasAtivas(TOKEN_EXAME, LINHA_EXAME),
+    qtdProcedimentosFicha: () => qtdLinhasAtivas(TOKEN_PROC, LINHA_PROC),
     exigeItemDaLista: true,
     favoritos: [
       { busca: 'DIPIRONA', via: 'INTRAVENOSA', posologia: '1 g' },
@@ -463,6 +776,12 @@
 // PAINEL DE RASCUNHO DE EVOLUÇÃO (genérico)
 // Cada rascunho é preso a UM atendimento e a UM profissional. Tudo que é do sistema
 // fica no adaptador (window.EvolConfig): adaptador-saude-simples.js ou adaptador-demo.js.
+// v1.2.0: aba Controle de Salas (Raio X | Exames | Medicação | Enfermagem, como no Procedimentos PA);
+//         a Medicação passou para dentro dela sem mudar nada; Raio X, Exames e Enfermagem ficam no
+//         rascunho e no "Enviar para a ficha" entram nas seções nativas pelo "+ Incluir" (fora do texto).
+//         Favoritos = os do Procedimentos PA neste computador (só leitura); Raio X com as 8 regiões do PA
+//         (cada uma lista todas as radiografias dela); Medicação também com os medicamentos do PA.
+//         Raio X com as regiões do PA; Raio X, Exames e Enfermagem pesquisam no sistema como no Procedimentos PA, em lista que fica aberta.
 // =====================================================================
 (() => {
   if (document.getElementById('evol-painel-host')) return;
@@ -502,6 +821,7 @@
   const nomeExibido = p => p.nome || `Atendimento ${String(p.atendimento).split('#').pop()}`;
   const textoEntrada = e => e.tipo === 'med'
     ? [e.med.nome, e.med.posologia, e.med.via && 'via ' + e.med.via.toLowerCase()].filter(Boolean).join(', ').replace(/\s+/g, ' ').trim()
+    : e.tipo === 'exame' ? String(e.exame?.nome || e.exame?.codigo || '').trim()
     : e.texto.trim();
   // Conduta e orientações fecham a evolução: vão num bloco no final, sem horário.
   const ehFechamento = e => e.tipo === 'nota' && /^(conduta|orienta)/i.test(e.texto.trim());
@@ -519,7 +839,8 @@
   }
   const ordenar = xs => [...xs].sort((a, b) => (momento(a) - momento(b)) || (a.id - b.id));
   function montarTexto(entradas) {
-    const xs = ordenar(entradas);
+    // Raio X / Exames / Enfermagem não entram no texto da evolução (vão para as seções nativas)
+    const xs = ordenar(entradas.filter(e => e.tipo !== 'exame'));
     const linhas = xs.filter(e => !ehFechamento(e)).map(linhaEvolucao);
     const fecho = xs.filter(ehFechamento).map(linhaEvolucao);
     if (fecho.length) { if (linhas.length) linhas.push(''); linhas.push(...fecho); }
@@ -635,6 +956,8 @@
     .abas { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; background: #eef2f5; border-radius: 9px; padding: 3px; margin-bottom: 8px; }
     .aba { border: 0; background: transparent; color: #6c808c; padding: 6px; border-radius: 7px; font-size: 12.5px; font-weight: 700; }
     .aba.on { background: #fff; color: #123f68; box-shadow: 0 1px 4px rgba(18,40,56,.12); }
+    .abas.sub { grid-template-columns: repeat(4, 1fr); }
+    .abas.sub .aba { padding: 6px 2px; }
     .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
     .chip { border: 1px solid #dbe4ea; background: #fff; color: #3d5a70; border-radius: 999px; padding: 3px 9px; font-size: 11.5px; }
     .chip:hover { background: #eef4f7; border-color: #c4d3dc; }
@@ -655,6 +978,11 @@
     .resultados { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); background: #fff; border-radius: 10px; box-shadow: 0 10px 28px rgba(18,40,56,.22);
       max-height: 210px; overflow-y: auto; display: none; z-index: 4; padding: 4px; }
     .resultados.on { display: block; }
+    .resultados.lista { position: static; box-shadow: none; border: 1px solid #dbe4ea; max-height: 190px; margin-bottom: 6px; }
+    .chip.regiao { border-color: #b9cddb; color: #123f68; font-weight: 600; }
+    .chip.on { background: #123f68; border-color: #123f68; color: #fff; }
+    .resultados div.feito { color: #23733d; }
+    .resultados div.feito::before { content: '✓ '; }
     .resultados div { padding: 7px 9px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
     .resultados div:hover { background: #eef4f7; color: #123f68; }
     .escolhido { display: none; align-items: center; gap: 6px; margin-top: 6px; background: #e3f4e8; color: #1f5f33; border-radius: 8px; padding: 6px 9px; font-size: 12.5px; font-weight: 600; }
@@ -746,12 +1074,26 @@
     <div class="editor" id="editor">
       <div class="abas">
         <button class="aba on" id="abaNota">Anotação</button>
-        <button class="aba" id="abaMed">Medicação</button>
+        <button class="aba" id="abaCtl">Controle de Salas</button>
       </div>
       <div id="paneNota">
         <div class="chips" id="rapidos"></div>
         <textarea id="nota" placeholder="O que foi feito ou observado agora…"></textarea>
         <div class="linha"><span class="dica">Ctrl+Enter adiciona · hora automática</span><button class="btn" id="addNota">Adicionar</button></div>
+      </div>
+      <div id="paneCtlWrap" class="esconde">
+      <div class="abas sub" id="subAbas">
+        <button class="aba" data-g="raiox">Raio X</button>
+        <button class="aba" data-g="exames">Exames</button>
+        <button class="aba" data-g="med" id="abaMed">Medicação</button>
+        <button class="aba" data-g="enfermagem">Enfermagem</button>
+      </div>
+      <div id="paneCtl" class="esconde">
+        <div class="chips" id="ctlFav"></div>
+        <div class="busca">
+          <input id="ctlBusca" placeholder="Buscar radiografia…" autocomplete="off">
+          <div class="resultados" id="ctlRes"></div>
+        </div>
       </div>
       <div id="paneMed" class="esconde">
         <div class="chips" id="favoritos"></div>
@@ -766,6 +1108,7 @@
           <input id="medHora" type="time" title="Horário">
         </div>
         <div class="linha"><span class="dica">Entra na evolução e na seção Medicamentos</span><button class="btn verde" id="addMed">Registrar</button></div>
+      </div>
       </div>
     </div>
 
@@ -847,15 +1190,33 @@
   root.addEventListener('click', ev => { if (!ev.target.closest?.('#menu') && ev.target.id !== 'btnMenu') $('menu').classList.remove('on'); });
 
   // ---------- abas ----------
+  // Anotação | Controle de Salas. Dentro do Controle de Salas, as sub-abas do Procedimentos PA:
+  // Raio X | Exames | Medicação | Enfermagem (Medicação = o registro de medicação de sempre).
+  const temCtl = typeof C.incluirExame === 'function';
+  let subAtual = temCtl ? 'raiox' : 'med';
+  if (!temCtl) $('subAbas').classList.add('esconde');
   function abrirAba(qual) {
     $('abaNota').classList.toggle('on', qual === 'nota');
-    $('abaMed').classList.toggle('on', qual === 'med');
+    $('abaCtl').classList.toggle('on', qual === 'ctl');
     $('paneNota').classList.toggle('esconde', qual !== 'nota');
-    $('paneMed').classList.toggle('esconde', qual !== 'med');
-    (qual === 'nota' ? $('nota') : $('medNome')).focus();
+    $('paneCtlWrap').classList.toggle('esconde', qual !== 'ctl');
+    if (qual === 'nota') $('nota').focus(); else abrirSub(subAtual);
+  }
+  function abrirSub(g, foco = true) {
+    subAtual = g;
+    root.querySelectorAll('#subAbas .aba').forEach(b => b.classList.toggle('on', b.dataset.g === g));
+    $('paneMed').classList.toggle('esconde', g !== 'med');
+    $('paneCtl').classList.toggle('esconde', g === 'med');
+    if (g === 'med') { renderFavMedPA(); if (foco) $('medNome').focus(); return; }
+    grupoCtl = g;
+    limparCtl();
+    renderFavCtl();
+    atualizarBuscaCtl();
+    if (foco && !$('ctlBusca').disabled) $('ctlBusca').focus();
   }
   $('abaNota').onclick = () => abrirAba('nota');
-  $('abaMed').onclick = () => abrirAba('med');
+  $('abaCtl').onclick = () => abrirAba('ctl');
+  root.querySelectorAll('#subAbas .aba').forEach(b => { b.onclick = () => abrirSub(b.dataset.g); });
 
   // ordem do atendimento: examina → pede exames → vê resultado → reavalia → conduta → orienta
   ['Exame físico: ', 'Solicitado: ', 'Resultado: ', 'Reavaliação: ', 'Conduta: ', 'Orientado ']
@@ -922,9 +1283,149 @@
     $('favoritos').appendChild(b);
   });
 
+  // ---------- Controle de Salas: Raio X, Exames, Enfermagem ----------
+  // Cada item vira uma entrada do rascunho; no "Enviar para a ficha" entra na seção nativa da ficha
+  // (Exames / Procedimentos) pelo "+ Incluir" do sistema. Não vai para o texto da evolução.
+  const ROTULO_CTL = { raiox: 'RAIO-X', exames: 'EXAME', enfermagem: 'ENFERMAGEM' };
+  const BUSCA_CTL = { raiox: 'Buscar radiografia…', exames: 'Buscar exame…', enfermagem: 'Buscar procedimento…' };
+  const digCod = s => String(s ?? '').replace(/\D/g, '');
+  const rotuloItem = s => { const t = String(s ?? '').trim(); return t.charAt(0) + t.slice(1).toLowerCase(); };
+  const rotuloGrupo = s => String(s ?? '').trim().toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+  let grupoCtl = 'raiox', tBuscaCtl = null, buscaCtlSeq = 0;
+  const jaNoRascunho = codigo => !!rascunho && rascunho.entradas.some(e => e.tipo === 'exame' && !e.enviadoControle && digCod(e.exame?.codigo) === digCod(codigo));
+  // itens: [{ codigo, nome, tipoNativo }] → devolve quantos entraram
+  function adicionarExames(grupo, itens) {
+    if (!rascunho) return 0;
+    if (!aindaOMesmo()) { verificarPaciente(); msg('O paciente mudou. Confira antes de registrar.', 'erro'); return 0; }
+    const t0 = Date.now(), hora = agoraHHMM();
+    let n = 0;
+    for (const it of itens) {
+      if (!digCod(it.codigo) || jaNoRascunho(it.codigo)) continue;
+      rascunho.entradas.push({ id: t0 + n, tipo: 'exame', grupo, exame: { codigo: digCod(it.codigo), nome: it.nome, tipoNativo: it.tipoNativo === 'procedimento' ? 'procedimento' : 'exame' }, hora });
+      n++;
+    }
+    if (!n) {
+      msg(itens.length > 1 ? 'Estes exames já estão no rascunho.' : grupo === 'enfermagem' ? 'Este procedimento já está no rascunho.' : 'Este exame já está no rascunho.', 'erro');
+      return 0;
+    }
+    salvar(); render(); msg('');
+    return n;
+  }
+  const itemFavorito = f => ({ codigo: f.code, nome: f.name, tipoNativo: f.type === 'procedimento' ? 'procedimento' : 'exame' });
+  // Favoritos: os do Procedimentos PA neste computador (função do adaptador) ou uma lista fixa.
+  const listaFavoritos = () => { try { const f = typeof C.favoritosControle === 'function' ? C.favoritosControle() : C.favoritosControle; return Array.isArray(f) ? f : []; } catch (e) { console.warn('[OM30 Rascunho] favoritos', e); return []; } };
+  let regiaoRx = null, sistemaCtl = [], buscouCtl = false;
+  function renderFavCtl() {
+    const box = $('ctlFav'), g = grupoCtl, favs = listaFavoritos();
+    box.innerHTML = '';
+    const chip = (texto, fn, cls = '') => { const b = document.createElement('button'); b.className = 'chip' + (cls ? ' ' + cls : ''); b.textContent = texto; b.onclick = fn; box.appendChild(b); return b; };
+    if (g === 'raiox') for (const [rotulo, termo] of (C.regioesRaioX || [])) {
+      // como no Procedimentos PA: uma busca com o termo da região; clicar de novo na região ativa desliga e limpa a lista
+      const b = chip(rotulo, () => {
+        const desligar = regiaoRx === rotulo;
+        limparCtl();                        // zera texto, região e lista (e cancela busca em andamento)
+        if (desligar) { renderFavCtl(); return; }
+        regiaoRx = rotulo; renderFavCtl();
+        buscarCtl(termo);
+      }, 'regiao');
+      if (regiaoRx === rotulo) b.classList.add('on');
+    }
+    if (g === 'exames') for (const gr of (C.gruposExames || [])) {
+      const todos = [...favs, ...(C.favoritosControlePadrao || [])];
+      const itens = gr.codigos.map(cd => todos.find(f => digCod(f.code) === digCod(cd))).filter(Boolean).map(itemFavorito);
+      if (itens.length) chip(rotuloGrupo(gr.nome), () => adicionarExames('exames', itens));
+    }
+    for (const f of favs.filter(f => f.group === g)) chip(rotuloItem(f.name), () => adicionarExames(g, [itemFavorito(f)]));
+  }
+  function limparCtl() { clearTimeout(tBuscaCtl); buscaCtlSeq++; regiaoRx = null; sistemaCtl = []; buscouCtl = false; $('ctlBusca').value = ''; renderListaCtl(); }
+  // Lista fixa embaixo da caixa de busca (como no Procedimentos PA, pesquisando no sistema): mostra tudo o que o sistema
+  // devolveu para a região ou para o texto, fica aberta para pedir vários itens e marca com ✓ o que já está no rascunho.
+  // Sem texto e sem região, fica escondida (só os chips).
+  function renderListaCtl() {
+    const box = $('ctlRes'), g = grupoCtl;
+    box.innerHTML = '';
+    if (!buscouCtl) { box.classList.remove('on'); return; }
+    for (const x of sistemaCtl) {
+      const d = document.createElement('div');
+      d.textContent = x.nome;
+      d.dataset.codigo = digCod(x.codigo);
+      if (jaNoRascunho(x.codigo)) d.classList.add('feito');
+      d.onclick = () => { if (adicionarExames(g, [x])) d.classList.add('feito'); };
+      box.appendChild(d);
+    }
+    if (!sistemaCtl.length) box.innerHTML = '<div style="color:#8796a0;cursor:default">Nada encontrado</div>';
+    box.classList.add('lista'); box.classList.add('on');
+  }
+  // Mantém o ✓ da lista em dia quando o rascunho muda (item apagado, enviado, outro paciente).
+  function marcarFeitosCtl() {
+    for (const d of Array.from($('ctlRes').children)) if (d.dataset && d.dataset.codigo) d.classList.toggle('feito', jaNoRascunho(d.dataset.codigo));
+  }
+  // Medicação: além dos favoritos com dose, os do Procedimentos PA (padrão/unidade/estrelas do médico).
+  // O item é achado no estoque pelo código do PA; sem ele, a busca pelo nome fica aberta para escolher.
+  function renderFavMedPA() {
+    const box = $('favoritos');
+    box.querySelectorAll('.chip.pa').forEach(b => b.remove());
+    for (const f of listaFavoritos().filter(f => f.group === 'medicacao')) {
+      const b = document.createElement('button');
+      b.className = 'chip pa';
+      b.textContent = rotuloItem(f.name);
+      b.onclick = async () => {
+        limparMed();
+        $('medNome').value = f.name;
+        if (!C.buscarMedicamento) { escolherMed({ id: null, nome: f.name }); return; }
+        const seq = ++buscaSeq;
+        let exato = null;
+        if (digCod(f.code)) {
+          try { exato = (await C.buscarMedicamento(f.code)).find(x => digCod(x.raw?.codigo ?? x.raw?.codigo_externo ?? x.codigo) === digCod(f.code)) || null; }
+          catch (e) { console.warn('[OM30 Rascunho] medicamento do PA', e); }
+        }
+        if (seq !== buscaSeq) return;
+        if (exato) escolherMed(exato);
+        else { $('medNome').focus(); buscarMed(f.name.split(/[\s,]+/).slice(0, 2).join(' ')); }
+      };
+      box.appendChild(b);
+    }
+  }
+  function atualizarBuscaCtl() {
+    const inp = $('ctlBusca');
+    const ok = !C.buscaControleDisponivel || !!C.buscaControleDisponivel(grupoCtl);
+    if (!ok && !inp.disabled) limparCtl();
+    inp.disabled = !ok;
+    inp.placeholder = ok ? BUSCA_CTL[grupoCtl] : 'Busca disponível com a ficha aberta';
+  }
+  // Pesquisa no sistema (texto digitado ou termo da região): a lista mostra tudo o que ele devolveu.
+  const MIN_BUSCA_CTL = 2;
+  async function buscarCtl(termo) {
+    const g = grupoCtl;
+    if (!C.buscarControle || termo.length < MIN_BUSCA_CTL || (C.buscaControleDisponivel && !C.buscaControleDisponivel(g))) return;
+    const seq = ++buscaCtlSeq;
+    let xs = [];
+    try { xs = await C.buscarControle(g, termo); } catch (e) {
+      console.warn('[OM30 Rascunho] busca do Controle de Salas', e);
+      if (seq === buscaCtlSeq && g === grupoCtl) { sistemaCtl = []; buscouCtl = false; renderListaCtl(); msg('Busca indisponível no momento.', 'erro'); }
+      return;
+    }
+    if (seq !== buscaCtlSeq || g !== grupoCtl) return;
+    sistemaCtl = Array.isArray(xs) ? xs : [];
+    buscouCtl = true;
+    if ($('msg').textContent === 'Busca indisponível no momento.') msg('');
+    renderListaCtl();
+  }
+  // Digitar desliga a região; com menos de 2 letras a lista some; senão pesquisa depois de 300 ms.
+  function aoDigitarCtl() {
+    clearTimeout(tBuscaCtl); buscaCtlSeq++;
+    const termo = $('ctlBusca').value.trim();
+    const eraRegiao = !!regiaoRx;
+    if (eraRegiao) { regiaoRx = null; renderFavCtl(); }
+    if (eraRegiao || termo.length < MIN_BUSCA_CTL) { sistemaCtl = []; buscouCtl = false; renderListaCtl(); }
+    tBuscaCtl = setTimeout(() => buscarCtl(termo), 300);
+  }
+  $('ctlBusca').addEventListener('input', aoDigitarCtl);
+
   // ---------- estado ----------
   let paciente = null;
   let rascunho = null;
+  abrirSub(subAtual, false);   // depois do estado: a lista marca o que já está no rascunho
 
   function msg(texto, tipo) { const m = $('msg'); m.className = 'msg ' + (tipo || ''); m.textContent = texto || ''; }
 
@@ -937,8 +1438,10 @@
   }
   function salvarPendente() { if (!rascunho) return; rascunho.textoPendente = $('nota').value; salvar(); }
 
-  const pendentesEvol = () => rascunho ? rascunho.entradas.filter(e => !e.enviadoEvolucao) : [];
+  const pendentesEvol = () => rascunho ? rascunho.entradas.filter(e => e.tipo !== 'exame' && !e.enviadoEvolucao) : [];
   const pendentesMed = () => rascunho ? rascunho.entradas.filter(e => e.tipo === 'med' && !e.enviadoControle) : [];
+  // Raio X / Exames / Enfermagem: só vão para as seções nativas da ficha (enviadoControle)
+  const pendentesCtl = () => rascunho ? rascunho.entradas.filter(e => e.tipo === 'exame' && !e.enviadoControle) : [];
 
   function render() {
     // profissional
@@ -952,7 +1455,8 @@
     $('avisoFila').classList.toggle('on', temPac && !paciente.naFicha);
 
     // botão enviar: o texto explica o estado
-    const nPend = pendentesEvol().length + pendentesMed().filter(e => e.enviadoEvolucao).length;
+    const nPend = pendentesEvol().length + pendentesMed().filter(e => e.enviadoEvolucao).length + pendentesCtl().length;
+    if (temCtl) { atualizarBuscaCtl(); marcarFeitosCtl(); }
     const b = $('enviar');
     if (!medico) { b.disabled = true; b.textContent = 'Profissional não identificado'; }
     else if (!temPac) { b.disabled = true; b.textContent = 'Escolha um paciente'; }
@@ -994,10 +1498,11 @@
     ordenar(rascunho.entradas).forEach(e => {
       const d = document.createElement('div');
       d.className = 'ent' + (e.tipo === 'med' ? ' med' : '');
-      d.innerHTML = `<div class="hora">${esc(e.hora)}</div><div class="ponto"></div><div class="bolha">${e.tipo === 'med' ? '<div class="pill">MEDICAÇÃO</div>' : ''}<div class="txt"></div></div>`;
+      const pill = e.tipo === 'med' ? 'MEDICAÇÃO' : e.tipo === 'exame' ? (ROTULO_CTL[e.grupo] || 'EXAME') : '';
+      d.innerHTML = `<div class="hora">${esc(e.hora)}</div><div class="ponto"></div><div class="bolha">${pill ? `<div class="pill">${pill}</div>` : ''}<div class="txt"></div></div>`;
       d.querySelector('.txt').textContent = textoEntrada(e);
       const bol = d.querySelector('.bolha');
-      const tudo = e.enviadoEvolucao && (e.tipo !== 'med' || e.enviadoControle);
+      const tudo = e.tipo === 'exame' ? !!e.enviadoControle : e.enviadoEvolucao && (e.tipo !== 'med' || e.enviadoControle);
       if (tudo) bol.insertAdjacentHTML('beforeend', '<div class="feito">✓ na ficha</div>');
       else if (e.enviadoEvolucao) bol.insertAdjacentHTML('beforeend', '<div class="feito" style="color:#9a6a00">✓ no texto · falta na seção Medicamentos</div>');
       else {
@@ -1113,7 +1618,7 @@
   }
 
   async function apagarDaLista(it) {
-    const nao = (it.v.entradas || []).filter(e => !e.enviadoEvolucao).length;
+    const nao = (it.v.entradas || []).filter(e => e.tipo === 'exame' ? !e.enviadoControle : !e.enviadoEvolucao).length;
     const corpo = pacHtml(it.v.paciente) +
       (nao ? `<div class="dlg-aviso">⚠ ${nao} ${nao === 1 ? 'anotação ainda não foi' : 'anotações ainda não foram'} para a ficha.</div>` : '');
     if (!await perguntar({ titulo: 'Apagar rascunho?', corpo, sim: 'Apagar', nao: 'Cancelar', tipo: 'perigo' })) return;
@@ -1153,6 +1658,7 @@
     } else rascunho = null;
     $('nota').value = rascunho ? rascunho.textoPendente || '' : '';
     limparMed();
+    limparCtl();
     preencherVias();
     render();
     atualizarOutros();
@@ -1175,6 +1681,12 @@
     const nMed = C.qtdMedicacoesFicha ? C.qtdMedicacoesFicha() : null;
     const medsEnviadas = rascunho.entradas.filter(e => e.tipo === 'med' && e.enviadoControle);
     if (nMed === 0 && medsEnviadas.length) { medsEnviadas.forEach(e => { e.enviadoControle = false; }); voltou += medsEnviadas.length; }
+    // v1.2.0: Raio X, Exames e Enfermagem — voltam só se a seção da ficha estiver sem nenhuma linha.
+    for (const [qtd, nativo] of [[C.qtdExamesFicha, 'exame'], [C.qtdProcedimentosFicha, 'procedimento']]) {
+      const n = qtd ? qtd() : null;
+      const enviados = rascunho.entradas.filter(e => e.tipo === 'exame' && e.enviadoControle && (e.exame?.tipoNativo || 'exame') === nativo);
+      if (n === 0 && enviados.length) { enviados.forEach(e => { e.enviadoControle = false; }); voltou += enviados.length; }
+    }
     if (voltou) {
       salvar(); render();
       msg('Esta ficha não tem mais o que tinha sido enviado (provavelmente foi recarregada sem salvar). Os itens voltaram para pendente — clique em Enviar de novo.', 'erro');
@@ -1224,8 +1736,8 @@
       const ja = pendentesEvol().filter(e => noCampo.includes(compacto(linhaEvolucao(e))));
       if (ja.length) { ja.forEach(e => { e.enviadoEvolucao = true; }); salvar(); render(); }
     }
-    const pe = pendentesEvol(), pm = pendentesMed();
-    if (!pe.length && !pm.length) { msg('Tudo já está na ficha.', 'ok'); return; }
+    const pe = pendentesEvol(), pm = pendentesMed(), px = pendentesCtl();
+    if (!pe.length && !pm.length && !px.length) { msg('Tudo já está na ficha.', 'ok'); return; }
     const p = rascunho.paciente;
     const destino = (C.destinoTexto && C.destinoTexto()) || 'texto clínico';
     const destinoMed = (C.destinoMed && C.destinoMed()) || 'Medicamentos';
@@ -1238,6 +1750,7 @@
       '<div class="dlg-sec">Vai entrar na ficha</div>' +
       (nLinhas ? `<div class="dlg-item"><span class="ic">📝</span><div><b>${resumoTxt}</b> no texto de <i>${esc(destino)}</i></div></div>` : '') +
       (pm.length ? `<div class="dlg-item"><span class="ic">💊</span><div><b>${pm.length} ${pm.length === 1 ? 'medicação' : 'medicações'}</b> na seção <i>${esc(destinoMed)}</i><small>${esc(pm.map(e => e.med.nome).join(' · '))}</small></div></div>` : '') +
+      (px.length ? `<div class="dlg-item"><span class="ic">🧪</span><div><b>${px.length} ${px.length === 1 ? 'item' : 'itens'} do Controle de Salas</b><small>${esc(px.map(e => e.exame.nome).join(' · '))}</small></div></div>` : '') +
       (nLinhas ? `<details class="dlg-prev"><summary>Ver o texto que vai entrar</summary><pre>${esc(texto)}</pre></details>` : '');
     const primeiro = nomeExibido(p).split(' ')[0];
     if (!await perguntar({ titulo: 'Enviar para a ficha', corpo, sim: `Enviar para ${primeiro}`, nao: 'Cancelar', tipo: conf.duvida ? 'alerta' : 'normal' })) return;
@@ -1255,7 +1768,26 @@
         e.enviadoControle = true;
         salvar();
       }
-      msg('Pronto. Confira o texto e a medicação na ficha e finalize no sistema. Depois clique em "Finalizei a ficha — apagar rascunho".', 'ok');
+      // Raio X / Exames / Enfermagem: um por vez na seção nativa; falha num item não para os outros
+      const falhas = [];
+      let nOk = 0;
+      for (const e of px) {
+        try {
+          await C.incluirExame(e.exame);
+          e.enviadoControle = true; nOk++;
+          salvar();
+        } catch (err) {
+          falhas.push(e);
+          console.warn('[OM30 Rascunho] item do Controle de Salas não incluído', e.exame?.codigo, err);
+        }
+      }
+      if (!px.length) msg('Pronto. Confira o texto e a medicação na ficha e finalize no sistema. Depois clique em "Finalizei a ficha — apagar rascunho".', 'ok');
+      else {
+        const soExames = px.every(e => e.exame?.tipoNativo !== 'procedimento');
+        const feito = !nOk ? '' : `${nOk} ${soExames ? (nOk === 1 ? 'exame incluído' : 'exames incluídos') : (nOk === 1 ? 'item incluído' : 'itens incluídos')} na ficha.`;
+        if (falhas.length) msg([feito, 'Não foi possível incluir: ' + falhas.map(e => rotuloItem(e.exame?.nome || e.exame?.codigo)).join(', ') + '.'].filter(Boolean).join(' '), 'erro');
+        else msg(`Pronto. ${feito} Confira e finalize no sistema. Depois clique em "Finalizei a ficha — apagar rascunho".`, 'ok');
+      }
     } catch (err) {
       salvar();
       msg('Parou no meio: ' + err.message + ' O que já entrou está marcado com ✓; o resto continua no rascunho.', 'erro');
@@ -1268,7 +1800,7 @@
 
   async function apagar() {
     if (!rascunho) return;
-    const nao = pendentesEvol().length + pendentesMed().filter(e => e.enviadoEvolucao).length;
+    const nao = pendentesEvol().length + pendentesMed().filter(e => e.enviadoEvolucao).length + pendentesCtl().length;
     const corpo = pacHtml(rascunho.paciente) +
       (nao ? `<div class="dlg-aviso verm">⚠ ${nao} ${nao === 1 ? 'item ainda NÃO foi' : 'itens ainda NÃO foram'} para a ficha e ${nao === 1 ? 'vai ser perdido' : 'vão ser perdidos'}.</div>`
            : '<div class="dlg-item"><span class="ic">✅</span><div>Tudo deste rascunho já está na ficha.</div></div>') +
@@ -1288,7 +1820,7 @@
     d.painel = {
       versao: (typeof GM_info !== 'undefined' && GM_info?.script?.version) || 'dev',
       profissional: !!medico, paciente: !!paciente, naFicha: !!paciente?.naFicha,
-      entradas: rascunho?.entradas.length || 0, pendentesTexto: pendentesEvol().length, pendentesMed: pendentesMed().length,
+      entradas: rascunho?.entradas.length || 0, pendentesTexto: pendentesEvol().length, pendentesMed: pendentesMed().length, pendentesControle: pendentesCtl().length,
       ultimaMensagem: $('msg').textContent.replace(/[A-ZÀ-Ú]{3,}( [A-ZÀ-Ú]{2,})+/g, '<nome>'),
       botaoEnviar: $('enviar').textContent,
     };
@@ -1331,7 +1863,7 @@
   }
   document.addEventListener('submit', ev => {
     if (C.ehFormularioFicha && !C.ehFormularioFicha(ev.target)) return;
-    const faltam = paciente?.naFicha && rascunho ? pendentesEvol().length + pendentesMed().length : 0;
+    const faltam = paciente?.naFicha && rascunho ? pendentesEvol().length + pendentesMed().length + pendentesCtl().length : 0;
     if (liberado || !faltam) { enviandoFormulario = true; marcarSalvando(); return; }
     // segura o envio da ficha e pergunta na janela própria
     ev.preventDefault(); ev.stopImmediatePropagation();
@@ -1353,7 +1885,7 @@
   window.addEventListener('beforeunload', ev => {
     if (rascunho) { rascunho.textoPendente = $('nota').value; salvar(); }
     if (enviandoFormulario || !paciente?.naFicha || !rascunho) return;
-    if (pendentesEvol().length || pendentesMed().length) { ev.preventDefault(); ev.returnValue = ''; }
+    if (pendentesEvol().length || pendentesMed().length || pendentesCtl().length) { ev.preventDefault(); ev.returnValue = ''; }
   });
   window.addEventListener('pagehide', () => { if (rascunho) { rascunho.textoPendente = $('nota').value; salvar(); } });
 
@@ -1367,7 +1899,7 @@
       if (!medico) { msg('Não identifiquei o profissional logado. Recarregue a página.', 'erro'); return; }
       if (!paciente?.naFicha) { msg('Não reconheci esta tela como ficha. Use ⋯ → Diagnóstico e mande para o suporte.', 'erro'); return; }
       if (rascunho?.entradas.length) {
-        if (pendentesEvol().length || pendentesMed().length) enviar();
+        if (pendentesEvol().length || pendentesMed().length || pendentesCtl().length) enviar();
         else msg('Tudo deste rascunho já está na ficha.', 'ok');
       } else if (meus().length) msg('Escolha no painel qual rascunho é deste paciente.', 'ok');
       else msg('Você não tem nenhum rascunho aberto.', 'erro');

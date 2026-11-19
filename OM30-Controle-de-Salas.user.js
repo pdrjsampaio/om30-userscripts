@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.12
+// @version      3.1.13
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.12
+    /* OM30 - CONTROLE DE SALAS v3.1.13
+     * v3.1.13: Consulta de pacientes com visual novo: campo "Consultar paciente por nome ou senha" com botão Consultar, resultado num painel logo abaixo do campo (fecha com Esc ou clicando fora), situação em etiqueta (Em atendimento, Chamado, Aguardando, Aguardando médico) e posição na fila. Textos de sistema, sem códigos técnicos.
      * v3.1.12: "Onde está o paciente?" na tela do Controle de Salas: digite o nome ou a senha e veja onde a pessoa está agora (em atendimento em qual sala, aguardando qual sala e quantos na frente, chamada e ainda não entrou, aguardando o médico ou o acolhimento) e por quais salas já passou (ontem e hoje). Só lê as listas que o sistema já tem, apenas quando alguém busca (no máximo 1 vez a cada 2 min, botão Atualizar), e não grava nada no navegador. Lista que não pôde ser lida aparece como "não consegui ler".
      * v3.1.11: 'Senha perdida': a senha da aba agora volta também na consulta do prontuário e na tela de encaminhamento (onde ela é lida), só para o MESMO atendimento (id e tipo); senha de outro paciente é retirada dessas telas em vez de ser encaminhada. Guichê: busca direta em vez de varrer a página inteira 3 a 4 vezes por segundo. Presença: voltar para a aba não grava em dobro no Cloudflare. Corrigido erro ao ler o munícipe pela consulta. Login do Senha Simples reaproveitado só pelo MESMO profissional (passava de um para outro no mesmo PC e as chamadas ficavam no nome errado). Cancelar pela lista: o destino (inclusive a volta para o médico) recebe o paciente como NÃO chamado, como o sistema faz; antes o retorno chegava ao médico marcado como já chamado.
      * v3.1.10: senha por aba só volta na página do MESMO paciente (aba usada para outro paciente segue o sistema); 'Chamar' usa o último consultório/guichê escolhido no navegador.
@@ -4808,7 +4809,7 @@
 
     if (caminho === '/aplicacoes_medicamentos') {
         iniciarFila();
-        try { instalarConsultaPaciente(); } catch (e) { console.warn('[Controle de Salas] consulta "Onde está o paciente?" não instalada', e); }
+        try { instalarConsultaPaciente(); } catch (e) { console.warn('[Controle de Salas] Consulta de pacientes não instalada', e); }
     }
     else if (caminho === '/aplicacoes_medicamentos/new' || caminho === '/aplicacoes_medicamentos/create') iniciarAplicacao();
     else if (fichaOutraSala) {
@@ -4839,12 +4840,13 @@
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // v3.1.12: "Onde está o paciente?" na tela do Controle de Salas (busca por nome ou senha).
+    // v3.1.12: Consulta de pacientes na tela do Controle de Salas (busca por nome ou senha).
+    // v3.1.13: novo visual (campo com ícone, painel suspenso, etiqueta de situação) e textos de sistema.
     // Só LÊ as mesmas listas que o sistema e os scripts OM30 já usam: as salas (Em Espera, Em
     // Andamento, Em Outra Sala, Finalizado, Cancelado; ontem e hoje), a fila do médico e o
     // acolhimento. Lê só quando alguém busca, no máximo 1 vez a cada 2 min (Atualizar força),
     // 4 pedidos por vez. Nada fica gravado no navegador: os dados ficam na memória desta aba.
-    // Lista que não pôde ser lida aparece como "não consegui ler", nunca como "não está lá".
+    // Lista que não pôde ser lida aparece como "Não foi possível consultar: …", nunca como "não está lá".
     // ─────────────────────────────────────────────────────────────────────────────
     function criarConsultaPacienteNucleo({ lerJson, N, agora = () => Date.now() }) {
         const SALAS = [
@@ -4902,7 +4904,6 @@
             const h = Math.floor(min / 60), m = min % 60;
             return m ? `${h}h ${m}min` : `${h}h`;
         }
-        const frenteTexto = n => n == null ? '' : n === 0 ? 'é o próximo' : `${n} na frente`;
 
         // ── leitura (fila de pedidos com limite; cada página entra na fila) ──
         function filaDePedidos(limite) {
@@ -5003,17 +5004,20 @@
                 carga.pendentes++;
                 return Promise.resolve().then(() => fn(pedir)).then(
                     itens => { fontes.set(chave, Object.assign({}, info, { ok: true, erro: '', itens })); },
-                    e => { fontes.set(chave, Object.assign({}, info, { ok: false, erro: limpo(e && e.message || e) || 'erro', itens: [] })); }
+                    e => {
+                        fontes.set(chave, Object.assign({}, info, { ok: false, erro: limpo(e && e.message || e) || 'erro', itens: [] }));
+                        try { console.warn('[Controle de Salas] Consulta: não foi possível consultar', info.falha, e && e.message || e); } catch (_) {}
+                    }
                 ).then(() => { carga.pendentes--; if (atual === carga) avisar(); });
             };
             const tarefas = [];
             // Primeiro o que diz onde a pessoa está agora; o histórico das salas por último.
-            for (const s of SALAS) tarefas.push(tarefa(`ativos:${s.key}`, { tipo: 'sala', nome: s.nome, sala: s }, p => lerSala(s, '', p)));
-            tarefas.push(tarefa('acolhimento', { tipo: 'acolhimento', nome: 'Acolhimento' }, p => lerAcolhimento(p)));
-            for (const o of OCUPACOES_FILA) tarefas.push(tarefa(`fila:${o}`, { tipo: 'fila', nome: 'Fila do médico', ocupacao: o }, p => lerFila(o, p)));
+            for (const s of SALAS) tarefas.push(tarefa(`ativos:${s.key}`, { tipo: 'sala', falha: s.nome, sala: s }, p => lerSala(s, '', p)));
+            tarefas.push(tarefa('acolhimento', { tipo: 'acolhimento', falha: 'Acolhimento' }, p => lerAcolhimento(p)));
+            for (const o of OCUPACOES_FILA) tarefas.push(tarefa(`fila:${o}`, { tipo: 'fila', falha: 'Fila médica', ocupacao: o }, p => lerFila(o, p)));
             for (const s of SALAS) {
-                tarefas.push(tarefa(`finalizados:${s.key}`, { tipo: 'historico', nome: `${s.nome} (histórico)`, sala: s, rotulo: 'finalizado' }, p => lerSala(s, '4', p)));
-                tarefas.push(tarefa(`cancelados:${s.key}`, { tipo: 'historico', nome: `${s.nome} (histórico)`, sala: s, rotulo: 'cancelado' }, p => lerSala(s, '3', p)));
+                tarefas.push(tarefa(`finalizados:${s.key}`, { tipo: 'historico', falha: `Histórico de ${s.nome}`, sala: s, rotulo: 'finalizado' }, p => lerSala(s, '4', p)));
+                tarefas.push(tarefa(`cancelados:${s.key}`, { tipo: 'historico', falha: `Histórico de ${s.nome}`, sala: s, rotulo: 'cancelado' }, p => lerSala(s, '3', p)));
             }
             atual = carga;
             carga.promessa = Promise.all(tarefas).then(() => carga);
@@ -5021,19 +5025,17 @@
             return carga.promessa;
         }
 
+        // Falha vira só o nome do que não pôde ser consultado (o motivo técnico fica no console).
         function situacaoCarga() {
-            if (!atual) return { em: 0, lendo: 0, total: 0, falhas: [], completa: false };
+            if (!atual) return { em: 0, lendo: 0, total: 0, falhas: [], sessaoExpirada: false, completa: false };
             const fontes = [...atual.fontes.values()];
             const falhas = [];
-            const vistas = new Set();
-            for (const f of fontes) {
-                if (f.ok !== false || f.tipo === 'fila') continue;
-                const t = `${f.nome}: ${f.erro}`;
-                if (!vistas.has(t)) { vistas.add(t); falhas.push(t); }
-            }
-            const filaRuim = fontes.filter(f => f.tipo === 'fila' && f.ok === false);
-            if (filaRuim.length) falhas.push(`Fila do médico (${filaRuim.length} de ${OCUPACOES_FILA.length} especialidades): ${filaRuim[0].erro}`);
-            return { em: atual.em, lendo: fontes.filter(f => f.ok === null).length, total: fontes.length, falhas, completa: fontes.every(f => f.ok === true) };
+            for (const f of fontes) if (f.ok === false && !falhas.includes(f.falha)) falhas.push(f.falha);
+            return {
+                em: atual.em, lendo: fontes.filter(f => f.ok === null).length, total: fontes.length, falhas,
+                sessaoExpirada: fontes.some(f => f.ok === false && /sess/i.test(f.erro)),
+                completa: fontes.every(f => f.ok === true),
+            };
         }
 
         // ── busca ──
@@ -5104,31 +5106,42 @@
             return null;
         }
 
+        // Cada linha: rótulo (etiqueta da situação), detalhe (linha principal do cartão) e resumo
+        // (quando aparece como linha extra). Textos de sistema, impessoais.
         function linhasDoPaciente(p, t) {
             const L = [];
-            const espera = ms => ms ? ` · esperando há ${duracao(t - ms)}` : '';
+            const juntar = (...partes) => partes.filter(Boolean).join(' · ');
+            const posicao = n => n == null ? '' : `${n + 1}º na fila`;
+            const aguarda = ms => ms && t > ms ? `aguarda há ${duracao(t - ms)}` : '';
             for (const s of p.salas) {
                 const nomeSala = s.grupo ? `${s.sala} (${s.grupo})` : s.sala;
-                if (s.status === 'Em Andamento') L.push({ peso: 0, tipo: 'andamento', texto: `Em atendimento: ${s.sala}${s.chamadaEm ? ` · chamado às ${hora(s.chamadaEm)}` : ''}`, t: s.chamadaEm || s.chegada });
-                else if (s.status === 'Em Espera' && s.chamadaEm) L.push({ peso: 1, tipo: 'chamado', texto: `Chamado para ${s.sala} às ${hora(s.chamadaEm)} e ainda não entrou`, t: s.chamadaEm });
-                else if (s.status === 'Em Espera') L.push({ peso: 2, tipo: 'aguardando', texto: `Aguardando ${nomeSala}${s.frente != null ? ` · ${frenteTexto(s.frente)}` : ''}${espera(s.chegada)}`, t: s.chegada });
-                else if (s.status === 'Em Outra Sala') L.push({ peso: 4, tipo: 'outra', texto: `${nomeSala}: na fila, mas agora está em outra sala`, t: s.chegada });
-                else L.push({ peso: 5, tipo: 'outra', texto: `${nomeSala}: ${s.status || 'situação sem nome'}`, t: s.chegada });
+                if (s.status === 'Em Andamento') L.push({ peso: 0, tipo: 'andamento', rotulo: 'Em atendimento',
+                    detalhe: juntar(s.sala, s.chamadaEm && `chamado às ${hora(s.chamadaEm)}`), resumo: `${s.sala}: em atendimento`, t: s.chamadaEm || s.chegada });
+                else if (s.status === 'Em Espera' && s.chamadaEm) L.push({ peso: 1, tipo: 'chamado', rotulo: 'Chamado',
+                    detalhe: juntar(nomeSala, `chamado às ${hora(s.chamadaEm)}`), resumo: `${nomeSala}: chamado às ${hora(s.chamadaEm)}`, t: s.chamadaEm });
+                else if (s.status === 'Em Espera') L.push({ peso: 2, tipo: 'aguardando', rotulo: 'Aguardando',
+                    detalhe: juntar(nomeSala, posicao(s.frente), aguarda(s.chegada)), resumo: juntar(`${nomeSala}: aguardando`, posicao(s.frente)), t: s.chegada });
+                else if (s.status === 'Em Outra Sala') L.push({ peso: 4, tipo: 'outra', rotulo: 'Em outra sala',
+                    detalhe: `${nomeSala}: aguardando, em atendimento em outra sala`, resumo: `${nomeSala}: aguardando (em atendimento em outra sala)`, t: s.chegada });
+                else L.push({ peso: 5, tipo: 'outra', rotulo: s.status || 'Em andamento', detalhe: juntar(nomeSala, s.status), resumo: `${nomeSala}: ${s.status || ''}`.trim(), t: s.chegada });
             }
             if (p.acolhimento) {
                 const a = p.acolhimento;
-                L.push(a.chamadaEm ? { peso: 1, tipo: 'chamado', texto: `Chamado no acolhimento às ${hora(a.chamadaEm)}`, t: a.chamadaEm }
-                    : { peso: 3, tipo: 'aguardando', texto: `Aguardando acolhimento${a.frente != null ? ` · ${frenteTexto(a.frente)}` : ''}${espera(a.chegada)}`, t: a.chegada });
+                L.push(a.chamadaEm
+                    ? { peso: 1, tipo: 'chamado', rotulo: 'Chamado', detalhe: juntar('Acolhimento', `chamado às ${hora(a.chamadaEm)}`), resumo: `Acolhimento: chamado às ${hora(a.chamadaEm)}`, t: a.chamadaEm }
+                    : { peso: 3, tipo: 'aguardando', rotulo: 'Aguardando', detalhe: juntar('Acolhimento', posicao(a.frente), aguarda(a.chegada)), resumo: juntar('Acolhimento: aguardando', posicao(a.frente)), t: a.chegada });
             }
             if (p.fila) {
                 const f = p.fila, esp = NOME_OCUPACAO[f.ocupacao] ? ` (${NOME_OCUPACAO[f.ocupacao]})` : '';
-                L.push(f.chamadaEm ? { peso: 1, tipo: 'chamado', texto: `Chamado pelo médico às ${hora(f.chamadaEm)}`, t: f.chamadaEm }
-                    : { peso: 3, tipo: 'medico', texto: `${f.retorno ? 'Aguardando retorno ao médico' : 'Aguardando o médico'}${esp}${f.frente != null ? ` · ${frenteTexto(f.frente)}` : ''}${espera(f.chegada)}`, t: f.chegada });
+                const onde = f.retorno ? `Retorno ao médico${esp}` : `Médico${esp}`;
+                L.push(f.chamadaEm
+                    ? { peso: 1, tipo: 'chamado', rotulo: 'Chamado', detalhe: juntar(onde, `chamado às ${hora(f.chamadaEm)}`), resumo: `${onde}: chamado às ${hora(f.chamadaEm)}`, t: f.chamadaEm }
+                    : { peso: 3, tipo: 'medico', rotulo: f.retorno ? 'Aguardando retorno' : 'Aguardando médico', detalhe: juntar(onde, posicao(f.frente), aguarda(f.chegada)), resumo: juntar(`${onde}: aguardando`, posicao(f.frente)), t: f.chegada });
             }
             const hist = p.historico.slice().sort((a, b) => b.chegada - a.chegada);
-            for (const h of hist) L.push({ peso: 9, tipo: 'historico', texto: `${h.sala}: ${h.rotulo}${h.chegada ? ` · encaminhado às ${hora(h.chegada)}` : ''}`, t: h.chegada });
+            for (const h of hist) L.push({ peso: 9, tipo: 'historico', rotulo: '', detalhe: '', resumo: juntar(`${h.sala}: ${h.rotulo}`, h.chegada && `encaminhado às ${hora(h.chegada)}`), t: h.chegada });
             L.sort((a, b) => (a.peso - b.peso) || ((b.t || 0) - (a.t || 0)));
-            if (!L.length || L[0].peso >= 9) L.unshift({ peso: 8, tipo: 'fora', texto: 'Não está esperando sala, médico nem acolhimento agora', t: 0 });
+            if (!L.length || L[0].peso >= 9) L.unshift({ peso: 8, tipo: 'fora', rotulo: 'Fora das filas', detalhe: 'Não aguarda sala, acolhimento nem médico no momento', resumo: '', t: 0 });
             return L;
         }
 
@@ -5193,52 +5206,72 @@
         const agora = () => Date.now() + (Number(window.__controleSalasFila && window.__controleSalasFila.desvioRelogio) || 0);
         const nucleo = criarConsultaPacienteNucleo({ lerJson, N, agora });
         estilo(`
-            #cs-consulta { margin:6px 0 2px; }
-            #cs-consulta .cs-cp-faixa { display:flex; align-items:center; gap:6px; max-width:720px; }
-            #cs-consulta .cs-cp-lupa { font-size:14px; line-height:1; }
-            #cs-consulta .cs-cp-q { flex:1 1 auto; min-width:200px; height:30px; padding:4px 10px; border:1px solid #b9c2cc; border-radius:6px; font-size:13px; background:#fff; color:#25303a; }
-            #cs-consulta .cs-cp-q:focus { outline:none; border-color:#2b6cb0; box-shadow:0 0 0 3px rgba(43,108,176,.18); }
-            #cs-consulta button { border:1px solid #b9c2cc; background:#fff; border-radius:5px; padding:4px 10px; font-size:12.5px; line-height:1.2; cursor:pointer; color:#25303a; }
-            #cs-consulta button:hover { background:#f2f5f8; }
-            #cs-consulta button[disabled] { opacity:.5; cursor:default; }
-            #cs-consulta .cs-cp-painel { margin-top:6px; max-width:880px; padding:8px 10px; border:1px solid #d6dce1; border-radius:8px; background:#f8fafb; font-size:12.5px; line-height:1.4; color:#2f3a44; }
+            #cs-consulta { position:relative; max-width:720px; margin:8px 0 4px; font-size:13px; color:#2f3a44; }
+            #cs-consulta .cs-cp-faixa { display:flex; align-items:center; gap:8px; }
+            #cs-consulta .cs-cp-campo { position:relative; flex:1 1 auto; min-width:220px; }
+            #cs-consulta .cs-cp-campo svg { position:absolute; left:10px; top:50%; width:15px; height:15px; margin-top:-7.5px; color:#7b8794; pointer-events:none; }
+            #cs-consulta .cs-cp-q { box-sizing:border-box; width:100%; height:34px; padding:6px 10px 6px 33px; border:1px solid #c7cfd8; border-radius:6px; background:#fff; color:#1f2a35; font-size:13px; }
+            #cs-consulta .cs-cp-q::placeholder { color:#8a95a1; }
+            #cs-consulta .cs-cp-q:focus { outline:none; border-color:#2b6cb0; box-shadow:0 0 0 3px rgba(43,108,176,.15); }
+            #cs-consulta .cs-cp-q::-webkit-search-cancel-button { cursor:pointer; }
+            #cs-consulta .cs-cp-consultar { height:34px; padding:0 16px; border:1px solid #2b6cb0; border-radius:6px; background:#2b6cb0; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+            #cs-consulta .cs-cp-consultar:hover { background:#245a93; border-color:#245a93; }
+            #cs-consulta .cs-cp-painel { position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:1040; max-height:min(70vh, 560px); overflow:auto; border:1px solid #d5dce3; border-radius:8px; background:#fff; box-shadow:0 12px 32px rgba(16,24,40,.16); }
             #cs-consulta .cs-cp-painel[hidden] { display:none !important; }
-            #cs-consulta .cs-cp-cab { display:flex; justify-content:space-between; align-items:center; gap:8px; color:#4b5663; }
-            #cs-consulta .cs-cp-acoes { display:flex; gap:4px; flex:0 0 auto; }
-            #cs-consulta .cs-cp-lendo { margin-top:4px; color:#6b7785; }
-            #cs-consulta .cs-cp-falha { margin-top:4px; color:#b42318; }
-            #cs-consulta .cs-cp-vazio, #cs-consulta .cs-cp-mais { margin-top:6px; color:#5b6670; }
-            #cs-consulta .cs-cp-card { --c:#868e96; --t:#495057; margin-top:6px; padding:7px 10px; border:1px solid #dbe1e6; border-left:4px solid var(--c); border-radius:6px; background:#fff; }
-            #cs-consulta .cs-cp-andamento, #cs-consulta .cs-cp-outra { --c:#1971c2; --t:#1864ab; }
-            #cs-consulta .cs-cp-chamado { --c:#7048e8; --t:#5f3dc4; }
-            #cs-consulta .cs-cp-aguardando { --c:#e67700; --t:#a34e00; }
-            #cs-consulta .cs-cp-medico { --c:#0c8599; --t:#0b6b7a; }
-            #cs-consulta .cs-cp-topo { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
-            #cs-consulta .cs-cp-senha { padding:1px 6px; border-radius:4px; background:#eef2f5; color:#25303a; font-size:12px; font-weight:800; letter-spacing:.3px; }
-            #cs-consulta .cs-cp-risco { display:inline-block; width:9px; height:9px; border-radius:50%; }
-            #cs-consulta .cs-cp-nome { font-size:13.5px; color:#25303a; }
-            #cs-consulta .cs-cp-nasc { color:#6b7785; font-size:11.5px; }
-            #cs-consulta .cs-cp-agora { margin-top:3px; font-size:14px; font-weight:700; color:var(--t); }
-            #cs-consulta .cs-cp-linhas { margin:3px 0 0; padding-left:18px; color:#4b5663; }
-            #cs-consulta .cs-cp-linhas li { margin:1px 0; }
+            #cs-consulta .cs-cp-cab { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; border-bottom:1px solid #e3e8ed; background:#f7f9fb; font-size:12px; color:#5b6670; }
+            #cs-consulta .cs-cp-cab b { color:#2f3a44; font-size:12.5px; }
+            #cs-consulta .cs-cp-acoes { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
+            #cs-consulta .cs-cp-icone { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; border:0; border-radius:5px; background:transparent; color:#5b6670; cursor:pointer; }
+            #cs-consulta .cs-cp-icone:hover { background:#e7ecf1; color:#1f2a35; }
+            #cs-consulta .cs-cp-icone[disabled] { opacity:.45; cursor:default; background:transparent; }
+            #cs-consulta .cs-cp-icone svg { width:15px; height:15px; }
+            #cs-consulta .cs-cp-giro { display:inline-block; width:12px; height:12px; border:2px solid #cfd8e1; border-top-color:#2b6cb0; border-radius:50%; animation:cs-cp-giro .8s linear infinite; vertical-align:-2px; }
+            @keyframes cs-cp-giro { to { transform:rotate(360deg); } }
+            #cs-consulta .cs-cp-item { padding:10px 12px; border-bottom:1px solid #eef1f4; }
+            #cs-consulta .cs-cp-item:last-of-type { border-bottom:0; }
+            #cs-consulta .cs-cp-linha1 { display:flex; align-items:center; gap:8px; min-width:0; }
+            #cs-consulta .cs-cp-senha { flex:0 0 auto; padding:3px 6px; border-radius:4px; background:#eef2f6; color:#2f3a44; font:600 12px/1.2 Consolas, Menlo, monospace; letter-spacing:.3px; }
+            #cs-consulta .cs-cp-risco { flex:0 0 8px; width:8px; height:8px; border-radius:50%; }
+            #cs-consulta .cs-cp-nome { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; font-weight:700; color:#1f2a35; }
+            #cs-consulta .cs-cp-nasc { flex:0 0 auto; font-size:12px; color:#7b8794; }
+            #cs-consulta .cs-cp-chip { flex:0 0 auto; margin-left:auto; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:700; white-space:nowrap; background:#eef1f4; color:#5b6670; }
+            #cs-consulta .cs-cp-chip-andamento, #cs-consulta .cs-cp-chip-outra { background:#e6effa; color:#1c5aa6; }
+            #cs-consulta .cs-cp-chip-chamado { background:#efe9fd; color:#5b3cc4; }
+            #cs-consulta .cs-cp-chip-aguardando { background:#fdf0de; color:#8f4d00; }
+            #cs-consulta .cs-cp-chip-medico { background:#e2f3f5; color:#0b6672; }
+            #cs-consulta .cs-cp-detalhe { margin-top:4px; font-size:13px; color:#2f3a44; }
+            #cs-consulta .cs-cp-extra { margin:4px 0 0; padding:0; list-style:none; font-size:12px; color:#6b7785; }
+            #cs-consulta .cs-cp-extra li { margin-top:1px; }
+            #cs-consulta .cs-cp-extra li::before { content:'•'; margin-right:6px; color:#a7b1bb; }
+            #cs-consulta .cs-cp-msg { padding:16px 12px; text-align:center; color:#6b7785; }
+            #cs-consulta .cs-cp-rodape { padding:8px 12px; border-top:1px solid #eef1f4; font-size:12px; color:#6b7785; }
         `);
+        const ICONE_LUPA = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4.5 4.5" stroke-linecap="round"/></svg>';
+        const ICONE_ATUALIZAR = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3" stroke-linecap="round"/><path d="M16 3.5V7h-3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        const ICONE_FECHAR = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>';
         const raiz = document.createElement('div');
         raiz.id = 'cs-consulta';
-        raiz.innerHTML = `<div class="cs-cp-faixa"><span class="cs-cp-lupa" aria-hidden="true">🔎</span><input type="search" class="cs-cp-q" autocomplete="off" spellcheck="false" maxlength="60" placeholder="Onde está o paciente? Digite o nome ou a senha" aria-label="Onde está o paciente? Digite o nome ou a senha"><button type="button" data-cp="buscar">Buscar</button></div><div class="cs-cp-painel" hidden aria-live="polite"></div>`;
+        raiz.setAttribute('role', 'search');
+        raiz.innerHTML = `<div class="cs-cp-faixa"><label class="cs-cp-campo">${ICONE_LUPA}<input type="search" class="cs-cp-q" autocomplete="off" spellcheck="false" maxlength="60" placeholder="Consultar paciente por nome ou senha" aria-label="Consultar paciente por nome ou senha"></label><button type="button" class="cs-cp-consultar" data-cp="buscar">Consultar</button></div><div class="cs-cp-painel" hidden aria-live="polite"></div>`;
         const q = raiz.querySelector('.cs-cp-q');
         const painel = raiz.querySelector('.cs-cp-painel');
         const CORES_RISCO = { VERMELHO: '#d32f2f', LARANJA: '#ef6c00', AMARELO: '#f9a825', VERDE: '#2e7d32', AZUL: '#1565c0' };
+        const NOME_RISCO = { VERMELHO: 'Vermelho', LARANJA: 'Laranja', AMARELO: 'Amarelo', VERDE: 'Verde', AZUL: 'Azul' };
+        const MAX_RESULTADOS = 8;
         let termo = '', timer = 0;
 
-        function cartao(p) {
-            const [agora, ...resto] = p.linhas;
+        function item(p) {
+            const [principal, ...resto] = p.linhas;
             const cor = CORES_RISCO[p.risco];
-            return `<div class="cs-cp-card cs-cp-${esc(agora.tipo)}">`
-                + `<div class="cs-cp-topo">${p.senha ? `<span class="cs-cp-senha">${esc(p.senha)}</span>` : ''}`
-                + `${cor ? `<span class="cs-cp-risco" style="background:${cor}" title="${esc(p.risco)}"></span>` : ''}`
-                + `<b class="cs-cp-nome">${esc(p.nomeExibido || 'Sem nome')}</b>${p.nascimento ? `<span class="cs-cp-nasc">nasc. ${esc(p.nascimento)}</span>` : ''}</div>`
-                + `<div class="cs-cp-agora">${esc(agora.texto)}</div>`
-                + (resto.length ? `<ul class="cs-cp-linhas">${resto.map(l => `<li>${esc(l.texto)}</li>`).join('')}</ul>` : '')
+            const extras = resto.map(l => l.resumo).filter(Boolean);
+            return `<div class="cs-cp-item"><div class="cs-cp-linha1">`
+                + (p.senha ? `<span class="cs-cp-senha">${esc(p.senha)}</span>` : '')
+                + (cor ? `<span class="cs-cp-risco" style="background:${cor}" title="${esc(NOME_RISCO[p.risco])}"></span>` : '')
+                + `<span class="cs-cp-nome">${esc(p.nomeExibido || 'Paciente sem nome')}</span>`
+                + (p.nascimento ? `<span class="cs-cp-nasc">Nasc. ${esc(p.nascimento)}</span>` : '')
+                + `<span class="cs-cp-chip cs-cp-chip-${esc(principal.tipo)}">${esc(principal.rotulo)}</span></div>`
+                + (principal.detalhe ? `<div class="cs-cp-detalhe">${esc(principal.detalhe)}</div>` : '')
+                + (extras.length ? `<ul class="cs-cp-extra">${extras.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : '')
                 + '</div>';
         }
         function render() {
@@ -5246,19 +5279,24 @@
             if (!texto) { painel.hidden = true; painel.innerHTML = ''; return; }
             const r = nucleo.buscar(texto);
             const k = r.carga;
-            const partes = [];
             const n = r.pacientes.length;
-            const cab = r.criterio
-                ? `<b>${n ? `${n} paciente${n > 1 ? 's' : ''}` : 'Nenhum paciente'}</b> para “${esc(texto)}”${k.em ? ` · listas lidas às ${esc(nucleo.hora(k.em))}` : ''}`
-                : 'Digite pelo menos 3 letras do nome, ou a senha (ex.: CL12).';
-            partes.push(`<div class="cs-cp-cab"><span>${cab}</span><span class="cs-cp-acoes">${r.criterio ? `<button type="button" data-cp="atualizar"${k.lendo ? ' disabled' : ''} title="Ler as listas de novo">Atualizar</button>` : ''}<button type="button" data-cp="fechar" aria-label="Fechar" title="Fechar (Esc)">×</button></span></div>`);
-            if (r.criterio) {
-                if (k.lendo) partes.push(`<div class="cs-cp-lendo">Lendo as listas… ${k.total - k.lendo} de ${k.total}</div>`);
-                if (k.falhas.length) partes.push(`<div class="cs-cp-falha">Não consegui ler: ${k.falhas.map(esc).join(' · ')}</div>`);
-                if (!n) partes.push(`<div class="cs-cp-vazio">${k.lendo ? 'Procurando…' : k.completa ? 'Ninguém com esse nome ou senha nas salas, na fila do médico ou no acolhimento (ontem e hoje).' : 'Não achei nas listas que consegui ler.'}</div>`);
-                for (const p of r.pacientes.slice(0, 8)) partes.push(cartao(p));
-                if (n > 8) partes.push(`<div class="cs-cp-mais">Mais ${n - 8}: digite mais letras do nome ou a senha.</div>`);
+            const fechar = `<button type="button" class="cs-cp-icone" data-cp="fechar" title="Fechar" aria-label="Fechar">${ICONE_FECHAR}</button>`;
+            if (!r.criterio) {
+                painel.innerHTML = `<div class="cs-cp-cab"><span>Consulta de pacientes</span><span class="cs-cp-acoes">${fechar}</span></div><div class="cs-cp-msg">Digite ao menos 3 letras do nome ou a senha.</div>`;
+                painel.hidden = false;
+                return;
             }
+            const titulo = n ? `<b>${n} ${n === 1 ? 'paciente encontrado' : 'pacientes encontrados'}</b>` : (k.lendo ? '<b>Consultando…</b>' : '<b>Nenhum paciente encontrado</b>');
+            const estado = k.lendo ? '<span class="cs-cp-giro" aria-hidden="true"></span>' : (k.em ? `Atualizado às ${esc(nucleo.hora(k.em))}` : '');
+            const atualizar = `<button type="button" class="cs-cp-icone" data-cp="atualizar" title="Atualizar" aria-label="Atualizar"${k.lendo ? ' disabled' : ''}>${ICONE_ATUALIZAR}</button>`;
+            const partes = [`<div class="cs-cp-cab"><span>${titulo}</span><span class="cs-cp-acoes"><span>${estado}</span>${atualizar}${fechar}</span></div>`];
+            if (!n && !k.lendo) partes.push(`<div class="cs-cp-msg">${k.completa ? 'Nenhum paciente encontrado com esse nome ou senha.' : 'Nenhum paciente encontrado nas filas consultadas.'}</div>`);
+            for (const p of r.pacientes.slice(0, MAX_RESULTADOS)) partes.push(item(p));
+            const rodape = [];
+            if (n > MAX_RESULTADOS) rodape.push(`Mostrando ${MAX_RESULTADOS} de ${n}. Para refinar, digite o nome completo ou a senha.`);
+            if (!k.lendo && k.sessaoExpirada) rodape.push('Sessão expirada. Entre novamente no sistema para consultar.');
+            else if (!k.lendo && k.falhas.length) rodape.push(`Não foi possível consultar: ${k.falhas.map(esc).join(', ')}.`);
+            if (rodape.length) partes.push(`<div class="cs-cp-rodape">${rodape.join('<br>')}</div>`);
             painel.innerHTML = partes.join('');
             painel.hidden = false;
         }
@@ -5268,8 +5306,9 @@
             if (String(termo).trim() && nucleo.criterio(termo)) nucleo.carregar(false).catch(() => {});
             render();
         }
-        nucleo.aoMudar(() => { if (String(termo).trim()) render(); });
+        nucleo.aoMudar(() => { if (String(termo).trim() && !painel.hidden) render(); });   // não reabre o painel fechado
         q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(buscarAgora, 350); });
+        q.addEventListener('focus', () => { if (String(q.value).trim() && painel.hidden) buscarAgora(); });
         q.addEventListener('keydown', ev => {
             ev.stopPropagation();
             if (ev.key === 'Enter') { ev.preventDefault(); buscarAgora(); }
@@ -5284,6 +5323,10 @@
             else if (a === 'atualizar') { nucleo.carregar(true).catch(() => {}); render(); }
             else if (a === 'fechar') { q.value = ''; buscarAgora(); q.focus(); }
         });
+        // Clique fora fecha o painel (o texto digitado fica; ao voltar ao campo, reabre).
+        document.addEventListener('mousedown', ev => {
+            if (!painel.hidden && !raiz.contains(ev.target)) { painel.hidden = true; }
+        }, true);
         // Fica logo acima da barra do Controle de Salas; a barra chama de novo a cada atualização.
         function posicionar(barra) {
             const b = barra || document.getElementById('cs-barra');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.13
+// @version      3.1.14
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.13
+    /* OM30 - CONTROLE DE SALAS v3.1.14
+     * v3.1.14: Consulta de pacientes: lupa e botão Consultar alinhados com a caixa de pesquisa (a página aplicava margem e altura próprias nos campos).
      * v3.1.13: Consulta de pacientes com visual novo: campo "Consultar paciente por nome ou senha" com botão Consultar, resultado num painel logo abaixo do campo (fecha com Esc ou clicando fora), situação em etiqueta (Em atendimento, Chamado, Aguardando, Aguardando médico) e posição na fila. Textos de sistema, sem códigos técnicos.
      * v3.1.12: "Onde está o paciente?" na tela do Controle de Salas: digite o nome ou a senha e veja onde a pessoa está agora (em atendimento em qual sala, aguardando qual sala e quantos na frente, chamada e ainda não entrou, aguardando o médico ou o acolhimento) e por quais salas já passou (ontem e hoje). Só lê as listas que o sistema já tem, apenas quando alguém busca (no máximo 1 vez a cada 2 min, botão Atualizar), e não grava nada no navegador. Lista que não pôde ser lida aparece como "não consegui ler".
      * v3.1.11: 'Senha perdida': a senha da aba agora volta também na consulta do prontuário e na tela de encaminhamento (onde ela é lida), só para o MESMO atendimento (id e tipo); senha de outro paciente é retirada dessas telas em vez de ser encaminhada. Guichê: busca direta em vez de varrer a página inteira 3 a 4 vezes por segundo. Presença: voltar para a aba não grava em dobro no Cloudflare. Corrigido erro ao ler o munícipe pela consulta. Login do Senha Simples reaproveitado só pelo MESMO profissional (passava de um para outro no mesmo PC e as chamadas ficavam no nome errado). Cancelar pela lista: o destino (inclusive a volta para o médico) recebe o paciente como NÃO chamado, como o sistema faz; antes o retorno chegava ao médico marcado como já chamado.
@@ -5207,14 +5208,14 @@
         const nucleo = criarConsultaPacienteNucleo({ lerJson, N, agora });
         estilo(`
             #cs-consulta { position:relative; max-width:720px; margin:8px 0 4px; font-size:13px; color:#2f3a44; }
-            #cs-consulta .cs-cp-faixa { display:flex; align-items:center; gap:8px; }
-            #cs-consulta .cs-cp-campo { position:relative; flex:1 1 auto; min-width:220px; }
-            #cs-consulta .cs-cp-campo svg { position:absolute; left:10px; top:50%; width:15px; height:15px; margin-top:-7.5px; color:#7b8794; pointer-events:none; }
-            #cs-consulta .cs-cp-q { box-sizing:border-box; width:100%; height:34px; padding:6px 10px 6px 33px; border:1px solid #c7cfd8; border-radius:6px; background:#fff; color:#1f2a35; font-size:13px; }
+            #cs-consulta .cs-cp-faixa { display:flex; align-items:stretch; gap:8px; margin:0; padding:0; }
+            #cs-consulta .cs-cp-campo { position:relative; display:block; flex:1 1 auto; min-width:220px; height:34px; margin:0 !important; padding:0 !important; }
+            #cs-consulta .cs-cp-campo svg { position:absolute; left:10px; top:9.5px; width:15px; height:15px; margin:0; color:#7b8794; pointer-events:none; }
+            #cs-consulta .cs-cp-q { box-sizing:border-box !important; display:block; width:100%; height:34px !important; margin:0 !important; padding:6px 10px 6px 33px !important; border:1px solid #c7cfd8; border-radius:6px; background:#fff; color:#1f2a35; font-size:13px !important; line-height:20px !important; box-shadow:none; }
             #cs-consulta .cs-cp-q::placeholder { color:#8a95a1; }
             #cs-consulta .cs-cp-q:focus { outline:none; border-color:#2b6cb0; box-shadow:0 0 0 3px rgba(43,108,176,.15); }
             #cs-consulta .cs-cp-q::-webkit-search-cancel-button { cursor:pointer; }
-            #cs-consulta .cs-cp-consultar { height:34px; padding:0 16px; border:1px solid #2b6cb0; border-radius:6px; background:#2b6cb0; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+            #cs-consulta .cs-cp-consultar { flex:0 0 auto; box-sizing:border-box !important; height:34px !important; margin:0 !important; padding:0 16px !important; border:1px solid #2b6cb0; border-radius:6px; background:#2b6cb0; color:#fff; font-size:13px !important; font-weight:600; line-height:32px !important; cursor:pointer; }
             #cs-consulta .cs-cp-consultar:hover { background:#245a93; border-color:#245a93; }
             #cs-consulta .cs-cp-painel { position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:1040; max-height:min(70vh, 560px); overflow:auto; border:1px solid #d5dce3; border-radius:8px; background:#fff; box-shadow:0 12px 32px rgba(16,24,40,.16); }
             #cs-consulta .cs-cp-painel[hidden] { display:none !important; }
@@ -5240,8 +5241,8 @@
             #cs-consulta .cs-cp-chip-aguardando { background:#fdf0de; color:#8f4d00; }
             #cs-consulta .cs-cp-chip-medico { background:#e2f3f5; color:#0b6672; }
             #cs-consulta .cs-cp-detalhe { margin-top:4px; font-size:13px; color:#2f3a44; }
-            #cs-consulta .cs-cp-extra { margin:4px 0 0; padding:0; list-style:none; font-size:12px; color:#6b7785; }
-            #cs-consulta .cs-cp-extra li { margin-top:1px; }
+            #cs-consulta .cs-cp-extra { margin:4px 0 0 !important; padding:0 !important; list-style:none; font-size:12px; line-height:1.45; color:#6b7785; }
+            #cs-consulta .cs-cp-extra li { margin:1px 0 0 !important; padding:0 !important; line-height:1.45 !important; }
             #cs-consulta .cs-cp-extra li::before { content:'•'; margin-right:6px; color:#a7b1bb; }
             #cs-consulta .cs-cp-msg { padding:16px 12px; text-align:center; color:#6b7785; }
             #cs-consulta .cs-cp-rodape { padding:8px 12px; border-top:1px solid #eef1f4; font-size:12px; color:#6b7785; }
@@ -5252,7 +5253,7 @@
         const raiz = document.createElement('div');
         raiz.id = 'cs-consulta';
         raiz.setAttribute('role', 'search');
-        raiz.innerHTML = `<div class="cs-cp-faixa"><label class="cs-cp-campo">${ICONE_LUPA}<input type="search" class="cs-cp-q" autocomplete="off" spellcheck="false" maxlength="60" placeholder="Consultar paciente por nome ou senha" aria-label="Consultar paciente por nome ou senha"></label><button type="button" class="cs-cp-consultar" data-cp="buscar">Consultar</button></div><div class="cs-cp-painel" hidden aria-live="polite"></div>`;
+        raiz.innerHTML = `<div class="cs-cp-faixa"><div class="cs-cp-campo">${ICONE_LUPA}<input type="search" class="cs-cp-q" autocomplete="off" spellcheck="false" maxlength="60" placeholder="Consultar paciente por nome ou senha" aria-label="Consultar paciente por nome ou senha"></div><button type="button" class="cs-cp-consultar" data-cp="buscar">Consultar</button></div><div class="cs-cp-painel" hidden aria-live="polite"></div>`;
         const q = raiz.querySelector('.cs-cp-q');
         const painel = raiz.querySelector('.cs-cp-painel');
         const CORES_RISCO = { VERMELHO: '#d32f2f', LARANJA: '#ef6c00', AMARELO: '#f9a825', VERDE: '#2e7d32', AZUL: '#1565c0' };

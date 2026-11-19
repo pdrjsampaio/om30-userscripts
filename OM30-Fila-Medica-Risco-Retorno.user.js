@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.12
+// @version      2.15.13
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -1203,6 +1203,13 @@
 (() => {
   'use strict';
 
+  // v2.15.13: linha embaixo da barra explicando o número do "Chamar próximo (N)". Esse número é do
+  //          Senha Simples (senhas aguardando chamada deste guichê, últimas 24 h, refeito a cada 3 s);
+  //          a lista é do Saúde Simples. A linha diz só o que o botão também conta (retornos, EM
+  //          ocultas) e o que não conta (já chamados, sem senha, senha antiga), sem mostrar diferença.
+  //          Usa só o que a lista já traz: nenhuma consulta nova.
+  //          Filtro "Especialidade" (ex.: Médico pediatra) entra na hora, sem F5: a fila é lida pelas
+  //          condições atuais da lista, e o filtro salvo durante uma leitura é aplicado logo depois.
   // v2.10.5:
   // - /prontuarios e /prontuarios/urgencia_emergencia são tratados como fila médica.
   // v2.15.7: "Ocultar emergência" só tira a EM que segue emergência (Vermelho/Laranja/sem classificação);
@@ -1823,6 +1830,31 @@
     return false;
   }
 
+  // v2.15.13: o endereço que o fetchCollection nativo pediria AGORA (url da coleção + sortable +
+  // condições atuais, no formato do axios: objeto em JSON, lista como chave[]), sem a pesquisa.
+  // O filtro "Especialidade" salvo no modal muda essas condições na hora; o último pedido visto
+  // no navegador continuava com a especialidade antiga, e o Pediatra só entrava com F5.
+  function urlFilaPelasCondicoes(vm) {
+    try {
+      const base = vm?.url || vm?.$props?.propsTable?.pathUrl || vm?.propsTable?.pathUrl;
+      const cond = vm?.conditions;
+      if (!base || !cond || typeof cond !== 'object') return null;
+      const url = new URL(base, location.origin);
+      if (!/\/prontuarios\.json$/i.test(url.pathname)) return null;
+      const params = { sortable: vm.sortable || {}, ...cond };
+      for (const [k, v] of Object.entries(params)) {
+        if (v == null || parametroEhPesquisaFila(k)) continue;
+        for (const x of (Array.isArray(v) ? v : [v])) {
+          if (x == null) continue;
+          url.searchParams.append(Array.isArray(v) ? `${k}[]` : k, typeof x === 'object' ? JSON.stringify(x) : String(x));
+        }
+      }
+      return url.href;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function pontuarUrlFila(urlOriginal) {
     try {
       const url = new URL(urlOriginal, location.origin);
@@ -1844,6 +1876,11 @@
   }
 
   function descobrirUrlFila(vm) {
+    // v2.15.13: primeiro o que o componente pediria agora (filtro de especialidade entra na hora).
+    // Sem condições completas ainda (página carregando), segue o último pedido nativo, como antes.
+    const viva = urlFilaPelasCondicoes(vm);
+    if (viva && pontuarUrlFila(viva) >= 5) return viva;
+
     const candidatos = [];
 
     for (const entrada of performance.getEntriesByType('resource')) {
@@ -5956,6 +5993,9 @@
       #${MED_BAR_ID} .om30m-atualizado { margin-left:auto;align-self:center;display:inline-flex;align-items:center;gap:8px;min-width:108px;padding:7px 12px;border:1px solid #d8dfe5;border-radius:8px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.04);white-space:nowrap; }
       #${MED_BAR_ID} .om30m-atualizado-label { font-size:11px;font-weight:700;color:#7a8590;letter-spacing:.3px;text-transform:uppercase; }
       #${MED_BAR_ID} .om30m-atualizado-hora { font-size:18px;font-weight:800;color:#3f4a54;line-height:1;letter-spacing:.4px;font-variant-numeric:tabular-nums; }
+      #${MED_BAR_ID} .om30m-explica { flex:1 0 100%;margin:1px 2px 0;font-size:11.5px;line-height:1.4;color:#5b6670;cursor:help; }
+      #${MED_BAR_ID} .om30m-explica[hidden] { display:none !important; }
+      #${MED_BAR_ID} .om30m-explica strong { color:#2f3a44; }
       #classificacao .collection-with-search-atendimento ul.pagination { display:none !important; }
       #classificacao .collection-with-search-atendimento tbody tr > td:first-child { position:relative !important; padding-left:14px !important; }
       #classificacao .collection-with-search-atendimento tbody tr.om30-risco-VERMELHO > td:first-child::before,
@@ -6800,6 +6840,89 @@
     }
     const at = bar.querySelector('.om30m-atualizado');
     if (at) at.innerHTML = `<span class="om30m-atualizado-label">Horário</span><span class="om30m-atualizado-hora">${horarioCurtoAgora()}</span>`;
+    atualizarExplicacaoChamarProximo(bar);
+  }
+
+  // v2.15.13: conta que liga o "Chamar próximo (N)" (Senha Simples) à lista (Saúde Simples).
+  function painelChamarProximo(vm = medVm) {
+    let v = vm;
+    for (let i = 0; v && i < 12; i++, v = v.$parent) if (v.$refs?.filaChamarProximo) return v.$refs.filaChamarProximo;
+    return null;
+  }
+
+  // O componente refaz o número a cada 3 s; a linha acompanha pelo watch do Vue (só quando
+  // o número muda), sem timer nosso.
+  const painelVigiado = new WeakSet();
+  function vigiarPainelChamarProximo(painel) {
+    if (!painel || painelVigiado.has(painel) || typeof painel.$watch !== 'function') return;
+    painelVigiado.add(painel);
+    try {
+      painel.$watch(() => `${painel.contagem}|${painel.loading ? 1 : 0}|${painel.proximoFila ? 1 : 0}`, () => atualizarExplicacaoChamarProximo());
+    } catch (_) {}
+  }
+
+  // Só o que a lista explica, sem conta de "igual" e sem sobra: o botão e a lista atualizam em
+  // tempos diferentes, e uma diferença na tela pareceria erro para quem está atendendo.
+  function contaChamarProximo(itens, painel, agora = Date.now()) {
+    if (!painel || painel.loading || painel.proximoFila || painel.contagem == null || painel.contagem === '') return null;
+    if (!Number.isFinite(Number(painel.contagem))) return null;
+    const todos = Array.isArray(itens) ? itens : [];
+    const visiveis = new Set(semEmergenciaSeOculta(todos));
+    // Mesmo corte do botão: data_inicial = agora − tempoMaximo horas, só quando o componente filtra por tempo.
+    const horas = Number(painel.tempoMaximo) > 0 ? Number(painel.tempoMaximo) : 24;
+    const corte = painel.filtrarTempo ? agora - horas * 3600000 : 0;
+    let chamados = 0, semSenha = 0, antigos = 0, retornos = 0, ocultas = 0;
+    for (const it of todos) {
+      if (clean(it?.chamada_em)) { chamados++; continue; }
+      if (!clean(it?.senha)) { semSenha++; continue; }
+      if (corte) { const t = timestampReferenciaFila(it); if (t > 0 && t < corte) { antigos++; continue; } }
+      // Esperando chamada: entra no botão. Retorno e EM escondida entram no botão, mas não no Total.
+      if (!visiveis.has(it)) ocultas++;
+      else if (itemNaFilaRetorno(it)) retornos++;
+    }
+    return { chamados, semSenha, antigos, retornos, ocultas, horas };
+  }
+
+  const TITULO_CONTA_CHAMAR = [
+    'O número do "Chamar próximo" vem do Senha Simples: senhas esperando chamada neste guichê,',
+    'refeito a cada 3 segundos. A lista vem do Saúde Simples.',
+    '• Também conta: retornos (que ficam fora do Total) e senhas EM escondidas pelo "Ocultar emergência".',
+    '• Não conta: quem já foi chamado (continua na lista até alguém atender), quem está sem senha',
+    '  e senha de mais de 24 horas.',
+    'Numa chamada, o botão muda na hora e a lista acompanha em alguns segundos.'
+  ].join('\n');
+
+  function htmlContaChamarProximo(c) {
+    const q = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+    const juntar = l => l.length > 1 ? `${l.slice(0, -1).join(', ')} e ${l[l.length - 1]}` : (l[0] || '');
+    const conta = [], naoConta = [];
+    if (c.retornos) conta.push(q(c.retornos, 'retorno', 'retornos'));
+    if (c.ocultas) conta.push(q(c.ocultas, 'EM oculta', 'EM ocultas'));
+    if (c.chamados) naoConta.push(q(c.chamados, 'já chamado', 'já chamados'));
+    if (c.semSenha) naoConta.push(`${c.semSenha} sem senha`);
+    if (c.antigos) naoConta.push(q(c.antigos, `senha de mais de ${c.horas} h`, `senhas de mais de ${c.horas} h`));
+    const partes = [];
+    if (conta.length) partes.push(`também conta ${juntar(conta)}`);
+    if (naoConta.length) partes.push(`não conta ${juntar(naoConta)}`);
+    return partes.length ? `ⓘ <strong>Chamar próximo:</strong> ${partes.join(' · ')}` : '';
+  }
+
+  function atualizarExplicacaoChamarProximo(bar = document.getElementById(MED_BAR_ID)) {
+    if (!bar) return;
+    const painel = painelChamarProximo(medVm);
+    vigiarPainelChamarProximo(painel);
+    let el = bar.querySelector('.om30m-explica');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'om30m-explica';
+      el.title = TITULO_CONTA_CHAMAR;
+      bar.appendChild(el);
+    }
+    const c = contaChamarProximo(medFonte, painel);
+    const html = c ? htmlContaChamarProximo(c) : '';
+    if (!html) { el.hidden = true; return; }
+    if (el.__h !== html) { el.innerHTML = html; el.__h = html; }
+    el.hidden = false;
   }
 
   function itemDaLinhaMed(row, vm) {
@@ -7087,8 +7210,19 @@
     return carregarFilaCompleta(vm, true);
   }
 
+  // v2.15.13: pedido que chega com a fila já atualizando (ex.: filtro de especialidade salvo nesse
+  // meio-tempo) roda UMA vez logo depois, em vez de ser descartado. Nunca mais de 1 a cada 2 s, e
+  // não conta o pedido que a própria leitura faz ao componente (sincronização da fonte).
+  let medRepetirDepois = false;
+  let medUltimaRepeticao = 0;
+  const chaveFonteViva = vm => { const u = urlFilaPelasCondicoes(vm); return u && pontuarUrlFila(u) >= 5 ? normalizarUrlFila(u).href : ''; };
+
   async function atualizarControleMedico({ inicial = false, forcar = false } = {}) {
-    if (medAtualizando || !ehPaginaFila()) return false;
+    if (!ehPaginaFila()) return false;
+    if (medAtualizando) {
+      if (!sincronizandoFonteNativa) medRepetirDepois = true;
+      return false;
+    }
     medAtualizando = true;
     try {
       const vm = medVm || acharVueFila();
@@ -7098,10 +7232,13 @@
       const geracaoInicio = medPesquisaGeracao;
       const termoInicio = lerPesquisaMedica(vm);
       const pesquisaRecente = Date.now() - medPesquisaUltimaInteracao < 1500;
+      const fonteInicio = chaveFonteViva(vm);
 
       // Enquanto há pesquisa — e por um curto período após LIMPAR — a fonte completa
-      // já está em medFonte. Não fazemos fetchCollection nem trocamos a fonte-mãe.
-      if (!inicial && medFonte.length && (termoInicio || pesquisaRecente)) {
+      // já está em medFonte. Não fazemos fetchCollection nem trocamos a fonte-mãe
+      // (a menos que o filtro do sistema, ex. especialidade, tenha mudado a fonte).
+      const mesmaFonte = !fonteInicio || !filaCache.url || fonteInicio === filaCache.url;
+      if (!inicial && medFonte.length && (termoInicio || pesquisaRecente) && mesmaFonte) {
         medAssinaturaAplicada = '';
         aplicarMedFonte(vm, true);
         return true;
@@ -7128,6 +7265,13 @@
       }
 
       if (!Array.isArray(todos)) return false;
+
+      // v2.15.13: o filtro do sistema mudou enquanto a leitura estava em voo: esta lista é da
+      // especialidade anterior. Não aplica; lê de novo logo depois com o filtro novo.
+      if (!inicial && fonteInicio && chaveFonteViva(vm) !== fonteInicio) {
+        medRepetirDepois = true;
+        return true;
+      }
 
       // Se o usuário pesquisou/limpou enquanto a leitura estava em voo, esta resposta
       // ficou obsoleta. Preserva a medFonte completa e só reaplica a visão atual.
@@ -7163,6 +7307,11 @@
       medAtualizando = false;
       try { (medVm || acharVueFila()).isLoading = false; } catch (_) {}
       document.body.classList.remove(MED_BODY_PREP);
+      if (medRepetirDepois) {
+        medRepetirDepois = false;
+        const espera = Math.max(0, 2000 - (Date.now() - medUltimaRepeticao));
+        setTimeout(() => { medUltimaRepeticao = Date.now(); atualizarControleMedico({ forcar: false }).catch(() => {}); }, espera);
+      }
     }
   }
 

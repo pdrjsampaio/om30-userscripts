@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.11
+// @version      3.1.12
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,7 +32,8 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.11
+    /* OM30 - CONTROLE DE SALAS v3.1.12
+     * v3.1.12: "Onde está o paciente?" na tela do Controle de Salas: digite o nome ou a senha e veja onde a pessoa está agora (em atendimento em qual sala, aguardando qual sala e quantos na frente, chamada e ainda não entrou, aguardando o médico ou o acolhimento) e por quais salas já passou (ontem e hoje). Só lê as listas que o sistema já tem, apenas quando alguém busca (no máximo 1 vez a cada 2 min, botão Atualizar), e não grava nada no navegador. Lista que não pôde ser lida aparece como "não consegui ler".
      * v3.1.11: 'Senha perdida': a senha da aba agora volta também na consulta do prontuário e na tela de encaminhamento (onde ela é lida), só para o MESMO atendimento (id e tipo); senha de outro paciente é retirada dessas telas em vez de ser encaminhada. Guichê: busca direta em vez de varrer a página inteira 3 a 4 vezes por segundo. Presença: voltar para a aba não grava em dobro no Cloudflare. Corrigido erro ao ler o munícipe pela consulta. Login do Senha Simples reaproveitado só pelo MESMO profissional (passava de um para outro no mesmo PC e as chamadas ficavam no nome errado). Cancelar pela lista: o destino (inclusive a volta para o médico) recebe o paciente como NÃO chamado, como o sistema faz; antes o retorno chegava ao médico marcado como já chamado.
      * v3.1.10: senha por aba só volta na página do MESMO paciente (aba usada para outro paciente segue o sistema); 'Chamar' usa o último consultório/guichê escolhido no navegador.
      * v3.1.9: 'Senha perdida' na sala seguinte: cada aba guarda a própria senha chamada; com a ficha em aba nova, chamar outro paciente em outra aba não troca mais a senha que o Salvar encaminha.
@@ -4805,7 +4806,10 @@
         if (document.body) iniciarSemAusente(); else document.addEventListener('DOMContentLoaded', iniciarSemAusente);
     }
 
-    if (caminho === '/aplicacoes_medicamentos') iniciarFila();
+    if (caminho === '/aplicacoes_medicamentos') {
+        iniciarFila();
+        try { instalarConsultaPaciente(); } catch (e) { console.warn('[Controle de Salas] consulta "Onde está o paciente?" não instalada', e); }
+    }
     else if (caminho === '/aplicacoes_medicamentos/new' || caminho === '/aplicacoes_medicamentos/create') iniciarAplicacao();
     else if (fichaOutraSala) {
         // Aba aberta pelo script (cs-atendimento-*): a identidade do AtendimentoPa permanece
@@ -4832,6 +4836,462 @@
                 definirTitulo(seed?.nome?`${seed.nome} · Atendimento`:'Atendimento');
             } catch(_) { definirTitulo('Atendimento'); }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // v3.1.12: "Onde está o paciente?" na tela do Controle de Salas (busca por nome ou senha).
+    // Só LÊ as mesmas listas que o sistema e os scripts OM30 já usam: as salas (Em Espera, Em
+    // Andamento, Em Outra Sala, Finalizado, Cancelado; ontem e hoje), a fila do médico e o
+    // acolhimento. Lê só quando alguém busca, no máximo 1 vez a cada 2 min (Atualizar força),
+    // 4 pedidos por vez. Nada fica gravado no navegador: os dados ficam na memória desta aba.
+    // Lista que não pôde ser lida aparece como "não consegui ler", nunca como "não está lá".
+    // ─────────────────────────────────────────────────────────────────────────────
+    function criarConsultaPacienteNucleo({ lerJson, N, agora = () => Date.now() }) {
+        const SALAS = [
+            { key: 'medicacao', nome: 'Medicação', endpoint: '/aplicacoes_medicamentos' },
+            { key: 'exames', nome: 'Exames', endpoint: '/encaminhamentos_exames' },
+            { key: 'raio_x', nome: 'Raio-X', endpoint: '/encaminhamentos_radiografias' },
+            { key: 'enfermagem', nome: 'Procedimentos de Enfermagem', endpoint: '/encaminhamentos_procedimentos_enfermagem' },
+            { key: 'gesso', nome: 'Gesso', endpoint: '/encaminhamentos_gessos_imobilizacoes' },
+        ];
+        // As mesmas ocupações das filas do PA que o Rastreamento de Senhas lê (select "Especialidade").
+        const OCUPACOES_FILA = [433, 432, 436, 352, 384, 923, 928, 931, 357, 377, 364, 399, 409, 652, 662];
+        const NOME_OCUPACAO = { 433: 'Clínico', 432: 'Pediatria', 357: 'Dentista' };
+        const VALIDADE_MS = 2 * 60 * 1000;
+        const PARALELO = 4;
+        const RISCOS = new Set(['VERMELHO', 'LARANJA', 'AMARELO', 'VERDE', 'AZUL']);
+        const PESO_FILA = { VERMELHO: 0, AMARELO: 1, VERDE: 2, AZUL: 3 };   // os mesmos pesos da Fila Médica
+        const RISCO_POR_ID = { 1: 'VERMELHO', 2: 'AMARELO', 3: 'VERDE', 4: 'AZUL' };
+        const CONECTORES = new Set(['da', 'das', 'de', 'do', 'dos', 'e']);
+
+        const limpo = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+        const normalizar = v => limpo(v).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+
+        // Data/hora das listas -> ms. Sem fuso = hora local, como a tela mostra.
+        function instanteTexto(raw) {
+            const t = limpo(raw);
+            if (!t) return 0;
+            if (/^\d{13}$/.test(t)) return +t;
+            if (/^\d{10}$/.test(t)) return +t * 1000;
+            let m = t.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+            if (m) {
+                if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(t)) { const x = Date.parse(t); if (Number.isFinite(x)) return x; }
+                return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime();
+            }
+            m = t.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\D+(\d{1,2}):(\d{2}))?/);
+            if (m) return new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)).getTime();
+            return 0;
+        }
+        const chegadaSala = it => { const d = N.dataHora(it || {}); return d ? d.getTime() : 0; };
+        const instanteFila = it => instanteTexto(it && it.data_senha_timestamp) || instanteTexto(it && it.data_senha_formatada);
+
+        function nomeTitulo(nome) {
+            const n = limpo(nome);
+            if (!n || n !== n.toUpperCase()) return n;
+            return n.toLowerCase().split(' ').map((p, i) => (i && CONECTORES.has(p)) ? p : p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+        }
+        function hora(ms) {
+            if (!ms) return '';
+            const d = new Date(ms), h = new Date(agora());
+            const hh = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            return d.toDateString() === h.toDateString() ? hh : `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${hh}`;
+        }
+        function duracao(ms) {
+            const min = Math.max(0, Math.floor(ms / 60000));
+            if (min < 60) return `${min} min`;
+            const h = Math.floor(min / 60), m = min % 60;
+            return m ? `${h}h ${m}min` : `${h}h`;
+        }
+        const frenteTexto = n => n == null ? '' : n === 0 ? 'é o próximo' : `${n} na frente`;
+
+        // ── leitura (fila de pedidos com limite; cada página entra na fila) ──
+        function filaDePedidos(limite) {
+            let ativos = 0;
+            const espera = [];
+            const proximo = () => {
+                while (ativos < limite && espera.length) {
+                    const { fn, ok, erro } = espera.shift();
+                    ativos++;
+                    Promise.resolve().then(fn).then(ok, erro).then(() => { ativos--; proximo(); });
+                }
+            };
+            return fn => new Promise((ok, erro) => { espera.push({ fn, ok, erro }); proximo(); });
+        }
+        function exigirLista(r) {
+            if (!r || !Array.isArray(r.dados)) throw new Error('resposta inválida');
+            return r.dados;
+        }
+        // Mesmos parâmetros da lista do Controle de Salas (ontem e hoje, 100 por página, total no cabeçalho).
+        async function lerSala(sala, status, pedir) {
+            const hoje = new Date(agora());
+            const ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
+            const base = { sortable: {}, per_page: 100, profissional: {}, status, grau_risco: '', dataInicial: N.isoDia(ontem), dataFinal: N.isoDia(hoje) };
+            const itens = [], vistos = new Set();
+            let tam = 0;
+            for (let page = 1; page <= 10; page++) {
+                const r = await pedir(() => lerJson(`${sala.endpoint}?format=json&${N.queryAxios(Object.assign({ page }, base))}`));
+                const lista = exigirLista(r);
+                if (!lista.length) break;
+                if (page === 1) tam = lista.length;
+                let novos = 0;
+                for (const it of lista) {
+                    const k = it && it.encaminhamento_id != null ? String(it.encaminhamento_id) : '';
+                    if (k && vistos.has(k)) continue;
+                    if (k) vistos.add(k);
+                    itens.push(it); novos++;
+                }
+                if (!novos || (Number.isFinite(r.total) ? itens.length >= r.total : lista.length < tam)) break;
+            }
+            return itens;
+        }
+        // Fila do médico por especialidade (mesma consulta do Rastreamento de Senhas).
+        async function lerFila(ocupacao, pedir) {
+            const itens = [], vistos = new Set();
+            for (let p = 1; p <= 5; p++) {
+                const r = await pedir(() => lerJson(`/prontuarios.json?sortable=%7B%7D&page=${p}&per_page=300&especialidade=%7B%7D&status=&ocupacoes_ids[]=${ocupacao}`));
+                const lista = exigirLista(r);
+                if (!lista.length) break;
+                let novos = 0;
+                for (const it of lista) {
+                    const k = limpo(it && it.atendimento_str);
+                    if (!k || vistos.has(k)) continue;
+                    vistos.add(k); itens.push(it); novos++;
+                }
+                // Há instalações que devolvem 10 por página e ignoram per_page: com 10 exatos, lê a próxima.
+                if (!novos || (lista.length < 300 && lista.length !== 10)) break;
+            }
+            return itens;
+        }
+        // Acolhimento: o sistema devolve ~10 por página e ignora per_page; pagina até a página vir curta.
+        async function lerAcolhimento(pedir) {
+            const itens = [], vistos = new Set();
+            const corte = agora() - 24 * 3600e3;
+            let tam = 0;
+            for (let p = 1; p <= 30; p++) {
+                const r = await pedir(() => lerJson(`/acolhimentos.json?page=${p}&per_page=100`));
+                const lista = exigirLista(r);
+                if (!lista.length) break;
+                if (p === 1) tam = lista.length;
+                let novos = 0;
+                for (const it of lista) {
+                    const k = limpo(it && it.atendimento_str);
+                    if (!k || vistos.has(k)) continue;
+                    vistos.add(k); novos++;
+                    const t = instanteFila(it);
+                    if (t && t < corte) continue;   // senha de mais de 24 h esquecida na lista
+                    itens.push(it);
+                }
+                if (!novos || lista.length < tam) break;
+            }
+            return itens;
+        }
+
+        let atual = null;          // { em, fontes: Map, pendentes, promessa }
+        let ouvinte = null;
+        const avisar = () => { try { if (ouvinte) ouvinte(); } catch (_) {} };
+
+        function carregar(forcar = false) {
+            if (atual && !forcar) {
+                if (atual.pendentes > 0) return atual.promessa;
+                if (agora() - atual.em < VALIDADE_MS) return Promise.resolve(atual);
+            }
+            const fontes = new Map();
+            const carga = { em: agora(), fontes, pendentes: 0, promessa: null };
+            const pedir = filaDePedidos(PARALELO);
+            const tarefa = (chave, info, fn) => {
+                fontes.set(chave, Object.assign({ ok: null, erro: '', itens: [] }, info));
+                carga.pendentes++;
+                return Promise.resolve().then(() => fn(pedir)).then(
+                    itens => { fontes.set(chave, Object.assign({}, info, { ok: true, erro: '', itens })); },
+                    e => { fontes.set(chave, Object.assign({}, info, { ok: false, erro: limpo(e && e.message || e) || 'erro', itens: [] })); }
+                ).then(() => { carga.pendentes--; if (atual === carga) avisar(); });
+            };
+            const tarefas = [];
+            // Primeiro o que diz onde a pessoa está agora; o histórico das salas por último.
+            for (const s of SALAS) tarefas.push(tarefa(`ativos:${s.key}`, { tipo: 'sala', nome: s.nome, sala: s }, p => lerSala(s, '', p)));
+            tarefas.push(tarefa('acolhimento', { tipo: 'acolhimento', nome: 'Acolhimento' }, p => lerAcolhimento(p)));
+            for (const o of OCUPACOES_FILA) tarefas.push(tarefa(`fila:${o}`, { tipo: 'fila', nome: 'Fila do médico', ocupacao: o }, p => lerFila(o, p)));
+            for (const s of SALAS) {
+                tarefas.push(tarefa(`finalizados:${s.key}`, { tipo: 'historico', nome: `${s.nome} (histórico)`, sala: s, rotulo: 'finalizado' }, p => lerSala(s, '4', p)));
+                tarefas.push(tarefa(`cancelados:${s.key}`, { tipo: 'historico', nome: `${s.nome} (histórico)`, sala: s, rotulo: 'cancelado' }, p => lerSala(s, '3', p)));
+            }
+            atual = carga;
+            carga.promessa = Promise.all(tarefas).then(() => carga);
+            avisar();
+            return carga.promessa;
+        }
+
+        function situacaoCarga() {
+            if (!atual) return { em: 0, lendo: 0, total: 0, falhas: [], completa: false };
+            const fontes = [...atual.fontes.values()];
+            const falhas = [];
+            const vistas = new Set();
+            for (const f of fontes) {
+                if (f.ok !== false || f.tipo === 'fila') continue;
+                const t = `${f.nome}: ${f.erro}`;
+                if (!vistas.has(t)) { vistas.add(t); falhas.push(t); }
+            }
+            const filaRuim = fontes.filter(f => f.tipo === 'fila' && f.ok === false);
+            if (filaRuim.length) falhas.push(`Fila do médico (${filaRuim.length} de ${OCUPACOES_FILA.length} especialidades): ${filaRuim[0].erro}`);
+            return { em: atual.em, lendo: fontes.filter(f => f.ok === null).length, total: fontes.length, falhas, completa: fontes.every(f => f.ok === true) };
+        }
+
+        // ── busca ──
+        // "CL12", "cl 0012", "PF-3" = senha; só número = número da senha; o resto = nome (3+ letras).
+        function criterio(texto) {
+            const q = normalizar(texto);
+            const compacto = q.replace(/[\s-]/g, '');
+            if (!compacto) return null;
+            let m = compacto.match(/^([A-Z]{1,3})(\d{1,6})$/);
+            if (m) return { tipo: 'senha', prefixo: m[1], numero: +m[2] };
+            if (/^\d{1,6}$/.test(compacto)) return { tipo: 'numero', numero: +compacto };
+            if (compacto.length < 3) return null;
+            return { tipo: 'nome', palavras: q.split(' ').filter(Boolean) };
+        }
+        function casa(it, c) {
+            if (!c || !it) return false;
+            if (c.tipo === 'nome') {
+                const nome = normalizar(it.nome_municipe).split(' ');
+                return c.palavras.every(p => nome.some(w => w.startsWith(p)));
+            }
+            const m = normalizar(it.senha).replace(/[\s-]/g, '').match(/^([A-Z]*)(\d+)$/);
+            if (!m) return false;
+            return c.tipo === 'senha' ? (m[1] === c.prefixo && +m[2] === c.numero) : +m[2] === c.numero;
+        }
+
+        // Filas da própria sala, como o Controle de Salas separa: Medicação (Clínico/Pediatria/
+        // Emergência) e Exames (Clínico/Pediatria); nas outras salas, uma fila só.
+        function grupoSala(salaKey, it) {
+            const ped = /^P[DP]\d/i.test(limpo(it.senha));
+            if (salaKey === 'medicacao') return ped ? 'Pediatria' : normalizar(it.grau_risco) === 'VERMELHO' ? 'Emergência' : 'Clínico';
+            if (salaKey === 'exames') return ped ? 'Pediatria' : 'Clínico';
+            return '';
+        }
+        // Posição na sala: mesma ordem da lista do Controle de Salas (risco, depois chegada); conta
+        // quem chegou do mesmo dia do paciente em diante (a lista abre em "Hoje").
+        function frenteSala(lista, it, salaKey) {
+            if (it.status !== 'Em Espera') return null;
+            const gr = grupoSala(salaKey, it);
+            const t0 = chegadaSala(it);
+            const d0 = t0 ? new Date(t0) : null;
+            const inicioDia = d0 ? new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime() : 0;
+            const espera = N.ordenar(lista.filter(x => x && x.status === 'Em Espera' && grupoSala(salaKey, x) === gr
+                && (!inicioDia || !chegadaSala(x) || chegadaSala(x) >= inicioDia)));
+            const i = espera.indexOf(it);
+            return i >= 0 ? i : null;
+        }
+        function riscoFila(it) {
+            const r = normalizar(it.nome_grau_risco);
+            return RISCOS.has(r) ? r : (RISCO_POR_ID[String(it.grau_risco_id)] || '');
+        }
+        const retornoFila = it => /^RT/i.test(limpo(it.senha)) || it.prontuario_com_retorno === true || String(it.prontuario_com_retorno) === 'true';
+        // Posição na fila do médico: mesma ordem da Fila Médica (risco, depois senha mais antiga),
+        // separando retornos dos demais, como a Fila Médica mostra.
+        function frenteFila(lista, it) {
+            if (limpo(it.chamada_em)) return null;
+            const faixa = retornoFila(it);
+            const espera = lista.filter(x => x && !limpo(x.chamada_em) && retornoFila(x) === faixa)
+                .map((x, i) => ({ x, i, p: PESO_FILA[riscoFila(x)] != null ? PESO_FILA[riscoFila(x)] : 9, t: instanteFila(x) || Infinity }))
+                .sort((a, b) => (a.p - b.p) || (a.t - b.t) || (a.i - b.i)).map(o => o.x);
+            const i = espera.indexOf(it);
+            return i >= 0 ? i : null;
+        }
+        // Acolhimento: ordem em que o sistema devolve; conta quem ainda não foi chamado.
+        function frenteAcolhimento(lista, it) {
+            if (limpo(it.chamada_em)) return null;
+            let n = 0;
+            for (const x of lista) { if (x === it) return n; if (x && !limpo(x.chamada_em)) n++; }
+            return null;
+        }
+
+        function linhasDoPaciente(p, t) {
+            const L = [];
+            const espera = ms => ms ? ` · esperando há ${duracao(t - ms)}` : '';
+            for (const s of p.salas) {
+                const nomeSala = s.grupo ? `${s.sala} (${s.grupo})` : s.sala;
+                if (s.status === 'Em Andamento') L.push({ peso: 0, tipo: 'andamento', texto: `Em atendimento: ${s.sala}${s.chamadaEm ? ` · chamado às ${hora(s.chamadaEm)}` : ''}`, t: s.chamadaEm || s.chegada });
+                else if (s.status === 'Em Espera' && s.chamadaEm) L.push({ peso: 1, tipo: 'chamado', texto: `Chamado para ${s.sala} às ${hora(s.chamadaEm)} e ainda não entrou`, t: s.chamadaEm });
+                else if (s.status === 'Em Espera') L.push({ peso: 2, tipo: 'aguardando', texto: `Aguardando ${nomeSala}${s.frente != null ? ` · ${frenteTexto(s.frente)}` : ''}${espera(s.chegada)}`, t: s.chegada });
+                else if (s.status === 'Em Outra Sala') L.push({ peso: 4, tipo: 'outra', texto: `${nomeSala}: na fila, mas agora está em outra sala`, t: s.chegada });
+                else L.push({ peso: 5, tipo: 'outra', texto: `${nomeSala}: ${s.status || 'situação sem nome'}`, t: s.chegada });
+            }
+            if (p.acolhimento) {
+                const a = p.acolhimento;
+                L.push(a.chamadaEm ? { peso: 1, tipo: 'chamado', texto: `Chamado no acolhimento às ${hora(a.chamadaEm)}`, t: a.chamadaEm }
+                    : { peso: 3, tipo: 'aguardando', texto: `Aguardando acolhimento${a.frente != null ? ` · ${frenteTexto(a.frente)}` : ''}${espera(a.chegada)}`, t: a.chegada });
+            }
+            if (p.fila) {
+                const f = p.fila, esp = NOME_OCUPACAO[f.ocupacao] ? ` (${NOME_OCUPACAO[f.ocupacao]})` : '';
+                L.push(f.chamadaEm ? { peso: 1, tipo: 'chamado', texto: `Chamado pelo médico às ${hora(f.chamadaEm)}`, t: f.chamadaEm }
+                    : { peso: 3, tipo: 'medico', texto: `${f.retorno ? 'Aguardando retorno ao médico' : 'Aguardando o médico'}${esp}${f.frente != null ? ` · ${frenteTexto(f.frente)}` : ''}${espera(f.chegada)}`, t: f.chegada });
+            }
+            const hist = p.historico.slice().sort((a, b) => b.chegada - a.chegada);
+            for (const h of hist) L.push({ peso: 9, tipo: 'historico', texto: `${h.sala}: ${h.rotulo}${h.chegada ? ` · encaminhado às ${hora(h.chegada)}` : ''}`, t: h.chegada });
+            L.sort((a, b) => (a.peso - b.peso) || ((b.t || 0) - (a.t || 0)));
+            if (!L.length || L[0].peso >= 9) L.unshift({ peso: 8, tipo: 'fora', texto: 'Não está esperando sala, médico nem acolhimento agora', t: 0 });
+            return L;
+        }
+
+        function buscar(texto) {
+            const c = criterio(texto);
+            const carga = situacaoCarga();
+            if (!c || !atual) return { criterio: c, pacientes: [], carga };
+            const t = agora();
+            const porChave = new Map();
+            const paciente = it => {
+                const k = limpo(it.atendimento_str) || `?${normalizar(it.nome_municipe)}|${normalizar(it.senha)}`;
+                let p = porChave.get(k);
+                if (!p) { p = { chave: k, nome: '', senha: '', nascimento: '', risco: '', salas: [], historico: [], fila: null, acolhimento: null }; porChave.set(k, p); }
+                if (!p.nome) p.nome = limpo(it.nome_municipe);
+                if (!p.senha) p.senha = limpo(it.senha);
+                if (!p.nascimento) p.nascimento = limpo(it.data_nascimento_municipe);
+                return p;
+            };
+            for (const f of atual.fontes.values()) {
+                if (f.ok !== true) continue;
+                for (const it of f.itens) {
+                    if (!casa(it, c)) continue;
+                    const p = paciente(it);
+                    if (f.tipo === 'sala') {
+                        const r = normalizar(it.grau_risco);
+                        if (!p.risco && RISCOS.has(r)) p.risco = r;
+                        p.salas.push({ sala: f.sala.nome, key: f.sala.key, grupo: grupoSala(f.sala.key, it), status: limpo(it.status),
+                            chamadaEm: instanteTexto(it.chamada_em), chegada: chegadaSala(it), frente: frenteSala(f.itens, it, f.sala.key) });
+                    } else if (f.tipo === 'historico') {
+                        p.historico.push({ sala: f.sala.nome, key: f.sala.key, rotulo: f.rotulo, chegada: chegadaSala(it) });
+                    } else if (f.tipo === 'fila') {
+                        const r = riscoFila(it);
+                        if (!p.risco && r) p.risco = r;
+                        if (!p.fila) p.fila = { ocupacao: f.ocupacao, chamadaEm: instanteTexto(it.chamada_em), frente: frenteFila(f.itens, it), retorno: retornoFila(it), chegada: instanteFila(it) };
+                    } else if (f.tipo === 'acolhimento') {
+                        if (!p.acolhimento) p.acolhimento = { chamadaEm: instanteTexto(it.chamada_em), frente: frenteAcolhimento(f.itens, it), chegada: instanteFila(it) };
+                    }
+                }
+            }
+            const pacientes = [...porChave.values()].map(p => {
+                const linhas = linhasDoPaciente(p, t);
+                return Object.assign(p, { nomeExibido: nomeTitulo(p.nome), linhas, peso: linhas[0].peso, recente: Math.max(0, ...linhas.map(l => l.t || 0)) });
+            }).sort((a, b) => (a.peso - b.peso) || (b.recente - a.recente));
+            return { criterio: c, pacientes, carga };
+        }
+
+        return { carregar, buscar, criterio, situacaoCarga, hora, aoMudar: fn => { ouvinte = fn; }, VALIDADE_MS };
+    }
+
+    function instalarConsultaPaciente() {
+        if (window.__csConsulta) return;
+        async function lerJson(url) {
+            const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json, text/plain, */*', 'X-Requested-With': 'XMLHttpRequest' } });
+            const txt = await r.text();
+            if (/\/usuarios\/login/.test(r.url || '')) throw new Error('sessão expirada');
+            if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'sem permissão' : `HTTP ${r.status}`);
+            let dados;
+            try { dados = JSON.parse(txt); } catch (_) { throw new Error(/type=["']?password/i.test(txt) ? 'sessão expirada' : 'resposta inválida'); }
+            return { dados, total: parseInt(r.headers.get('total'), 10) };
+        }
+        // Relógio do servidor quando o do PC está errado (o mesmo desvio que a lista do Controle de Salas mede).
+        const agora = () => Date.now() + (Number(window.__controleSalasFila && window.__controleSalasFila.desvioRelogio) || 0);
+        const nucleo = criarConsultaPacienteNucleo({ lerJson, N, agora });
+        estilo(`
+            #cs-consulta { margin:6px 0 2px; }
+            #cs-consulta .cs-cp-faixa { display:flex; align-items:center; gap:6px; max-width:720px; }
+            #cs-consulta .cs-cp-lupa { font-size:14px; line-height:1; }
+            #cs-consulta .cs-cp-q { flex:1 1 auto; min-width:200px; height:30px; padding:4px 10px; border:1px solid #b9c2cc; border-radius:6px; font-size:13px; background:#fff; color:#25303a; }
+            #cs-consulta .cs-cp-q:focus { outline:none; border-color:#2b6cb0; box-shadow:0 0 0 3px rgba(43,108,176,.18); }
+            #cs-consulta button { border:1px solid #b9c2cc; background:#fff; border-radius:5px; padding:4px 10px; font-size:12.5px; line-height:1.2; cursor:pointer; color:#25303a; }
+            #cs-consulta button:hover { background:#f2f5f8; }
+            #cs-consulta button[disabled] { opacity:.5; cursor:default; }
+            #cs-consulta .cs-cp-painel { margin-top:6px; max-width:880px; padding:8px 10px; border:1px solid #d6dce1; border-radius:8px; background:#f8fafb; font-size:12.5px; line-height:1.4; color:#2f3a44; }
+            #cs-consulta .cs-cp-painel[hidden] { display:none !important; }
+            #cs-consulta .cs-cp-cab { display:flex; justify-content:space-between; align-items:center; gap:8px; color:#4b5663; }
+            #cs-consulta .cs-cp-acoes { display:flex; gap:4px; flex:0 0 auto; }
+            #cs-consulta .cs-cp-lendo { margin-top:4px; color:#6b7785; }
+            #cs-consulta .cs-cp-falha { margin-top:4px; color:#b42318; }
+            #cs-consulta .cs-cp-vazio, #cs-consulta .cs-cp-mais { margin-top:6px; color:#5b6670; }
+            #cs-consulta .cs-cp-card { --c:#868e96; --t:#495057; margin-top:6px; padding:7px 10px; border:1px solid #dbe1e6; border-left:4px solid var(--c); border-radius:6px; background:#fff; }
+            #cs-consulta .cs-cp-andamento, #cs-consulta .cs-cp-outra { --c:#1971c2; --t:#1864ab; }
+            #cs-consulta .cs-cp-chamado { --c:#7048e8; --t:#5f3dc4; }
+            #cs-consulta .cs-cp-aguardando { --c:#e67700; --t:#a34e00; }
+            #cs-consulta .cs-cp-medico { --c:#0c8599; --t:#0b6b7a; }
+            #cs-consulta .cs-cp-topo { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+            #cs-consulta .cs-cp-senha { padding:1px 6px; border-radius:4px; background:#eef2f5; color:#25303a; font-size:12px; font-weight:800; letter-spacing:.3px; }
+            #cs-consulta .cs-cp-risco { display:inline-block; width:9px; height:9px; border-radius:50%; }
+            #cs-consulta .cs-cp-nome { font-size:13.5px; color:#25303a; }
+            #cs-consulta .cs-cp-nasc { color:#6b7785; font-size:11.5px; }
+            #cs-consulta .cs-cp-agora { margin-top:3px; font-size:14px; font-weight:700; color:var(--t); }
+            #cs-consulta .cs-cp-linhas { margin:3px 0 0; padding-left:18px; color:#4b5663; }
+            #cs-consulta .cs-cp-linhas li { margin:1px 0; }
+        `);
+        const raiz = document.createElement('div');
+        raiz.id = 'cs-consulta';
+        raiz.innerHTML = `<div class="cs-cp-faixa"><span class="cs-cp-lupa" aria-hidden="true">🔎</span><input type="search" class="cs-cp-q" autocomplete="off" spellcheck="false" maxlength="60" placeholder="Onde está o paciente? Digite o nome ou a senha" aria-label="Onde está o paciente? Digite o nome ou a senha"><button type="button" data-cp="buscar">Buscar</button></div><div class="cs-cp-painel" hidden aria-live="polite"></div>`;
+        const q = raiz.querySelector('.cs-cp-q');
+        const painel = raiz.querySelector('.cs-cp-painel');
+        const CORES_RISCO = { VERMELHO: '#d32f2f', LARANJA: '#ef6c00', AMARELO: '#f9a825', VERDE: '#2e7d32', AZUL: '#1565c0' };
+        let termo = '', timer = 0;
+
+        function cartao(p) {
+            const [agora, ...resto] = p.linhas;
+            const cor = CORES_RISCO[p.risco];
+            return `<div class="cs-cp-card cs-cp-${esc(agora.tipo)}">`
+                + `<div class="cs-cp-topo">${p.senha ? `<span class="cs-cp-senha">${esc(p.senha)}</span>` : ''}`
+                + `${cor ? `<span class="cs-cp-risco" style="background:${cor}" title="${esc(p.risco)}"></span>` : ''}`
+                + `<b class="cs-cp-nome">${esc(p.nomeExibido || 'Sem nome')}</b>${p.nascimento ? `<span class="cs-cp-nasc">nasc. ${esc(p.nascimento)}</span>` : ''}</div>`
+                + `<div class="cs-cp-agora">${esc(agora.texto)}</div>`
+                + (resto.length ? `<ul class="cs-cp-linhas">${resto.map(l => `<li>${esc(l.texto)}</li>`).join('')}</ul>` : '')
+                + '</div>';
+        }
+        function render() {
+            const texto = String(termo || '').replace(/\s+/g, ' ').trim();
+            if (!texto) { painel.hidden = true; painel.innerHTML = ''; return; }
+            const r = nucleo.buscar(texto);
+            const k = r.carga;
+            const partes = [];
+            const n = r.pacientes.length;
+            const cab = r.criterio
+                ? `<b>${n ? `${n} paciente${n > 1 ? 's' : ''}` : 'Nenhum paciente'}</b> para “${esc(texto)}”${k.em ? ` · listas lidas às ${esc(nucleo.hora(k.em))}` : ''}`
+                : 'Digite pelo menos 3 letras do nome, ou a senha (ex.: CL12).';
+            partes.push(`<div class="cs-cp-cab"><span>${cab}</span><span class="cs-cp-acoes">${r.criterio ? `<button type="button" data-cp="atualizar"${k.lendo ? ' disabled' : ''} title="Ler as listas de novo">Atualizar</button>` : ''}<button type="button" data-cp="fechar" aria-label="Fechar" title="Fechar (Esc)">×</button></span></div>`);
+            if (r.criterio) {
+                if (k.lendo) partes.push(`<div class="cs-cp-lendo">Lendo as listas… ${k.total - k.lendo} de ${k.total}</div>`);
+                if (k.falhas.length) partes.push(`<div class="cs-cp-falha">Não consegui ler: ${k.falhas.map(esc).join(' · ')}</div>`);
+                if (!n) partes.push(`<div class="cs-cp-vazio">${k.lendo ? 'Procurando…' : k.completa ? 'Ninguém com esse nome ou senha nas salas, na fila do médico ou no acolhimento (ontem e hoje).' : 'Não achei nas listas que consegui ler.'}</div>`);
+                for (const p of r.pacientes.slice(0, 8)) partes.push(cartao(p));
+                if (n > 8) partes.push(`<div class="cs-cp-mais">Mais ${n - 8}: digite mais letras do nome ou a senha.</div>`);
+            }
+            painel.innerHTML = partes.join('');
+            painel.hidden = false;
+        }
+        function buscarAgora() {
+            clearTimeout(timer);
+            termo = q.value;
+            if (String(termo).trim() && nucleo.criterio(termo)) nucleo.carregar(false).catch(() => {});
+            render();
+        }
+        nucleo.aoMudar(() => { if (String(termo).trim()) render(); });
+        q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(buscarAgora, 350); });
+        q.addEventListener('keydown', ev => {
+            ev.stopPropagation();
+            if (ev.key === 'Enter') { ev.preventDefault(); buscarAgora(); }
+            else if (ev.key === 'Escape') { ev.preventDefault(); q.value = ''; buscarAgora(); }
+        });
+        raiz.addEventListener('click', ev => {
+            const b = ev.target && ev.target.closest && ev.target.closest('[data-cp]');
+            if (!b) return;
+            ev.preventDefault();
+            const a = b.dataset.cp;
+            if (a === 'buscar') buscarAgora();
+            else if (a === 'atualizar') { nucleo.carregar(true).catch(() => {}); render(); }
+            else if (a === 'fechar') { q.value = ''; buscarAgora(); q.focus(); }
+        });
+        // Fica logo acima da barra do Controle de Salas; a barra chama de novo a cada atualização.
+        function posicionar(barra) {
+            const b = barra || document.getElementById('cs-barra');
+            if (!b || !b.parentNode) return;
+            if (raiz.parentNode !== b.parentNode || raiz.nextSibling !== b) b.parentNode.insertBefore(raiz, b);
+        }
+        window.__csConsulta = { posicionar, nucleo };
+        posicionar();
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -9025,6 +9485,7 @@
             if (CS.colecao && CS.colecao.$el && barra.nextSibling !== CS.colecao.$el && CS.colecao.$el.parentNode) {
                 CS.colecao.$el.parentNode.insertBefore(barra, CS.colecao.$el);
             }
+            try { if (window.__csConsulta) window.__csConsulta.posicionar(barra); } catch (_) {}
             const cfg = lerConfig();
             const bt = (dado, rotulo, ativo) => `<button type="button" data-cs="${dado}" class="${ativo ? 'cs-ativo' : ''}">${rotulo}</button>`;
             const periodos = bt('periodo:hoje','Hoje',cfg.periodo==='hoje') + bt('periodo:24h','24 horas',cfg.periodo==='24h') + bt('periodo:datas','Data...',cfg.periodo==='datas') + (cfg.periodo==='datas' ? bt('periodo:limpar','Limpar data',false) : '');

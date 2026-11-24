@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.3
+// @version      2.4.5
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -6848,7 +6848,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.3', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.5', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];
@@ -7050,8 +7050,24 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       if(acao==='assinar'){void assinarPeloPainel();}
     });
     void exibirContagem();
-    q('button[data-om30-acao="assinar"]',painel)?.focus();
+    // v2.4.5: o foco ia para "Assinar"; um Enter clicava nele e, ao mesmo tempo, confirmava o
+    // aviso nativo de encaminhamento escondido por baixo. Agora o foco fica no cartão e o Enter
+    // é bloqueado enquanto o painel estiver aberto ou assinando (ver travaEnterAssinatura).
+    const card=q('.om30-f-card',painel);
+    if(card){card.setAttribute('tabindex','-1');try{card.focus({preventScroll:true});}catch(_){}}
     return painel;
+  }
+  // v2.4.5: Enter/Espaço com o painel de assinatura aberto ou com assinatura em andamento não faz
+  // nada (só clique). Captura na janela: roda antes do sweetalert nativo e de qualquer botão focado.
+  if(!window.__om30PaTravaEnterAssinatura){
+    window.__om30PaTravaEnterAssinatura=true;
+    window.addEventListener('keydown',e=>{
+      const tecla=e.key==='Enter'||e.code==='NumpadEnter'||(e.key===' '&&e.target?.closest?.('#om30-pa-fluxo-v229,#om30-pa-lembrete-ass'));
+      if(!tecla)return;
+      const ativo=!!painel||estado.rodando||document.body.classList.contains('om30-pa-assinando');
+      if(!ativo)return;
+      e.preventDefault();e.stopImmediatePropagation();
+    },true);
   }
 
   function modalDeEncaminhamento(){
@@ -7174,7 +7190,9 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     const btn=doc.querySelector('#assinar_documentos');
     const exibivelNomeCivil=String(btn?.getAttribute('data-exibivel-nome-civil')||'').toLowerCase()==='true';
     const exigeNativo=exibivelNomeCivil || documentos.some(d=>d.comprador);
-    if(documentos.length)return {state:'pending',quantity:documentos.length,documentos,linhasSemControle:0,exigeNativo};
+    // v2.4.4: o nativo manda paginaAtual = data-pagina-atual do botão #assinar_documentos.
+    const paginaAtual=String(btn?.getAttribute('data-pagina-atual')||'').trim();
+    if(documentos.length)return {state:'pending',quantity:documentos.length,documentos,linhasSemControle:0,exigeNativo,paginaAtual};
     const container=doc.querySelector('.documentos-assinaveis .documentos-container, tbody.documentos-container');
     if(container){
       // Tabela nativa presente e sem nenhum documento assinável.
@@ -7399,6 +7417,19 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     const unicos=new Map();
     try{
       const doc=new DOMParser().parseFromString(bruto,'text/html');
+      // v2.4.4: igual ao nativo (assinaDocumentosSelecionados): só as caixas da lista de
+      // documentos, habilitadas. Se a lista existir, nada de fora dela entra.
+      const daLista=[...doc.querySelectorAll('.documentos-container input[data-documento-id][data-documento-type]')].filter(el=>!el.disabled);
+      if(daLista.length){
+        for(const el of daLista){
+          const documentoId=String(el.getAttribute('data-documento-id')||'').replace(/\D/g,'');
+          const documentoType=String(el.getAttribute('data-documento-type')||'').trim();
+          if(!documentoId||!documentoType)continue;
+          const comprador=String(el.getAttribute('data-verificar-exibicao-comprador')||'').toLowerCase()==='true';
+          unicos.set(`${documentoType}:${documentoId}`,{id:documentoId,type:documentoType,comprador});
+        }
+        if(unicos.size)return [...unicos.values()];
+      }
       for(const el of doc.querySelectorAll('[data-documento-id][data-documento-type]')){
         const documentoId=String(el.getAttribute('data-documento-id')||'').replace(/\D/g,'');
         const documentoType=String(el.getAttribute('data-documento-type')||'').trim();
@@ -7446,11 +7477,11 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   // A resposta NÃO é executada com eval. Só HTTP de erro ou redirecionamento
   // (sessão expirada) interrompem; o resto é registrado no console para
   // diagnóstico e quem decide se assinou é listar_assinaveis.
-  async function assinarDocumentoDireto(doc){
+  async function assinarDocumentoDireto(doc,paginaAtual=''){
     const params=new URLSearchParams({
       id:String(doc.id),
       type:String(doc.type),
-      paginaAtual:'',
+      paginaAtual:String(paginaAtual||''),
       exibirNomeCivil:'false',
       exibirInformacoesComprador:'false'
     });
@@ -7459,7 +7490,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     const token=csrfToken();if(token)headers['X-CSRF-Token']=token;
     const r=await fetch(url,{method:'GET',credentials:'same-origin',cache:'no-store',headers});
     const corpo=await r.text();
-    if(!r.ok)throw new Error(`O Saúde Simples recusou a assinatura (HTTP ${r.status}).`);
+    if(!r.ok){const e=new Error(`O Saúde Simples recusou a assinatura (HTTP ${r.status}).`);e.status=r.status;throw e;}
     if(r.redirected)throw new Error('A assinatura foi redirecionada (sessão expirada?). Nada foi confirmado.');
     const tipo=String(r.headers.get('content-type')||'');
     const vazia=respostaAssinaturaVazia(corpo);
@@ -7490,9 +7521,34 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
       : `O Saúde Simples respondeu, mas ${ultimo.restantes} de ${enviados.length} documento(s) continuam na lista de pendentes. Assinatura NÃO confirmada.`;
     return {ok:false,motivo,detalhe:ultimo};
   }
+  // v2.4.4: HTTP 500 logo depois de finalizar (o sistema ainda gera PDFs/encaminhamento
+  // em paralelo). Antes de cada nova tentativa confere se o documento já saiu da lista,
+  // para nunca assinar duas vezes.
+  async function assinarComNovasTentativas(doc,paginaAtual){
+    const esperas=[2500,5000];
+    for(let tentativa=0;;tentativa++){
+      try{return await assinarDocumentoDireto(doc,paginaAtual);}
+      catch(e){
+        if(!(Number(e?.status)>=500)||tentativa>=esperas.length)throw e;
+        console.warn(TAG,`Assinador respondeu HTTP ${e.status}; nova tentativa em ${esperas[tentativa]/1000}s.`);
+        if(painel)info(`O Saúde Simples ainda está processando… tentando de novo em ${Math.round(esperas[tentativa]/1000)}s`);
+        await esperar(esperas[tentativa]);
+        try{
+          const lista=await listarAssinaveisDireto();
+          if(lista.analise.state!=='unknown'&&!lista.documentos.some(d=>d.type===doc.type&&String(d.id)===String(doc.id)))return true;
+        }catch(_){}
+      }
+    }
+  }
   async function executarAssinaturaUnica({limite=Infinity}={}){
     if(processoAssinatura)return processoAssinatura;
     processoAssinatura=(async()=>{
+      // v2.4.4: logo após finalizar (?encaminhar=1 / ?imprimir=1) o servidor ainda está
+      // gerando documentos; espera a página completar ~5 s antes de assinar.
+      if(/[?&](?:encaminhar|imprimir)=1\b/.test(location.search)){
+        const falta=5000-performance.now();
+        if(falta>0){if(painel)info('Aguardando o Saúde Simples terminar de salvar…');await esperar(falta);}
+      }
       const inicial=await listarAssinaveisDireto();
       if(inicial.analise.state==='unknown'){
         estado.assinatura='falhou';
@@ -7518,7 +7574,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
         const doc=documentos[i];
         if(painel)info(`Assinando documentos… ${i+1} de ${documentos.length}`);
         try{
-          await assinarDocumentoDireto(doc);
+          await assinarComNovasTentativas(doc,inicial.analise.paginaAtual);
           enviados.push(doc);
         }catch(e){
           estado.assinatura='falhou';

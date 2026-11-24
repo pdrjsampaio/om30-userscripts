@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.5
+// @version      2.4.6
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -6617,9 +6617,31 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   // ABRIU a ficha (recepção). O médico logado é o "professional" do gravador de consulta da tela
   // (conferido ao vivo contra /profissionais/search.json). Toda SADT nova (ainda não salva)
   // sai com o médico logado como solicitante.
+  // v2.4.6: quando a tela não tem o gravador de consulta, usa o profissional_id do usuário logado
+  // em /current_usuario — a MESMA fonte que os favoritos por médico usam desde a 2.0 (conferido nas
+  // capturas: é o mesmo número do gravador). Sem resposta válida, não mexe no solicitante.
+  let medicoLogadoCache='', buscandoMedicoLogado=null;
+  function resolverMedicoLogado(){
+    if(medicoLogadoCache)return Promise.resolve(medicoLogadoCache);
+    if(buscandoMedicoLogado)return buscandoMedicoLogado;
+    buscandoMedicoLogado=(async()=>{
+      try{
+        const csrf=q('meta[name="csrf-token"]')?.content||'';
+        const r=await fetch('/current_usuario',{credentials:'include',cache:'no-store',headers:{Accept:'*/*','X-Requested-With':'XMLHttpRequest',...(csrf?{'X-CSRF-Token':csrf}:{})}});
+        const u=r.ok?await r.json():null;
+        const id=clean(u?.profissional_id);
+        if(/^\d+$/.test(id))medicoLogadoCache=id;
+      }catch(_){}
+      finally{buscandoMedicoLogado=null;}
+      return medicoLogadoCache;
+    })();
+    return buscandoMedicoLogado;
+  }
   function medicoLogadoId(){
     const v=clean(q('daai-consultation-recorder[professional], [professional]')?.getAttribute('professional'));
-    return /^\d+$/.test(v)?v:'';
+    if(/^\d+$/.test(v))return v;
+    if(!medicoLogadoCache)void resolverMedicoLogado();
+    return medicoLogadoCache;
   }
   function forcarSolicitante(){
     const id=medicoLogadoId();
@@ -6648,6 +6670,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
     if(!a)throw new Error('Estrutura da SADT não reconhecida.');
     a.dataset.om30DualCreated='1';
     autoPrefix=prefix;
+    try{await resolverMedicoLogado();}catch(_){}
     forcarSolicitante();
     return prefix;
   }
@@ -6775,6 +6798,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   function instalar(){
     if(instalado)return;
     instalado=true;
+    void resolverMedicoLogado(); // v2.4.6: já deixa o número pronto antes de qualquer salvar
     // v2.3.2: antes o módulo só se registrava se a área de exames aparecesse
     // nos primeiros 15 s. Num prontuário novo não existe linha de exame no
     // carregamento (só o template no onclick), então o exame incluído depois
@@ -6848,7 +6872,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.5', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.6', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

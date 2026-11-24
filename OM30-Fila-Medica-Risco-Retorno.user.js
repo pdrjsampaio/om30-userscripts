@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.15
+// @version      2.15.16
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -9787,11 +9787,9 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     // Botão remover: bloqueado se a ausência é de outra fila
     const btn = tr.querySelector(SEL_REMOVER);
     if (btn) {
-      // v2.15.15: na fila médica, remover só com o registro confirmando que a ausência foi
-      // feita aqui. Removido pela fila médica sem estar nela, o paciente some de todas as filas.
-      const bloquear = TELA === 'MEDICO'
-        ? !(r.fonte === 'D1' && podeRemoverAqui(r.origem, r.setor))
-        : (r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor));
+      // v2.15.16: volta ao comportamento da 2.15.14. A 2.15.15 bloqueava aqui quem não tinha registro
+      // e mandava remover pelo acolhimento; lá a remoção não reativa a senha e o médico pegava "Senha perdida".
+      const bloquear = r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor);
       btn.classList.toggle('om30a-bloqueado', bloquear);
       if (bloquear) {
         if (btn.dataset.om30TituloOriginal === undefined) btn.dataset.om30TituloOriginal = btn.getAttribute('title') || '';
@@ -10085,27 +10083,10 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     const tr = a.closest('tr');
     const origem = tr?.dataset.om30Origem;
 
-    // v2.15.15: sem registro confirmado, a fila médica BLOQUEIA (antes liberava a remoção nativa).
-    // Paciente ausentado no acolhimento — ou que nem passou por ele — removido por aqui some de
-    // todas as filas. No acolhimento a remoção nativa devolve normal, então lá continua liberada.
-    if (tr?.dataset.om30Fonte !== 'D1') {
-      if (TELA !== 'MEDICO') return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      const verificando = !origem || origem === 'PENDENTE';
-      dialogo({
-        tipo: 'aviso',
-        titulo: 'Remoção bloqueada na fila médica',
-        subtitulo: verificando ? 'Ainda conferindo onde foi a ausência' : 'Local da ausência não confirmado',
-        texto: [
-          'Não dá para confirmar que este paciente foi ausentado na fila médica.',
-          'Se ele foi ausentado no acolhimento, ou ainda nem passou pelo acolhimento, removendo por aqui ele some de todas as filas.',
-          'Remova pela aba AUSENTES da tela do acolhimento. Se foi você que ausentou aqui, clique em Atualizar e tente de novo.'
-        ],
-        botoes: [{ rotulo: 'Entendi', valor: true, primario: true }]
-      });
-      return;
-    }
+    // Sem evento D1 confirmado, o script não escolhe uma fila: preserva a ação nativa.
+    // v2.15.16: volta ao comportamento da 2.15.14 (a 2.15.15 bloqueava e mandava para o acolhimento,
+    // onde a remoção não reativa a senha: "Senha perdida" ao chamar).
+    if (tr?.dataset.om30Fonte !== 'D1') return;
     if (origem && !['ACOLHIMENTO', 'MEDICO', 'EMERGENCIA', 'OUTROS'].includes(origem)) return;
     if (!origem) {
       ev.preventDefault();

@@ -897,7 +897,8 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   const MARCA_OBS_RX='OBS. RAIO-X';
   const reLinhaObsRx=/^\s*OBS\.\s*RAIO-X\s*\(([^)]*)\)\s*:\s*(.*)$/i;
   function ehLinhaRaioX(row){
-    return /^0204/.test(codigoLinhaExame(row))||/RADIOGRAFIA|RAIO\s*-?\s*X/i.test(nomeLinhaExame(row));
+    // O próprio sistema marca a linha com a classe "radiografia" (código 0204).
+    return !!row?.classList?.contains('radiografia')||/^0204/.test(codigoLinhaExame(row))||/RADIOGRAFIA|RAIO\s*-?\s*X/i.test(nomeLinhaExame(row));
   }
   function obsRxDaConduta(){
     const mapa=new Map();

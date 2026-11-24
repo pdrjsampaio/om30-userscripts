@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.17
+// @version      3.1.8
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -32,14 +32,7 @@
         return /^(?:N|NAO|NÃO|NEGA|NEGADO|NEGADA|NEGATIVO|NENHUMA|SEM|NDN|-|—)\.?$/i.test(String(valor || '').trim());
     }
 
-    /* OM30 - CONTROLE DE SALAS v3.1.14
-     * v3.1.16: retirada a baixa automática da medicação da 3.1.15 (ela é do script Baixa Rápida). Código igual ao da 3.1.14.
-     * v3.1.14: Consulta de pacientes: lupa e botão Consultar alinhados com a caixa de pesquisa (a página aplicava margem e altura próprias nos campos).
-     * v3.1.13: Consulta de pacientes com visual novo: campo "Consultar paciente por nome ou senha" com botão Consultar, resultado num painel logo abaixo do campo (fecha com Esc ou clicando fora), situação em etiqueta (Em atendimento, Chamado, Aguardando, Aguardando médico) e posição na fila. Textos de sistema, sem códigos técnicos.
-     * v3.1.12: "Onde está o paciente?" na tela do Controle de Salas: digite o nome ou a senha e veja onde a pessoa está agora (em atendimento em qual sala, aguardando qual sala e quantos na frente, chamada e ainda não entrou, aguardando o médico ou o acolhimento) e por quais salas já passou (ontem e hoje). Só lê as listas que o sistema já tem, apenas quando alguém busca (no máximo 1 vez a cada 2 min, botão Atualizar), e não grava nada no navegador. Lista que não pôde ser lida aparece como "não consegui ler".
-     * v3.1.11: 'Senha perdida': a senha da aba agora volta também na consulta do prontuário e na tela de encaminhamento (onde ela é lida), só para o MESMO atendimento (id e tipo); senha de outro paciente é retirada dessas telas em vez de ser encaminhada. Guichê: busca direta em vez de varrer a página inteira 3 a 4 vezes por segundo. Presença: voltar para a aba não grava em dobro no Cloudflare. Corrigido erro ao ler o munícipe pela consulta. Login do Senha Simples reaproveitado só pelo MESMO profissional (passava de um para outro no mesmo PC e as chamadas ficavam no nome errado). Cancelar pela lista: o destino (inclusive a volta para o médico) recebe o paciente como NÃO chamado, como o sistema faz; antes o retorno chegava ao médico marcado como já chamado.
-     * v3.1.10: senha por aba só volta na página do MESMO paciente (aba usada para outro paciente segue o sistema); 'Chamar' usa o último consultório/guichê escolhido no navegador.
-     * v3.1.9: 'Senha perdida' na sala seguinte: cada aba guarda a própria senha chamada; com a ficha em aba nova, chamar outro paciente em outra aba não troca mais a senha que o Salvar encaminha.
+    /* OM30 - CONTROLE DE SALAS v3.1.8
      * v3.1.8: entrou na conta e a fila veio vazia (ou a 1ª carga falhou): recarrega a cada ~3 s nos 2 primeiros minutos da página, em vez de esperar 25 s; não empilha cargas com o servidor lento.
      * v3.1.7: fila não abre mais zerada: filtro do sistema (profissional/situação/risco) só volta no mesmo dia; situação Cancelado/Finalizado/Em outra sala é ignorada fora do Histórico; ao abrir, 'Emergência' volta para Clínico e 'Data...' vencida volta para Hoje.
      * v3.1.6: Medicação: fila Emergência = classificados VERMELHO (antes senhas EM); Clínico sem os vermelhos. Sem o aviso de filtro do PC na barra.
@@ -133,58 +126,12 @@
         // navegador (localStorage) e as abas novas usam essa cópia enquanto valer.
         // A cópia é apagada na tela de login/sair, para não passar de um usuário a outro.
         const CHAVE_TK = 'senhaSimplesToken', CHAVE_TK_COMP = 'om30SenhaSimplesTokenCompartilhado';
-        // v3.1.11: o token do Senha Simples diz QUEM chamou a senha. A cópia compartilhada passava de um
-        // profissional para outro no mesmo PC (aba antiga regravava o token a cada 15 s e ao fechar; a aba
-        // guardava o token de quem saiu) e as chamadas de um ficavam no nome do outro ("Chamado por" errado).
-        // Agora cada token leva a marca de quem estava logado no Saúde Simples (nome do cabeçalho, guardado só
-        // como código) e só é reaproveitado pelo MESMO profissional. Sem saber quem está logado: fluxo nativo.
-        const CHAVE_DONO_ABA = 'om30-ss-token-dono', CHAVE_MIGRADA = 'om30-ss-token-v2';
-        const codigoDono = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return 'u' + (h >>> 0).toString(36); };
-        const donoAtual = () => {   // '' enquanto o cabeçalho não existe (início da carga) ou em tela sem cabeçalho
-            try {
-                const a = document.querySelector('#header-bar a.navbar-avatar, a.navbar-avatar');
-                const nome = a ? Array.from(a.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join(' ').replace(/\s+/g, ' ').trim().toUpperCase() : '';
-                return nome ? codigoDono(nome) : '';
-            } catch (_) { return ''; }
-        };
         const valeAinda = tk => !!tk && vence(tk) - Date.now() > 5 * 60e3;
         const lerSess = () => { try { return sessionStorage.getItem(CHAVE_TK) || ''; } catch (_) { return ''; } };
-        const lerDonoAba = () => { try { return sessionStorage.getItem(CHAVE_DONO_ABA) || ''; } catch (_) { return ''; } };
-        const marcarDonoAba = d => { try { sessionStorage.setItem(CHAVE_DONO_ABA, d); } catch (_) {} };
-        const apagarTokenAba = () => { try { sessionStorage.removeItem(CHAVE_TK); sessionStorage.removeItem(CHAVE_DONO_ABA); } catch (_) {} };
-        // Cópias por profissional: { v: 2, donos: { código: token } }. A cópia antiga (texto puro, sem dono) é ignorada.
-        const lerComps = () => {
-            try { const o = JSON.parse(localStorage.getItem(CHAVE_TK_COMP) || 'null'); return o && o.v === 2 && o.donos && typeof o.donos === 'object' ? o.donos : {}; } catch (_) { return {}; }
-        };
-        const gravarComp = (tk, dono) => {
-            if (!dono || !valeAinda(tk)) return;
-            try {
-                const donos = lerComps();
-                if (donos[dono] === tk) return;
-                const novos = { [dono]: tk };
-                for (const [d, t] of Object.entries(donos)) if (d !== dono && valeAinda(t) && Object.keys(novos).length < 6) novos[d] = t;
-                localStorage.setItem(CHAVE_TK_COMP, JSON.stringify({ v: 2, donos: novos }));
-            } catch (_) {}
-        };
+        const lerComp = () => { try { return localStorage.getItem(CHAVE_TK_COMP) || ''; } catch (_) { return ''; } };
+        const gravarComp = tk => { try { if (lerComp() !== tk) localStorage.setItem(CHAVE_TK_COMP, tk); } catch (_) {} };
         const apagarComp = () => { try { localStorage.removeItem(CHAVE_TK_COMP); } catch (_) {} };
-        // Token desta aba, se for do profissional logado. Aba que trocou de profissional perde o token do anterior.
-        const tokenDaAba = dono => {
-            const tk = lerSess();
-            if (!valeAinda(tk)) return '';
-            const marcado = lerDonoAba();
-            if (dono && marcado && marcado !== dono) { apagarTokenAba(); return ''; }
-            if (dono && !marcado) marcarDonoAba(dono);
-            return tk;
-        };
-        if (/^\/(?:[a-z]{2}-[A-Z]{2}\/)?usuarios\/(?:login|sair|sign_in|sign_out)\b/.test(location.pathname)) { apagarComp(); apagarTokenAba(); }
-        // 1ª carga desta aba nesta versão: o token que já estava na aba não tem dono conhecido (pode ser de quem
-        // usou o PC antes). Sai uma vez; o sistema pede um novo pelo login normal, que já nasce com dono.
-        try {
-            if (!sessionStorage.getItem(CHAVE_MIGRADA)) {
-                sessionStorage.setItem(CHAVE_MIGRADA, '1');
-                if (lerSess() && !lerDonoAba()) apagarTokenAba();
-            }
-        } catch (_) {}
+        if (/^\/(?:[a-z]{2}-[A-Z]{2}\/)?usuarios\/(?:login|sair|sign_in|sign_out)\b/.test(location.pathname)) apagarComp();
         // v3.1.1: token recusado pelo Senha Simples (401) → as listas do sistema voltavam vazias
         // ("Nenhum local encontrado") e só desligando o script voltava. Agora o script apaga as
         // cópias do token, não reaproveita na próxima carga e recarrega a página pelo login normal.
@@ -200,7 +147,7 @@
                 try {
                     if (err && err.response && err.response.status === 401 && !pularAtalho()) {
                         sessionStorage.setItem(PULAR_ATALHO, String(Date.now()));
-                        apagarTokenAba();
+                        try { sessionStorage.removeItem(CHAVE_TK); } catch (_) {}
                         apagarComp();
                         console.warn('[OM30] Senha Simples recusou o token (401): cópias apagadas, recarregando pelo login do sistema.');
                         setTimeout(() => location.reload(), 800);
@@ -213,19 +160,17 @@
         if (!vigiar401()) { const tv = setInterval(() => { if (vigiar401()) clearInterval(tv); }, 200); setTimeout(() => clearInterval(tv), 60000); }
         const tokenValido = () => {
             if (pularAtalho()) return '';
-            const dono = donoAtual();
-            const daAba = tokenDaAba(dono);
-            if (daAba) { gravarComp(daAba, dono); return daAba; }
-            if (!dono) return '';   // sem saber quem está logado, a cópia de outra aba não é usada
-            const comp = lerComps()[dono];
-            if (valeAinda(comp)) { try { sessionStorage.setItem(CHAVE_TK, comp); } catch (_) {} marcarDonoAba(dono); return comp; }
+            const daAba = lerSess();
+            if (valeAinda(daAba)) { gravarComp(daAba); return daAba; }
+            const comp = lerComp();
+            if (valeAinda(comp)) { try { sessionStorage.setItem(CHAVE_TK, comp); } catch (_) {} return comp; }
+            if (comp) apagarComp();
             return '';
         };
         // Espelha o token que o sistema grava na aba depois do login (sem rede, só leitura local).
         tokenValido();
-        const espelhar = () => { const dono = donoAtual(); const tk = tokenDaAba(dono); if (tk) gravarComp(tk, dono); };
-        const espelho = setInterval(espelhar, 15000);
-        window.addEventListener('pagehide', () => { clearInterval(espelho); espelhar(); });
+        const espelho = setInterval(() => { const tk = lerSess(); if (valeAinda(tk)) gravarComp(tk); }, 15000);
+        window.addEventListener('pagehide', () => { clearInterval(espelho); const tk = lerSess(); if (valeAinda(tk)) gravarComp(tk); });
         function embrulhar(orig, fixo) {
             if (typeof orig !== 'function' || orig.__om30Token) return orig;
             const f = function (tipo) {
@@ -352,17 +297,11 @@
         // e o instante mínimo para o corte fino feito aqui (24h).
         function periodoParams(periodo, agora) {
             const p = PERIODOS[periodo] || PERIODOS['24h'];
-            // v3.1.17: "Hoje" pedia ao sistema só encaminhamentos de HOJE. Quem foi encaminhado antes
-            // da meia-noite e ainda esperava sumia da fila na virada do dia (num PC em "Hoje" sumia,
-            // no outro em "24 horas" aparecia). Agora pede também ontem e a tela mostra hoje + quem
-            // ainda está Em Espera/Em Andamento (manterAtivos), em qualquer sala (inclusive Raio-X).
-            const ini = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - Math.max(1, p.dias));
-            const inicioHoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+            const ini = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - p.dias);
             return {
                 dataInicial: isoDia(ini),
                 dataFinal: isoDia(agora),
-                minimo: p.horas ? new Date(agora.getTime() - p.horas * 3600e3) : inicioHoje,
-                manterAtivos: true,
+                minimo: p.horas ? new Date(agora.getTime() - p.horas * 3600e3) : null,
             };
         }
 
@@ -372,15 +311,14 @@
         function aplicarPeriodo(condicoes, periodo, agora) {
             const cond = Object.assign({}, condicoes);
             const filtroDataSistema = !!(cond.dataInicial || cond.dataFinal);
-            let minimo = null, manterAtivos = false;
+            let minimo = null;
             if (!filtroDataSistema) {
                 const p = periodoParams(periodo, agora);
                 cond.dataInicial = p.dataInicial;
                 cond.dataFinal = p.dataFinal;
                 minimo = p.minimo;
-                manterAtivos = !!p.manterAtivos;
             }
-            return { cond, minimo, filtroDataSistema, manterAtivos };
+            return { cond, minimo, filtroDataSistema };
         }
 
         // Chave canônica de parâmetros (ordem das chaves não importa; null/undefined
@@ -424,14 +362,12 @@
                 .map(x => x.it);
         }
 
-        function filtrar(itens, { minimo = null, soEspera = false, manterAtivos = false } = {}) {
+        function filtrar(itens, { minimo = null, soEspera = false } = {}) {
             return itens.filter(it => {
                 if (soEspera && it.status !== 'Em Espera') return false;
                 if (minimo) {
                     const d = dataHora(it);
-                    // v3.1.17: paciente ainda Em Espera/Em Andamento nunca some por causa do período.
-                    const ativo = manterAtivos && (it.status === 'Em Espera' || it.status === 'Em Andamento');
-                    if (d && d < minimo && !ativo) return false;
+                    if (d && d < minimo) return false;
                 }
                 return true;
             });
@@ -661,9 +597,7 @@
             if (campo) return campo.value;
             for (const a of doc.querySelectorAll('a[href*="/municipes/"]')) {
                 const m = /\/municipes\/(\d+)/.exec(a.getAttribute('href') || '');
-                // v3.1.11: devolve o id do MUNÍCIPE. Antes chamava guardarAtendimentoPaFilho, que não existe
-                // neste escopo (erro em tempo de execução) e gravaria o munícipe como se fosse o atendimento.
-                if (m) return m[1];
+                if (m) return guardarAtendimentoPaFilho(m[1]);
             }
             return '';
         }
@@ -1631,18 +1565,9 @@
     function csInstalarRecuperacaoPresenca(){
         if(window.__csPresencaRecuperacaoInstalada)return;
         window.__csPresencaRecuperacaoInstalada=true;
-        // v3.1.11: voltar para a aba dispara "focus" e "visibilitychange" juntos (e "pageshow" logo
-        // depois da 1ª gravação), e cada evento gravava a presença no Cloudflare. Agora um evento só
-        // renova se não houve gravação confirmada nem outra renovação por evento nos últimos 30 s.
-        // A batida normal (180 s) e a 1ª gravação (ramo "else") não mudam.
-        const RENOVACAO_POR_EVENTO_MIN_MS=30000;
-        let ultimaRenovacaoPorEvento=0;
         const renovar=()=>{
             if(document.visibilityState==='hidden')return;
             if(typeof window.__csRenovarPresenca==='function'){
-                const agora=Date.now();
-                if(agora-Math.max(ultimaRenovacaoPorEvento,Number(window.__csPresencaGravadaEm)||0)<RENOVACAO_POR_EVENTO_MIN_MS)return;
-                ultimaRenovacaoPorEvento=agora;
                 Promise.resolve(window.__csRenovarPresenca()).catch(()=>{});
             }else{
                 clearTimeout(window.__csRetryPresenca);
@@ -1699,7 +1624,6 @@
             try{sessionStorage.setItem(CS_PRESENCA_FILHA,JSON.stringify({
                 atendimento:a.bruto,id:a.id,chave:a.chave,sala,nome,em:Date.now()
             }));}catch(_){}
-            window.__csPresencaGravadaEm=Date.now();   // v3.1.11: usado para não regravar por evento logo em seguida
             return true;
         };
 
@@ -4818,10 +4742,7 @@
         if (document.body) iniciarSemAusente(); else document.addEventListener('DOMContentLoaded', iniciarSemAusente);
     }
 
-    if (caminho === '/aplicacoes_medicamentos') {
-        iniciarFila();
-        try { instalarConsultaPaciente(); } catch (e) { console.warn('[Controle de Salas] Consulta de pacientes não instalada', e); }
-    }
+    if (caminho === '/aplicacoes_medicamentos') iniciarFila();
     else if (caminho === '/aplicacoes_medicamentos/new' || caminho === '/aplicacoes_medicamentos/create') iniciarAplicacao();
     else if (fichaOutraSala) {
         // Aba aberta pelo script (cs-atendimento-*): a identidade do AtendimentoPa permanece
@@ -4848,504 +4769,6 @@
                 definirTitulo(seed?.nome?`${seed.nome} · Atendimento`:'Atendimento');
             } catch(_) { definirTitulo('Atendimento'); }
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // v3.1.12: Consulta de pacientes na tela do Controle de Salas (busca por nome ou senha).
-    // v3.1.13: novo visual (campo com ícone, painel suspenso, etiqueta de situação) e textos de sistema.
-    // Só LÊ as mesmas listas que o sistema e os scripts OM30 já usam: as salas (Em Espera, Em
-    // Andamento, Em Outra Sala, Finalizado, Cancelado; ontem e hoje), a fila do médico e o
-    // acolhimento. Lê só quando alguém busca, no máximo 1 vez a cada 2 min (Atualizar força),
-    // 4 pedidos por vez. Nada fica gravado no navegador: os dados ficam na memória desta aba.
-    // Lista que não pôde ser lida aparece como "Não foi possível consultar: …", nunca como "não está lá".
-    // ─────────────────────────────────────────────────────────────────────────────
-    function criarConsultaPacienteNucleo({ lerJson, N, agora = () => Date.now() }) {
-        const SALAS = [
-            { key: 'medicacao', nome: 'Medicação', endpoint: '/aplicacoes_medicamentos' },
-            { key: 'exames', nome: 'Exames', endpoint: '/encaminhamentos_exames' },
-            { key: 'raio_x', nome: 'Raio-X', endpoint: '/encaminhamentos_radiografias' },
-            { key: 'enfermagem', nome: 'Procedimentos de Enfermagem', endpoint: '/encaminhamentos_procedimentos_enfermagem' },
-            { key: 'gesso', nome: 'Gesso', endpoint: '/encaminhamentos_gessos_imobilizacoes' },
-        ];
-        // As mesmas ocupações das filas do PA que o Rastreamento de Senhas lê (select "Especialidade").
-        const OCUPACOES_FILA = [433, 432, 436, 352, 384, 923, 928, 931, 357, 377, 364, 399, 409, 652, 662];
-        const NOME_OCUPACAO = { 433: 'Clínico', 432: 'Pediatria', 357: 'Dentista' };
-        const VALIDADE_MS = 2 * 60 * 1000;
-        const PARALELO = 4;
-        const RISCOS = new Set(['VERMELHO', 'LARANJA', 'AMARELO', 'VERDE', 'AZUL']);
-        const PESO_FILA = { VERMELHO: 0, AMARELO: 1, VERDE: 2, AZUL: 3 };   // os mesmos pesos da Fila Médica
-        const RISCO_POR_ID = { 1: 'VERMELHO', 2: 'AMARELO', 3: 'VERDE', 4: 'AZUL' };
-        const CONECTORES = new Set(['da', 'das', 'de', 'do', 'dos', 'e']);
-
-        const limpo = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
-        const normalizar = v => limpo(v).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
-
-        // Data/hora das listas -> ms. Sem fuso = hora local, como a tela mostra.
-        function instanteTexto(raw) {
-            const t = limpo(raw);
-            if (!t) return 0;
-            if (/^\d{13}$/.test(t)) return +t;
-            if (/^\d{10}$/.test(t)) return +t * 1000;
-            let m = t.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
-            if (m) {
-                if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(t)) { const x = Date.parse(t); if (Number.isFinite(x)) return x; }
-                return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime();
-            }
-            m = t.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\D+(\d{1,2}):(\d{2}))?/);
-            if (m) return new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)).getTime();
-            return 0;
-        }
-        const chegadaSala = it => { const d = N.dataHora(it || {}); return d ? d.getTime() : 0; };
-        const instanteFila = it => instanteTexto(it && it.data_senha_timestamp) || instanteTexto(it && it.data_senha_formatada);
-
-        function nomeTitulo(nome) {
-            const n = limpo(nome);
-            if (!n || n !== n.toUpperCase()) return n;
-            return n.toLowerCase().split(' ').map((p, i) => (i && CONECTORES.has(p)) ? p : p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
-        }
-        function hora(ms) {
-            if (!ms) return '';
-            const d = new Date(ms), h = new Date(agora());
-            const hh = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-            return d.toDateString() === h.toDateString() ? hh : `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${hh}`;
-        }
-        function duracao(ms) {
-            const min = Math.max(0, Math.floor(ms / 60000));
-            if (min < 60) return `${min} min`;
-            const h = Math.floor(min / 60), m = min % 60;
-            return m ? `${h}h ${m}min` : `${h}h`;
-        }
-
-        // ── leitura (fila de pedidos com limite; cada página entra na fila) ──
-        function filaDePedidos(limite) {
-            let ativos = 0;
-            const espera = [];
-            const proximo = () => {
-                while (ativos < limite && espera.length) {
-                    const { fn, ok, erro } = espera.shift();
-                    ativos++;
-                    Promise.resolve().then(fn).then(ok, erro).then(() => { ativos--; proximo(); });
-                }
-            };
-            return fn => new Promise((ok, erro) => { espera.push({ fn, ok, erro }); proximo(); });
-        }
-        function exigirLista(r) {
-            if (!r || !Array.isArray(r.dados)) throw new Error('resposta inválida');
-            return r.dados;
-        }
-        // Mesmos parâmetros da lista do Controle de Salas (ontem e hoje, 100 por página, total no cabeçalho).
-        async function lerSala(sala, status, pedir) {
-            const hoje = new Date(agora());
-            const ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
-            const base = { sortable: {}, per_page: 100, profissional: {}, status, grau_risco: '', dataInicial: N.isoDia(ontem), dataFinal: N.isoDia(hoje) };
-            const itens = [], vistos = new Set();
-            let tam = 0;
-            for (let page = 1; page <= 10; page++) {
-                const r = await pedir(() => lerJson(`${sala.endpoint}?format=json&${N.queryAxios(Object.assign({ page }, base))}`));
-                const lista = exigirLista(r);
-                if (!lista.length) break;
-                if (page === 1) tam = lista.length;
-                let novos = 0;
-                for (const it of lista) {
-                    const k = it && it.encaminhamento_id != null ? String(it.encaminhamento_id) : '';
-                    if (k && vistos.has(k)) continue;
-                    if (k) vistos.add(k);
-                    itens.push(it); novos++;
-                }
-                if (!novos || (Number.isFinite(r.total) ? itens.length >= r.total : lista.length < tam)) break;
-            }
-            return itens;
-        }
-        // Fila do médico por especialidade (mesma consulta do Rastreamento de Senhas).
-        async function lerFila(ocupacao, pedir) {
-            const itens = [], vistos = new Set();
-            for (let p = 1; p <= 5; p++) {
-                const r = await pedir(() => lerJson(`/prontuarios.json?sortable=%7B%7D&page=${p}&per_page=300&especialidade=%7B%7D&status=&ocupacoes_ids[]=${ocupacao}`));
-                const lista = exigirLista(r);
-                if (!lista.length) break;
-                let novos = 0;
-                for (const it of lista) {
-                    const k = limpo(it && it.atendimento_str);
-                    if (!k || vistos.has(k)) continue;
-                    vistos.add(k); itens.push(it); novos++;
-                }
-                // Há instalações que devolvem 10 por página e ignoram per_page: com 10 exatos, lê a próxima.
-                if (!novos || (lista.length < 300 && lista.length !== 10)) break;
-            }
-            return itens;
-        }
-        // Acolhimento: o sistema devolve ~10 por página e ignora per_page; pagina até a página vir curta.
-        async function lerAcolhimento(pedir) {
-            const itens = [], vistos = new Set();
-            const corte = agora() - 24 * 3600e3;
-            let tam = 0;
-            for (let p = 1; p <= 30; p++) {
-                const r = await pedir(() => lerJson(`/acolhimentos.json?page=${p}&per_page=100`));
-                const lista = exigirLista(r);
-                if (!lista.length) break;
-                if (p === 1) tam = lista.length;
-                let novos = 0;
-                for (const it of lista) {
-                    const k = limpo(it && it.atendimento_str);
-                    if (!k || vistos.has(k)) continue;
-                    vistos.add(k); novos++;
-                    const t = instanteFila(it);
-                    if (t && t < corte) continue;   // senha de mais de 24 h esquecida na lista
-                    itens.push(it);
-                }
-                if (!novos || lista.length < tam) break;
-            }
-            return itens;
-        }
-
-        let atual = null;          // { em, fontes: Map, pendentes, promessa }
-        let ouvinte = null;
-        const avisar = () => { try { if (ouvinte) ouvinte(); } catch (_) {} };
-
-        function carregar(forcar = false) {
-            if (atual && !forcar) {
-                if (atual.pendentes > 0) return atual.promessa;
-                if (agora() - atual.em < VALIDADE_MS) return Promise.resolve(atual);
-            }
-            const fontes = new Map();
-            const carga = { em: agora(), fontes, pendentes: 0, promessa: null };
-            const pedir = filaDePedidos(PARALELO);
-            const tarefa = (chave, info, fn) => {
-                fontes.set(chave, Object.assign({ ok: null, erro: '', itens: [] }, info));
-                carga.pendentes++;
-                return Promise.resolve().then(() => fn(pedir)).then(
-                    itens => { fontes.set(chave, Object.assign({}, info, { ok: true, erro: '', itens })); },
-                    e => {
-                        fontes.set(chave, Object.assign({}, info, { ok: false, erro: limpo(e && e.message || e) || 'erro', itens: [] }));
-                        try { console.warn('[Controle de Salas] Consulta: não foi possível consultar', info.falha, e && e.message || e); } catch (_) {}
-                    }
-                ).then(() => { carga.pendentes--; if (atual === carga) avisar(); });
-            };
-            const tarefas = [];
-            // Primeiro o que diz onde a pessoa está agora; o histórico das salas por último.
-            for (const s of SALAS) tarefas.push(tarefa(`ativos:${s.key}`, { tipo: 'sala', falha: s.nome, sala: s }, p => lerSala(s, '', p)));
-            tarefas.push(tarefa('acolhimento', { tipo: 'acolhimento', falha: 'Acolhimento' }, p => lerAcolhimento(p)));
-            for (const o of OCUPACOES_FILA) tarefas.push(tarefa(`fila:${o}`, { tipo: 'fila', falha: 'Fila médica', ocupacao: o }, p => lerFila(o, p)));
-            for (const s of SALAS) {
-                tarefas.push(tarefa(`finalizados:${s.key}`, { tipo: 'historico', falha: `Histórico de ${s.nome}`, sala: s, rotulo: 'finalizado' }, p => lerSala(s, '4', p)));
-                tarefas.push(tarefa(`cancelados:${s.key}`, { tipo: 'historico', falha: `Histórico de ${s.nome}`, sala: s, rotulo: 'cancelado' }, p => lerSala(s, '3', p)));
-            }
-            atual = carga;
-            carga.promessa = Promise.all(tarefas).then(() => carga);
-            avisar();
-            return carga.promessa;
-        }
-
-        // Falha vira só o nome do que não pôde ser consultado (o motivo técnico fica no console).
-        function situacaoCarga() {
-            if (!atual) return { em: 0, lendo: 0, total: 0, falhas: [], sessaoExpirada: false, completa: false };
-            const fontes = [...atual.fontes.values()];
-            const falhas = [];
-            for (const f of fontes) if (f.ok === false && !falhas.includes(f.falha)) falhas.push(f.falha);
-            return {
-                em: atual.em, lendo: fontes.filter(f => f.ok === null).length, total: fontes.length, falhas,
-                sessaoExpirada: fontes.some(f => f.ok === false && /sess/i.test(f.erro)),
-                completa: fontes.every(f => f.ok === true),
-            };
-        }
-
-        // ── busca ──
-        // "CL12", "cl 0012", "PF-3" = senha; só número = número da senha; o resto = nome (3+ letras).
-        function criterio(texto) {
-            const q = normalizar(texto);
-            const compacto = q.replace(/[\s-]/g, '');
-            if (!compacto) return null;
-            let m = compacto.match(/^([A-Z]{1,3})(\d{1,6})$/);
-            if (m) return { tipo: 'senha', prefixo: m[1], numero: +m[2] };
-            if (/^\d{1,6}$/.test(compacto)) return { tipo: 'numero', numero: +compacto };
-            if (compacto.length < 3) return null;
-            return { tipo: 'nome', palavras: q.split(' ').filter(Boolean) };
-        }
-        function casa(it, c) {
-            if (!c || !it) return false;
-            if (c.tipo === 'nome') {
-                const nome = normalizar(it.nome_municipe).split(' ');
-                return c.palavras.every(p => nome.some(w => w.startsWith(p)));
-            }
-            const m = normalizar(it.senha).replace(/[\s-]/g, '').match(/^([A-Z]*)(\d+)$/);
-            if (!m) return false;
-            return c.tipo === 'senha' ? (m[1] === c.prefixo && +m[2] === c.numero) : +m[2] === c.numero;
-        }
-
-        // Filas da própria sala, como o Controle de Salas separa: Medicação (Clínico/Pediatria/
-        // Emergência) e Exames (Clínico/Pediatria); nas outras salas, uma fila só.
-        function grupoSala(salaKey, it) {
-            const ped = /^P[DP]\d/i.test(limpo(it.senha));
-            if (salaKey === 'medicacao') return ped ? 'Pediatria' : normalizar(it.grau_risco) === 'VERMELHO' ? 'Emergência' : 'Clínico';
-            if (salaKey === 'exames') return ped ? 'Pediatria' : 'Clínico';
-            return '';
-        }
-        // Posição na sala: mesma ordem da lista do Controle de Salas (risco, depois chegada); conta
-        // quem chegou do mesmo dia do paciente em diante (a lista abre em "Hoje").
-        function frenteSala(lista, it, salaKey) {
-            if (it.status !== 'Em Espera') return null;
-            const gr = grupoSala(salaKey, it);
-            const t0 = chegadaSala(it);
-            const d0 = t0 ? new Date(t0) : null;
-            const inicioDia = d0 ? new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime() : 0;
-            const espera = N.ordenar(lista.filter(x => x && x.status === 'Em Espera' && grupoSala(salaKey, x) === gr
-                && (!inicioDia || !chegadaSala(x) || chegadaSala(x) >= inicioDia)));
-            const i = espera.indexOf(it);
-            return i >= 0 ? i : null;
-        }
-        function riscoFila(it) {
-            const r = normalizar(it.nome_grau_risco);
-            return RISCOS.has(r) ? r : (RISCO_POR_ID[String(it.grau_risco_id)] || '');
-        }
-        const retornoFila = it => /^RT/i.test(limpo(it.senha)) || it.prontuario_com_retorno === true || String(it.prontuario_com_retorno) === 'true';
-        // Posição na fila do médico: mesma ordem da Fila Médica (risco, depois senha mais antiga),
-        // separando retornos dos demais, como a Fila Médica mostra.
-        function frenteFila(lista, it) {
-            if (limpo(it.chamada_em)) return null;
-            const faixa = retornoFila(it);
-            const espera = lista.filter(x => x && !limpo(x.chamada_em) && retornoFila(x) === faixa)
-                .map((x, i) => ({ x, i, p: PESO_FILA[riscoFila(x)] != null ? PESO_FILA[riscoFila(x)] : 9, t: instanteFila(x) || Infinity }))
-                .sort((a, b) => (a.p - b.p) || (a.t - b.t) || (a.i - b.i)).map(o => o.x);
-            const i = espera.indexOf(it);
-            return i >= 0 ? i : null;
-        }
-        // Acolhimento: ordem em que o sistema devolve; conta quem ainda não foi chamado.
-        function frenteAcolhimento(lista, it) {
-            if (limpo(it.chamada_em)) return null;
-            let n = 0;
-            for (const x of lista) { if (x === it) return n; if (x && !limpo(x.chamada_em)) n++; }
-            return null;
-        }
-
-        // Cada linha: rótulo (etiqueta da situação), detalhe (linha principal do cartão) e resumo
-        // (quando aparece como linha extra). Textos de sistema, impessoais.
-        function linhasDoPaciente(p, t) {
-            const L = [];
-            const juntar = (...partes) => partes.filter(Boolean).join(' · ');
-            const posicao = n => n == null ? '' : `${n + 1}º na fila`;
-            const aguarda = ms => ms && t > ms ? `aguarda há ${duracao(t - ms)}` : '';
-            for (const s of p.salas) {
-                const nomeSala = s.grupo ? `${s.sala} (${s.grupo})` : s.sala;
-                if (s.status === 'Em Andamento') L.push({ peso: 0, tipo: 'andamento', rotulo: 'Em atendimento',
-                    detalhe: juntar(s.sala, s.chamadaEm && `chamado às ${hora(s.chamadaEm)}`), resumo: `${s.sala}: em atendimento`, t: s.chamadaEm || s.chegada });
-                else if (s.status === 'Em Espera' && s.chamadaEm) L.push({ peso: 1, tipo: 'chamado', rotulo: 'Chamado',
-                    detalhe: juntar(nomeSala, `chamado às ${hora(s.chamadaEm)}`), resumo: `${nomeSala}: chamado às ${hora(s.chamadaEm)}`, t: s.chamadaEm });
-                else if (s.status === 'Em Espera') L.push({ peso: 2, tipo: 'aguardando', rotulo: 'Aguardando',
-                    detalhe: juntar(nomeSala, posicao(s.frente), aguarda(s.chegada)), resumo: juntar(`${nomeSala}: aguardando`, posicao(s.frente)), t: s.chegada });
-                else if (s.status === 'Em Outra Sala') L.push({ peso: 4, tipo: 'outra', rotulo: 'Em outra sala',
-                    detalhe: `${nomeSala}: aguardando, em atendimento em outra sala`, resumo: `${nomeSala}: aguardando (em atendimento em outra sala)`, t: s.chegada });
-                else L.push({ peso: 5, tipo: 'outra', rotulo: s.status || 'Em andamento', detalhe: juntar(nomeSala, s.status), resumo: `${nomeSala}: ${s.status || ''}`.trim(), t: s.chegada });
-            }
-            if (p.acolhimento) {
-                const a = p.acolhimento;
-                L.push(a.chamadaEm
-                    ? { peso: 1, tipo: 'chamado', rotulo: 'Chamado', detalhe: juntar('Acolhimento', `chamado às ${hora(a.chamadaEm)}`), resumo: `Acolhimento: chamado às ${hora(a.chamadaEm)}`, t: a.chamadaEm }
-                    : { peso: 3, tipo: 'aguardando', rotulo: 'Aguardando', detalhe: juntar('Acolhimento', posicao(a.frente), aguarda(a.chegada)), resumo: juntar('Acolhimento: aguardando', posicao(a.frente)), t: a.chegada });
-            }
-            if (p.fila) {
-                const f = p.fila, esp = NOME_OCUPACAO[f.ocupacao] ? ` (${NOME_OCUPACAO[f.ocupacao]})` : '';
-                const onde = f.retorno ? `Retorno ao médico${esp}` : `Médico${esp}`;
-                L.push(f.chamadaEm
-                    ? { peso: 1, tipo: 'chamado', rotulo: 'Chamado', detalhe: juntar(onde, `chamado às ${hora(f.chamadaEm)}`), resumo: `${onde}: chamado às ${hora(f.chamadaEm)}`, t: f.chamadaEm }
-                    : { peso: 3, tipo: 'medico', rotulo: f.retorno ? 'Aguardando retorno' : 'Aguardando médico', detalhe: juntar(onde, posicao(f.frente), aguarda(f.chegada)), resumo: juntar(`${onde}: aguardando`, posicao(f.frente)), t: f.chegada });
-            }
-            const hist = p.historico.slice().sort((a, b) => b.chegada - a.chegada);
-            for (const h of hist) L.push({ peso: 9, tipo: 'historico', rotulo: '', detalhe: '', resumo: juntar(`${h.sala}: ${h.rotulo}`, h.chegada && `encaminhado às ${hora(h.chegada)}`), t: h.chegada });
-            L.sort((a, b) => (a.peso - b.peso) || ((b.t || 0) - (a.t || 0)));
-            if (!L.length || L[0].peso >= 9) L.unshift({ peso: 8, tipo: 'fora', rotulo: 'Fora das filas', detalhe: 'Não aguarda sala, acolhimento nem médico no momento', resumo: '', t: 0 });
-            return L;
-        }
-
-        function buscar(texto) {
-            const c = criterio(texto);
-            const carga = situacaoCarga();
-            if (!c || !atual) return { criterio: c, pacientes: [], carga };
-            const t = agora();
-            const porChave = new Map();
-            const paciente = it => {
-                const k = limpo(it.atendimento_str) || `?${normalizar(it.nome_municipe)}|${normalizar(it.senha)}`;
-                let p = porChave.get(k);
-                if (!p) { p = { chave: k, nome: '', senha: '', nascimento: '', risco: '', salas: [], historico: [], fila: null, acolhimento: null }; porChave.set(k, p); }
-                if (!p.nome) p.nome = limpo(it.nome_municipe);
-                if (!p.senha) p.senha = limpo(it.senha);
-                if (!p.nascimento) p.nascimento = limpo(it.data_nascimento_municipe);
-                return p;
-            };
-            for (const f of atual.fontes.values()) {
-                if (f.ok !== true) continue;
-                for (const it of f.itens) {
-                    if (!casa(it, c)) continue;
-                    const p = paciente(it);
-                    if (f.tipo === 'sala') {
-                        const r = normalizar(it.grau_risco);
-                        if (!p.risco && RISCOS.has(r)) p.risco = r;
-                        p.salas.push({ sala: f.sala.nome, key: f.sala.key, grupo: grupoSala(f.sala.key, it), status: limpo(it.status),
-                            chamadaEm: instanteTexto(it.chamada_em), chegada: chegadaSala(it), frente: frenteSala(f.itens, it, f.sala.key) });
-                    } else if (f.tipo === 'historico') {
-                        p.historico.push({ sala: f.sala.nome, key: f.sala.key, rotulo: f.rotulo, chegada: chegadaSala(it) });
-                    } else if (f.tipo === 'fila') {
-                        const r = riscoFila(it);
-                        if (!p.risco && r) p.risco = r;
-                        if (!p.fila) p.fila = { ocupacao: f.ocupacao, chamadaEm: instanteTexto(it.chamada_em), frente: frenteFila(f.itens, it), retorno: retornoFila(it), chegada: instanteFila(it) };
-                    } else if (f.tipo === 'acolhimento') {
-                        if (!p.acolhimento) p.acolhimento = { chamadaEm: instanteTexto(it.chamada_em), frente: frenteAcolhimento(f.itens, it), chegada: instanteFila(it) };
-                    }
-                }
-            }
-            const pacientes = [...porChave.values()].map(p => {
-                const linhas = linhasDoPaciente(p, t);
-                return Object.assign(p, { nomeExibido: nomeTitulo(p.nome), linhas, peso: linhas[0].peso, recente: Math.max(0, ...linhas.map(l => l.t || 0)) });
-            }).sort((a, b) => (a.peso - b.peso) || (b.recente - a.recente));
-            return { criterio: c, pacientes, carga };
-        }
-
-        return { carregar, buscar, criterio, situacaoCarga, hora, aoMudar: fn => { ouvinte = fn; }, VALIDADE_MS };
-    }
-
-    function instalarConsultaPaciente() {
-        if (window.__csConsulta) return;
-        async function lerJson(url) {
-            const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json, text/plain, */*', 'X-Requested-With': 'XMLHttpRequest' } });
-            const txt = await r.text();
-            if (/\/usuarios\/login/.test(r.url || '')) throw new Error('sessão expirada');
-            if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'sem permissão' : `HTTP ${r.status}`);
-            let dados;
-            try { dados = JSON.parse(txt); } catch (_) { throw new Error(/type=["']?password/i.test(txt) ? 'sessão expirada' : 'resposta inválida'); }
-            return { dados, total: parseInt(r.headers.get('total'), 10) };
-        }
-        // Relógio do servidor quando o do PC está errado (o mesmo desvio que a lista do Controle de Salas mede).
-        const agora = () => Date.now() + (Number(window.__controleSalasFila && window.__controleSalasFila.desvioRelogio) || 0);
-        const nucleo = criarConsultaPacienteNucleo({ lerJson, N, agora });
-        estilo(`
-            #cs-consulta { position:relative; max-width:720px; margin:8px 0 4px; font-size:13px; color:#2f3a44; }
-            #cs-consulta .cs-cp-faixa { display:flex; align-items:stretch; gap:8px; margin:0; padding:0; }
-            #cs-consulta .cs-cp-campo { position:relative; display:block; flex:1 1 auto; min-width:220px; height:34px; margin:0 !important; padding:0 !important; }
-            #cs-consulta .cs-cp-campo svg { position:absolute; left:10px; top:9.5px; width:15px; height:15px; margin:0; color:#7b8794; pointer-events:none; }
-            #cs-consulta .cs-cp-q { box-sizing:border-box !important; display:block; width:100%; height:34px !important; margin:0 !important; padding:6px 10px 6px 33px !important; border:1px solid #c7cfd8; border-radius:6px; background:#fff; color:#1f2a35; font-size:13px !important; line-height:20px !important; box-shadow:none; }
-            #cs-consulta .cs-cp-q::placeholder { color:#8a95a1; }
-            #cs-consulta .cs-cp-q:focus { outline:none; border-color:#2b6cb0; box-shadow:0 0 0 3px rgba(43,108,176,.15); }
-            #cs-consulta .cs-cp-q::-webkit-search-cancel-button { cursor:pointer; }
-            #cs-consulta .cs-cp-consultar { flex:0 0 auto; box-sizing:border-box !important; height:34px !important; margin:0 !important; padding:0 16px !important; border:1px solid #2b6cb0; border-radius:6px; background:#2b6cb0; color:#fff; font-size:13px !important; font-weight:600; line-height:32px !important; cursor:pointer; }
-            #cs-consulta .cs-cp-consultar:hover { background:#245a93; border-color:#245a93; }
-            #cs-consulta .cs-cp-painel { position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:1040; max-height:min(70vh, 560px); overflow:auto; border:1px solid #d5dce3; border-radius:8px; background:#fff; box-shadow:0 12px 32px rgba(16,24,40,.16); }
-            #cs-consulta .cs-cp-painel[hidden] { display:none !important; }
-            #cs-consulta .cs-cp-cab { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; border-bottom:1px solid #e3e8ed; background:#f7f9fb; font-size:12px; color:#5b6670; }
-            #cs-consulta .cs-cp-cab b { color:#2f3a44; font-size:12.5px; }
-            #cs-consulta .cs-cp-acoes { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
-            #cs-consulta .cs-cp-icone { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; border:0; border-radius:5px; background:transparent; color:#5b6670; cursor:pointer; }
-            #cs-consulta .cs-cp-icone:hover { background:#e7ecf1; color:#1f2a35; }
-            #cs-consulta .cs-cp-icone[disabled] { opacity:.45; cursor:default; background:transparent; }
-            #cs-consulta .cs-cp-icone svg { width:15px; height:15px; }
-            #cs-consulta .cs-cp-giro { display:inline-block; width:12px; height:12px; border:2px solid #cfd8e1; border-top-color:#2b6cb0; border-radius:50%; animation:cs-cp-giro .8s linear infinite; vertical-align:-2px; }
-            @keyframes cs-cp-giro { to { transform:rotate(360deg); } }
-            #cs-consulta .cs-cp-item { padding:10px 12px; border-bottom:1px solid #eef1f4; }
-            #cs-consulta .cs-cp-item:last-of-type { border-bottom:0; }
-            #cs-consulta .cs-cp-linha1 { display:flex; align-items:center; gap:8px; min-width:0; }
-            #cs-consulta .cs-cp-senha { flex:0 0 auto; padding:3px 6px; border-radius:4px; background:#eef2f6; color:#2f3a44; font:600 12px/1.2 Consolas, Menlo, monospace; letter-spacing:.3px; }
-            #cs-consulta .cs-cp-risco { flex:0 0 8px; width:8px; height:8px; border-radius:50%; }
-            #cs-consulta .cs-cp-nome { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; font-weight:700; color:#1f2a35; }
-            #cs-consulta .cs-cp-nasc { flex:0 0 auto; font-size:12px; color:#7b8794; }
-            #cs-consulta .cs-cp-chip { flex:0 0 auto; margin-left:auto; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:700; white-space:nowrap; background:#eef1f4; color:#5b6670; }
-            #cs-consulta .cs-cp-chip-andamento, #cs-consulta .cs-cp-chip-outra { background:#e6effa; color:#1c5aa6; }
-            #cs-consulta .cs-cp-chip-chamado { background:#efe9fd; color:#5b3cc4; }
-            #cs-consulta .cs-cp-chip-aguardando { background:#fdf0de; color:#8f4d00; }
-            #cs-consulta .cs-cp-chip-medico { background:#e2f3f5; color:#0b6672; }
-            #cs-consulta .cs-cp-detalhe { margin-top:4px; font-size:13px; color:#2f3a44; }
-            #cs-consulta .cs-cp-extra { margin:4px 0 0 !important; padding:0 !important; list-style:none; font-size:12px; line-height:1.45; color:#6b7785; }
-            #cs-consulta .cs-cp-extra li { margin:1px 0 0 !important; padding:0 !important; line-height:1.45 !important; }
-            #cs-consulta .cs-cp-extra li::before { content:'•'; margin-right:6px; color:#a7b1bb; }
-            #cs-consulta .cs-cp-msg { padding:16px 12px; text-align:center; color:#6b7785; }
-            #cs-consulta .cs-cp-rodape { padding:8px 12px; border-top:1px solid #eef1f4; font-size:12px; color:#6b7785; }
-        `);
-        const ICONE_LUPA = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4.5 4.5" stroke-linecap="round"/></svg>';
-        const ICONE_ATUALIZAR = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3" stroke-linecap="round"/><path d="M16 3.5V7h-3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        const ICONE_FECHAR = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke-linecap="round"/></svg>';
-        const raiz = document.createElement('div');
-        raiz.id = 'cs-consulta';
-        raiz.setAttribute('role', 'search');
-        raiz.innerHTML = `<div class="cs-cp-faixa"><div class="cs-cp-campo">${ICONE_LUPA}<input type="search" class="cs-cp-q" autocomplete="off" spellcheck="false" maxlength="60" placeholder="Consultar paciente por nome ou senha" aria-label="Consultar paciente por nome ou senha"></div><button type="button" class="cs-cp-consultar" data-cp="buscar">Consultar</button></div><div class="cs-cp-painel" hidden aria-live="polite"></div>`;
-        const q = raiz.querySelector('.cs-cp-q');
-        const painel = raiz.querySelector('.cs-cp-painel');
-        const CORES_RISCO = { VERMELHO: '#d32f2f', LARANJA: '#ef6c00', AMARELO: '#f9a825', VERDE: '#2e7d32', AZUL: '#1565c0' };
-        const NOME_RISCO = { VERMELHO: 'Vermelho', LARANJA: 'Laranja', AMARELO: 'Amarelo', VERDE: 'Verde', AZUL: 'Azul' };
-        const MAX_RESULTADOS = 8;
-        let termo = '', timer = 0;
-
-        function item(p) {
-            const [principal, ...resto] = p.linhas;
-            const cor = CORES_RISCO[p.risco];
-            const extras = resto.map(l => l.resumo).filter(Boolean);
-            return `<div class="cs-cp-item"><div class="cs-cp-linha1">`
-                + (p.senha ? `<span class="cs-cp-senha">${esc(p.senha)}</span>` : '')
-                + (cor ? `<span class="cs-cp-risco" style="background:${cor}" title="${esc(NOME_RISCO[p.risco])}"></span>` : '')
-                + `<span class="cs-cp-nome">${esc(p.nomeExibido || 'Paciente sem nome')}</span>`
-                + (p.nascimento ? `<span class="cs-cp-nasc">Nasc. ${esc(p.nascimento)}</span>` : '')
-                + `<span class="cs-cp-chip cs-cp-chip-${esc(principal.tipo)}">${esc(principal.rotulo)}</span></div>`
-                + (principal.detalhe ? `<div class="cs-cp-detalhe">${esc(principal.detalhe)}</div>` : '')
-                + (extras.length ? `<ul class="cs-cp-extra">${extras.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : '')
-                + '</div>';
-        }
-        function render() {
-            const texto = String(termo || '').replace(/\s+/g, ' ').trim();
-            if (!texto) { painel.hidden = true; painel.innerHTML = ''; return; }
-            const r = nucleo.buscar(texto);
-            const k = r.carga;
-            const n = r.pacientes.length;
-            const fechar = `<button type="button" class="cs-cp-icone" data-cp="fechar" title="Fechar" aria-label="Fechar">${ICONE_FECHAR}</button>`;
-            if (!r.criterio) {
-                painel.innerHTML = `<div class="cs-cp-cab"><span>Consulta de pacientes</span><span class="cs-cp-acoes">${fechar}</span></div><div class="cs-cp-msg">Digite ao menos 3 letras do nome ou a senha.</div>`;
-                painel.hidden = false;
-                return;
-            }
-            const titulo = n ? `<b>${n} ${n === 1 ? 'paciente encontrado' : 'pacientes encontrados'}</b>` : (k.lendo ? '<b>Consultando…</b>' : '<b>Nenhum paciente encontrado</b>');
-            const estado = k.lendo ? '<span class="cs-cp-giro" aria-hidden="true"></span>' : (k.em ? `Atualizado às ${esc(nucleo.hora(k.em))}` : '');
-            const atualizar = `<button type="button" class="cs-cp-icone" data-cp="atualizar" title="Atualizar" aria-label="Atualizar"${k.lendo ? ' disabled' : ''}>${ICONE_ATUALIZAR}</button>`;
-            const partes = [`<div class="cs-cp-cab"><span>${titulo}</span><span class="cs-cp-acoes"><span>${estado}</span>${atualizar}${fechar}</span></div>`];
-            if (!n && !k.lendo) partes.push(`<div class="cs-cp-msg">${k.completa ? 'Nenhum paciente encontrado com esse nome ou senha.' : 'Nenhum paciente encontrado nas filas consultadas.'}</div>`);
-            for (const p of r.pacientes.slice(0, MAX_RESULTADOS)) partes.push(item(p));
-            const rodape = [];
-            if (n > MAX_RESULTADOS) rodape.push(`Mostrando ${MAX_RESULTADOS} de ${n}. Para refinar, digite o nome completo ou a senha.`);
-            if (!k.lendo && k.sessaoExpirada) rodape.push('Sessão expirada. Entre novamente no sistema para consultar.');
-            else if (!k.lendo && k.falhas.length) rodape.push(`Não foi possível consultar: ${k.falhas.map(esc).join(', ')}.`);
-            if (rodape.length) partes.push(`<div class="cs-cp-rodape">${rodape.join('<br>')}</div>`);
-            painel.innerHTML = partes.join('');
-            painel.hidden = false;
-        }
-        function buscarAgora() {
-            clearTimeout(timer);
-            termo = q.value;
-            if (String(termo).trim() && nucleo.criterio(termo)) nucleo.carregar(false).catch(() => {});
-            render();
-        }
-        nucleo.aoMudar(() => { if (String(termo).trim() && !painel.hidden) render(); });   // não reabre o painel fechado
-        q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(buscarAgora, 350); });
-        q.addEventListener('focus', () => { if (String(q.value).trim() && painel.hidden) buscarAgora(); });
-        q.addEventListener('keydown', ev => {
-            ev.stopPropagation();
-            if (ev.key === 'Enter') { ev.preventDefault(); buscarAgora(); }
-            else if (ev.key === 'Escape') { ev.preventDefault(); q.value = ''; buscarAgora(); }
-        });
-        raiz.addEventListener('click', ev => {
-            const b = ev.target && ev.target.closest && ev.target.closest('[data-cp]');
-            if (!b) return;
-            ev.preventDefault();
-            const a = b.dataset.cp;
-            if (a === 'buscar') buscarAgora();
-            else if (a === 'atualizar') { nucleo.carregar(true).catch(() => {}); render(); }
-            else if (a === 'fechar') { q.value = ''; buscarAgora(); q.focus(); }
-        });
-        // Clique fora fecha o painel (o texto digitado fica; ao voltar ao campo, reabre).
-        document.addEventListener('mousedown', ev => {
-            if (!painel.hidden && !raiz.contains(ev.target)) { painel.hidden = true; }
-        }, true);
-        // Fica logo acima da barra do Controle de Salas; a barra chama de novo a cada atualização.
-        function posicionar(barra) {
-            const b = barra || document.getElementById('cs-barra');
-            if (!b || !b.parentNode) return;
-            if (raiz.parentNode !== b.parentNode || raiz.nextSibling !== b) b.parentNode.insertBefore(raiz, b);
-        }
-        window.__csConsulta = { posicionar, nucleo };
-        posicionar();
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -6750,43 +6173,22 @@
                 const r=el.getBoundingClientRect(); return r.width>0&&r.height>0;
             } catch(_){ return true; }
         }
-        // v3.1.11: o guichê do sistema (componente selecao-guiche) tem a raiz ".guiche-container".
-        // Antes, cada consulta percorria TODOS os elementos da página, 3 a 4 vezes por segundo
-        // (monitores de 500 ms e 650 ms), o que travava listas grandes. Agora olha só essas raízes;
-        // a varredura completa fica de reserva, no máximo 1 vez a cada 10 s, se a busca curta falhar.
-        // Se a reserva achar o guichê fora de ".guiche-container" (o site mudou a estrutura), o elemento
-        // fica lembrado e as consultas seguintes voltam a encontrá-lo na hora.
-        function autoSalaVMs(completa) {
+        function autoSalaVMs() {
             const out=[], vistos=new Set();
-            const juntar=el=>{
-                let vm=el&&el.__vue__;
+            document.querySelectorAll('*').forEach(el=>{
+                let vm=el.__vue__;
                 while(vm&&!vistos.has(vm)){vistos.add(vm);out.push(vm);vm=vm.$parent;}
-            };
-            document.querySelectorAll(completa ? '*' : '.guiche-container').forEach(juntar);
-            if(!completa&&autoSalaAchar.lembrados){
-                for(const el of [...autoSalaAchar.lembrados]){
-                    if(el.isConnected) juntar(el); else autoSalaAchar.lembrados.delete(el);
-                }
-            }
+            });
             return out;
-        }
-        function autoSalaAchar(criterio) {
-            let vm=autoSalaVMs(false).find(criterio)||null;
-            if(!vm&&Date.now()-(autoSalaAchar.completaEm||0)>10000){
-                autoSalaAchar.completaEm=Date.now();
-                vm=autoSalaVMs(true).find(criterio)||null;
-                if(vm&&vm.$el)(autoSalaAchar.lembrados=autoSalaAchar.lembrados||new Set()).add(vm.$el);
-            }
-            return vm;
         }
         function guicheMedicacaoAtual() {
             const tipo='controle_de_salas_medicacao';
-            return autoSalaAchar(vm=>
+            return autoSalaVMs().find(vm=>
                 vm?.tipoParametrizacao===tipo &&
                 typeof vm?.redirectFilaAtendimento==='function' &&
                 typeof vm?.getCategoriaAtendimento==='function' &&
                 autoSalaVisivel(vm?.$el)
-            );
+            ) || null;
         }
         // Recarregar a lista de locais (getCategoriaAtendimento) pode repetir salas no
         // seletor do sistema ("SALA DE MEDICAÇÃO" duas vezes). Tira os repetidos no lugar.
@@ -6941,7 +6343,7 @@
             const chave=(g,t)=>`om30_controle_salas_local_${t}_${String(g?.categoriaId||'sem_categoria')}`;
             const locais=g=>(dedupLocaisGuiche(g),Array.isArray(g?.locaisAtendimento)?g.locaisAtendimento:[]).filter((x,i,a)=>x?.id&&a.findIndex(y=>String(y?.id)===String(x.id))===i);
             const storeLocal=(g,t)=>{try{return g?.$store?.getters?.localAtendimentoAtual?.[t]||{};}catch(_){return {};}};
-            const achar=t=>autoSalaAchar(vm=>vm?.tipoParametrizacao===t&&typeof vm?.redirectFilaAtendimento==='function'&&typeof vm?.getCategoriaAtendimento==='function'&&autoSalaVisivel(vm?.$el));
+            const achar=t=>autoSalaVMs().find(vm=>vm?.tipoParametrizacao===t&&typeof vm?.redirectFilaAtendimento==='function'&&typeof vm?.getCategoriaAtendimento==='function'&&autoSalaVisivel(vm?.$el))||null;
             const lerPref=(g,t)=>{try{return JSON.parse(localStorage.getItem(chave(g,t))||'null');}catch(_){return null;}};
             const salvarPref=(g,t,l)=>{if(!l?.id)return;try{localStorage.setItem(chave(g,t),JSON.stringify({id:String(l.id),nome:String(l.nome||''),em:Date.now()}));}catch(_){}};
             const atualValido=(g,t)=>{if(g?.localSelecionado!==true)return null;const id=String(storeLocal(g,t)?.id||'');return locais(g).find(x=>String(x.id)===id)||null;};
@@ -7223,7 +6625,7 @@
         }
         function guicheDaSala(setor){
             const tipo=TIPO_SALA[setor&&setor.key]; if(!tipo) return null;
-            const g=autoSalaAchar(vm=>vm?.tipoParametrizacao===tipo&&typeof vm?.redirectFilaAtendimento==='function'&&autoSalaVisivel(vm?.$el));
+            const g=autoSalaVMs().find(vm=>vm?.tipoParametrizacao===tipo&&typeof vm?.redirectFilaAtendimento==='function'&&autoSalaVisivel(vm?.$el));
             if(!g) return null;
             let local=null; try{ local=g.$store.getters.localAtendimentoAtual[tipo]||null; }catch(_){}
             return { tipo, local: local&&local.id ? local : null, cat: g.categoriaId || null };
@@ -8827,23 +8229,13 @@
             }
             return '';
         }
-        // v3.1.11: o sistema, ao encaminhar, sempre marca a fila de destino com o paciente NÃO chamado
-        // (atualizarFilaSenhaControleSalas, função do próprio Saúde Simples: update_filas_senha com chamada_em
-        // vazio). O Cancelar da lista só devolvia a senha: quem voltava para o médico chegava marcado como
-        // "já chamado" (pela chamada da sala) e a Fila Médica mostrava "Chamado por" sem ninguém ter chamado.
-        async function atualizarFilaDestino(atendimentoStr, codigo) {
-            const m = String(atendimentoStr || '').match(/^(\w+)#(\d+)$/);
-            if (!m || !codigo || typeof window.atualizarFilaSenhaControleSalas !== 'function') return;
-            try { await window.atualizarFilaSenhaControleSalas(codigo, +m[2], m[1]); } catch (_) {}   // a função do sistema já ignora falha
-        }
         async function encaminharSenhaAposCancelar(textoResposta, it, salaAtual) {
             if (!it || !String(it.senha || '').replace(/[—-]/g, '').trim()) return;
             let destino = '';
             try {
                 destino = await destinoDaSenha(textoResposta, it.atendimento_str, salaAtual);
                 if (!destino) return;
-                try { await recuperarSenhaNaFila(it.atendimento_str, destino); }
-                finally { await atualizarFilaDestino(it.atendimento_str, destino); }   // mesmo se a senha não for: como o sistema sem senha
+                await recuperarSenhaNaFila(it.atendimento_str, destino);
                 aviso(`Senha ${it.senha} → ${NOMES_FILA[destino] || destino}`);
             } catch (e) {
                 console.warn('[Controle de Salas] senha não encaminhada após cancelar', destino, e);
@@ -8980,7 +8372,7 @@
                 } catch (_) { return agora; }
             })();
             const inicioCarga = performance.now();
-            let cond, minimo, filtroDataSistema, manterAtivos = false;
+            let cond, minimo, filtroDataSistema;
             const condBase = Object.assign({}, vm.conditions || {});
             delete condBase.dataInicial;
             delete condBase.dataFinal;
@@ -8992,7 +8384,7 @@
                 minimo = null;
                 filtroDataSistema = false;
             } else {
-                ({ cond, minimo, filtroDataSistema, manterAtivos } = N.aplicarPeriodo(condBase, cfg.periodo, agoraParede));
+                ({ cond, minimo, filtroDataSistema } = N.aplicarPeriodo(condBase, cfg.periodo, agoraParede));
             }
             gravarJSON(CHAVE_ULTIMA_LISTA, vm.url);
 
@@ -9090,7 +8482,7 @@
                 CS.truncado = todos.length < CS.totalPeriodo;
                 const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it) && filaSalaEx(it));
                 const ativos = comEmMed ? ativosBase.filter(filaEmMed) : ativosBase;
-                const filtrados = N.filtrar(ativos, { minimo, soEspera: false, manterAtivos: !historico && manterAtivos });
+                const filtrados = N.filtrar(ativos, { minimo, soEspera: false });
                 const lista = historico ? N.ordenarHistorico(filtrados) : N.ordenar(filtrados);
                 const classes = historico ? N.classesHistorico(lista) : N.classesLinhas(lista);
                 lista.forEach((it, i) => {
@@ -9539,7 +8931,6 @@
             if (CS.colecao && CS.colecao.$el && barra.nextSibling !== CS.colecao.$el && CS.colecao.$el.parentNode) {
                 CS.colecao.$el.parentNode.insertBefore(barra, CS.colecao.$el);
             }
-            try { if (window.__csConsulta) window.__csConsulta.posicionar(barra); } catch (_) {}
             const cfg = lerConfig();
             const bt = (dado, rotulo, ativo) => `<button type="button" data-cs="${dado}" class="${ativo ? 'cs-ativo' : ''}">${rotulo}</button>`;
             const periodos = bt('periodo:hoje','Hoje',cfg.periodo==='hoje') + bt('periodo:24h','24 horas',cfg.periodo==='24h') + bt('periodo:datas','Data...',cfg.periodo==='datas') + (cfg.periodo==='datas' ? bt('periodo:limpar','Limpar data',false) : '');
@@ -9944,13 +9335,10 @@
 
   const API = 'https://faturamentops.pages.dev';
   const VERSAO = '2.0.0';
-  // v3.1.17: ciclo de 10 min (antes 3). Cada PC com a lista aberta mandava a cada 3 min e o servidor
-  // relia a unidade inteira a cada envio (11,9 mi de linhas/dia no D1). Nada deixa de ser enviado:
-  // hoje e ontem continuam sendo relidos todo ciclo, e o lote por ciclo subiu para não formar fila.
-  const CICLO_MS = 10 * 60000, POR_CICLO = 40, MAX_ITENS = 30, MAX_LIDOS = 40;
-  const REVER_MS = 45 * 60000, REVER_POR_CICLO = 10;
+  const CICLO_MS = 3 * 60000, POR_CICLO = 15, MAX_ITENS = 30, MAX_LIDOS = 40;
+  const REVER_MS = 45 * 60000, REVER_POR_CICLO = 5;
   const STORE = 'om30:raiox-fat:v1:enviados', STORE_REV = 'om30:fat-salas:v1:revistos', STORE_FICHA = 'om30:fat-salas:v1:com-ficha';
-  const FICHA_POR_CICLO = 20; // reenvio dos pedidos mandados antes de existir o número da ficha
+  const FICHA_POR_CICLO = 10; // reenvio dos pedidos mandados antes de existir o número da ficha
   const GUARDA_MS = 4 * 86400000;
   const SALAS = [
     { sala: 'raio_x', endpoint: '/encaminhamentos_radiografias' },
@@ -10656,286 +10044,3 @@
   };
 })();
 // ===== FIM OM30 GUIA SADT (EXAMES) =====
-
-// ===== OM30 SENHA POR ABA (bloco igual na Fila Médica, Ausentes e Controle de Salas; roda uma vez por página) ===== v2
-// O Saúde Simples guarda a "senha chamada" no localStorage, que é o MESMO para todas as abas, e cada página
-// lê esse valor UMA vez, ao abrir. Se outra aba chama outro paciente (ou abre uma tela de fila, que zera a
-// senha) entre o "salvar" e o encaminhamento, a página do 1º paciente nasce com a senha errada ou sem senha.
-// Aqui cada aba guarda a SUA senha (sessionStorage: é por aba e é copiado para a aba nova) e só a devolve
-// quando a página prova de qual atendimento é, SÓ por dados da própria página (URL, campos escondidos, o
-// componente nativo limpar-senha-invalida) ou pelo vínculo prontuário -> atendimento que a aba aprendeu na
-// consulta. Em qualquer outra página nada muda: vale o comportamento normal do sistema.
-(() => {
-  'use strict';
-  // R0: travas. A nova não depende da antiga; se a antiga já entrou, a nova entra mesmo assim (e não duplica o clique).
-  if (window.__OM30_SENHA_POR_ABA_V2__) return;
-  window.__OM30_SENHA_POR_ABA_V2__ = true;
-  const antigoJaInstalado = window.__OM30_SENHA_POR_ABA__ === true;
-  window.__OM30_SENHA_POR_ABA__ = true;   // a antiga que carregar DEPOIS não se instala
-
-  // Se true, a página do atendimento da aba retira a senha de OUTRO atendimento (evita encaminhar o paciente errado).
-  const LIMPAR_SENHA_DE_OUTRO_ATENDIMENTO = true;
-  const CHAVE = 'om30-senha-desta-aba-v2', CHAVE_ANTIGA = 'om30-senha-desta-aba';
-  const CHAVE_VINCULOS = 'om30-senha-aba-vinculos-v2', MARCA_MIGRACAO = 'om30-senha-desta-aba-v2-migrada';
-  // "Limpar" só no fluxo auditado do PA: em outros tipos (ex.: Atenção Básica) o mesmo paciente pode aparecer por outra entidade.
-  const TIPO_COM_LIMPEZA = 'AtendimentoPa';
-  const VALIDADE_MS = 12 * 3600e3, MAX_VINCULOS = 8;
-  const ID_OK = /^\d{1,14}$/, TIPO_OK = /^[A-Z][A-Za-z]{2,40}$/;   // formato aceito de id e de tipo de atendimento
-
-  // ---- R1: memória da senha desta aba (sessionStorage pode lançar: tudo em try/catch) ----
-  const valido = o => !!(o && o.s && o.s.id && Date.now() - (o.em || 0) < VALIDADE_MS);   // vence em 12 h
-  const lerChave = chave => {
-    try {
-      const o = JSON.parse(sessionStorage.getItem(chave) || 'null');
-      return valido(o) ? o : null;
-    } catch (_) { return null; }
-  };
-  const ler = () => { const o = lerChave(CHAVE); return o ? o.s : null; };
-  const gravar = s => {
-    try {
-      if (s && s.id) sessionStorage.setItem(CHAVE, JSON.stringify({ s, em: Date.now() }));
-      else sessionStorage.removeItem(CHAVE);
-    } catch (_) {}
-  };
-  // Migração UMA vez por aba (a marca vai junto para a aba filha): quem já tinha a memória do bloco antigo não a perde.
-  // A marca é gravada na 1ª tentativa, com ou sem valor antigo; sem ela, a senha que o bloco esqueceu (v2 removida)
-  // ressuscitaria da chave antiga, que fica intacta porque outros scripts a leem.
-  try {
-    if (sessionStorage.getItem(MARCA_MIGRACAO) == null) {
-      sessionStorage.setItem(MARCA_MIGRACAO, '1');
-      if (sessionStorage.getItem(CHAVE) == null) {
-        const ant = lerChave(CHAVE_ANTIGA);
-        if (ant) sessionStorage.setItem(CHAVE, JSON.stringify({ s: ant.s, em: ant.em }));
-      }
-    }
-  } catch (_) {}
-
-  // ---- R2: vínculos prontuário -> atendimento (a página de encaminhamento só traz o nº do prontuário) ----
-  const lerVinculos = () => {
-    try {
-      const l = JSON.parse(sessionStorage.getItem(CHAVE_VINCULOS) || '[]');
-      return Array.isArray(l)
-        ? l.filter(v => v && ID_OK.test(String(v.p)) && ID_OK.test(String(v.id)) && TIPO_OK.test(String(v.tipo)) && Date.now() - (v.em || 0) < VALIDADE_MS)
-        : [];
-    } catch (_) { return []; }
-  };
-  const gravarVinculo = (p, ident) => {
-    try {
-      const lista = lerVinculos().filter(v => String(v.p) !== p);   // um vínculo por prontuário (o mais novo vale)
-      lista.push({ p, id: ident.id, tipo: ident.tipo, em: Date.now() });
-      lista.sort((a, b) => a.em - b.em);                            // descarta os mais velhos
-      sessionStorage.setItem(CHAVE_VINCULOS, JSON.stringify(lista.slice(-MAX_VINCULOS)));
-    } catch (_) {}
-  };
-
-  // ---- R3: de qual atendimento é ESTA página? Só por fontes da própria página, nunca por "qualquer número" ----
-  const num = v => { const t = String(v == null ? '' : v).trim(); return ID_OK.test(t) ? String(parseInt(t, 10)) : null; };
-  // Nº do prontuário que a página mostra (consulta/edição) ou que o encaminhamento recebe.
-  function numeroProntuario(cedo) {
-    const m = /^\/prontuarios\/(\d+)(\/edit)?\/?$/.exec(location.pathname);
-    if (m) return num(m[1]);
-    if (String(location.pathname).indexOf('/encaminhamentos_controle_salas') === 0) {
-      const p = num(new URLSearchParams(location.search).get('prontuario_id'));
-      if (p) return p;
-      if (!cedo) {
-        const c = Array.from(document.querySelectorAll('input')).find(i => i.name === 'encaminhamento_controle_salas[prontuario_id]');
-        if (c) return num(c.value);
-      }
-    }
-    return null;
-  }
-  let identCache = null;   // identidade vinda de fonte própria não muda na vida da página; null NUNCA é guardado (a página pode estar carregando)
-  // cedo=true (document-start): o DOM ainda não existe, olha só URL e vínculo e não guarda cache.
-  function identidadeDaPagina(cedo) {
-    if (identCache) return identCache;
-    const achadas = [];
-    let semDevolver = false;
-    const somar = (id, tipo) => {
-      const i = num(id), t = String(tipo == null ? '' : tipo).trim();
-      if (i && TIPO_OK.test(t)) achadas.push({ id: i, tipo: t });
-    };
-    try {
-      // (a) parâmetros da URL
-      const q = new URLSearchParams(location.search);
-      for (const pre of ['prontuariavel', 'acolhivel', 'atendimento']) somar(q.get(pre + '_id'), q.get(pre + '_type'));
-      if (!cedo) {
-        // (b) campos escondidos da ficha: id e tipo precisam ter o MESMO prefixo de nome
-        const campos = Array.from(document.querySelectorAll('input')).map(i => [String(i.name || ''), i.value]);
-        const valor = nome => { const c = campos.find(x => x[0] === nome); return c ? c[1] : null; };
-        for (const [nome, v] of campos) {
-          for (const campo of ['prontuariavel', 'acolhivel']) {
-            const fim = '[' + campo + '_id]';
-            if (nome.length > fim.length && nome.endsWith(fim)) somar(v, valor(nome.slice(0, -fim.length) + '[' + campo + '_type]'));
-          }
-        }
-        // (c) tag bruta do componente nativo (antes de o Vue montar)
-        for (const t of Array.from(document.querySelectorAll('limpar-senha-invalida'))) {
-          somar(t.getAttribute('atendimento-id'), t.getAttribute('atendimento-type'));
-          const p1 = t.getAttribute('pular-validacao'), p2 = t.getAttribute(':pular-validacao');
-          if ((p1 !== null && p1 !== 'false') || (p2 !== null && p2 !== 'false')) semDevolver = true;   // a página manda limpar de propósito
-        }
-        // (d) componente já montado (depois do Vue): percorre a árvore em largura, com teto de nós
-        const raiz = document.querySelector('#app-vue')?.__vue__;
-        if (raiz) {
-          const fila = [raiz];
-          for (let k = 0; k < fila.length && k < 4000; k++) {
-            const vm = fila[k], o = vm.$options || {};
-            if (o.name === 'limpar-senha-invalida' || o._componentTag === 'limpar-senha-invalida') {
-              somar(vm.atendimentoId, vm.atendimentoType);
-              if (vm.pularValidacao) semDevolver = true;
-            }
-            for (const c of (vm.$children || [])) fila.push(c);
-          }
-        }
-      }
-    } catch (_) { return null; }
-    const chaves = new Set(achadas.map(a => a.id + '|' + a.tipo));
-    if (chaves.size > 1) return null;   // fontes próprias discordam: ambíguo, não faz nada
-    const p = numeroProntuario(cedo);
-    if (chaves.size === 1) {
-      const ident = { id: achadas[0].id, tipo: achadas[0].tipo, semDevolver };
-      if (p && !semDevolver) gravarVinculo(p, ident);   // aprende N -> atendimento para a página de encaminhamento
-      if (!cedo) identCache = ident;
-      return ident;
-    }
-    if (!p) return null;
-    const v = lerVinculos().filter(x => String(x.p) === p).pop();
-    return v ? { id: String(v.id), tipo: v.tipo, semDevolver: false } : null;
-  }
-
-  // ---- R4: decisões puras (sem efeito colateral, testáveis) ----
-  // A senha é do atendimento da página: compara o NÚMERO do atendimento e o tipo.
-  const pertence = (s, ident) => !!(s && s.id != null && s.id !== '' && ident &&
-    parseInt(s.saude_atendimento_id) === parseInt(ident.id) && String(s.saude_atendimento_type || '') === ident.tipo);
-  // Senha de OUTRO atendimento (senha de recepção, sem atendimento, nunca é "alheia").
-  const alheia = (s, ident) => !!(s && s.id && s.saude_atendimento_id != null && s.saude_atendimento_type && !pertence(s, ident));
-  function decidir(atual, minha, ident) {
-    if (!ident) return 'nada';
-    const a = pertence(atual, ident), m = pertence(minha, ident);
-    if (a && m) {
-      if (String(atual.id) === String(minha.id)) return 'nada';
-      const ta = Date.parse(atual.created_at), tm = Date.parse(minha.created_at);
-      // a senha mais NOVA do mesmo atendimento (encaminhada) vence; só a datada e maior troca a do sistema
-      return !isNaN(ta) && !isNaN(tm) && tm > ta ? 'devolver' : 'adotar';
-    }
-    if (a) return 'adotar';
-    if (m) return 'devolver';
-    // limpar exige que a página E a senha alheia sejam do PA; nos demais casos de senha alheia, não mexe
-    return alheia(atual, ident) && ident.tipo === TIPO_COM_LIMPEZA && String(atual.saude_atendimento_type) === TIPO_COM_LIMPEZA ? 'limpar' : 'nada';
-  }
-  // Só para teste (simulador); sem efeito em produção.
-  try { if (window.__OM30_SENHA_ABA_TESTE__) window.__OM30_SENHA_ABA_TESTE__({ decidir, pertence, alheia, identidadeDaPagina }); } catch (_) {}
-
-  const pegarStore = () => {
-    try { if (typeof store !== 'undefined' && store && typeof store.dispatch === 'function') return store; } catch (_) {}   // eslint-disable-line no-undef
-    try { return document.querySelector('#app-vue')?.__vue__?.$store || null; } catch (_) { return null; }
-  };
-  let instalado = false, despachoOriginal = null;
-
-  // ---- R5: reconciliar (idempotente, nunca lança) ----
-  function reconciliar() {
-    try {
-      const st = pegarStore();
-      if (!st || !st.getters) return;
-      const ident = identidadeDaPagina();
-      if (!ident || ident.semDevolver) return;
-      const minha = ler();
-      const acao = decidir(st.getters.senhaChamada, minha, ident);
-      // O dispatch ORIGINAL evita que o nosso embrulho se enrede (e não regrava a memória sem necessidade).
-      const despachar = despachoOriginal || st.dispatch;
-      if (acao === 'adotar') gravar(st.getters.senhaChamada);
-      else if (acao === 'devolver') {
-        despachar.call(st, 'defineSenhaChamada', minha);
-        console.info('[OM30] senha desta aba mantida:', minha.id);
-      } else if (acao === 'limpar' && LIMPAR_SENHA_DE_OUTRO_ATENDIMENTO) {
-        despachar.call(st, 'limpaSenhaChamada');
-        console.info('[OM30] senha de outro atendimento retirada desta página');
-      }
-    } catch (_) {}
-  }
-
-  // ---- R6 e R7(ii): embrulho do store.dispatch (uma vez), espera do store se ele ainda não existe ----
-  function instalar() {
-    if (instalado) return true;
-    const st = pegarStore();
-    if (!st || !st.getters) return false;
-    instalado = true;
-    despachoOriginal = st.dispatch;
-    if (!despachoOriginal.__om30SenhaAbaV2) {
-      const embrulho = function (tipo, carga) {
-        const nome = tipo && typeof tipo === 'object' ? tipo.type : tipo;
-        const dado = tipo && typeof tipo === 'object' ? tipo.payload : carga;
-        try {
-          if (nome === 'defineSenhaChamada') gravar(dado);
-          else if (nome === 'limpaSenhaChamada') {
-            // Só esquece se o sistema está limpando a senha DESTA aba; limpar a de outro paciente não apaga a memória.
-            const minha = ler(), atual = st.getters.senhaChamada;
-            if (minha && atual && atual.id != null && String(atual.id) === String(minha.id)) gravar(null);
-          } else if (nome === 'defineRedirecionamentoAtendimento') reconciliar();   // 1º passo do encaminhamento: senha certa ANTES de ser lida
-        } catch (_) {}
-        const r = despachoOriginal.apply(this, arguments);
-        if (nome === 'limpaSenhaChamada') reconciliar();   // limpou a senha alheia na página da aba: a da aba volta na hora
-        return r;
-      };
-      embrulho.__om30SenhaAbaV2 = true;
-      st.dispatch = embrulho;
-    }
-    reconciliar();
-    setTimeout(reconciliar, 1500);   // rede de segurança: dados que chegaram depois da montagem
-    return true;
-  }
-
-  // ---- R7: momentos ----
-  // (i) document-start: a ficha já nasce com a senha dela (o store lê o localStorage uma vez, ao ser criado).
-  if (document.readyState === 'loading') {
-    try {
-      const ident = identidadeDaPagina(true);
-      if (ident && !ident.semDevolver) {
-        let atual = null;
-        try { atual = JSON.parse(localStorage.getItem('senha')); } catch (_) { atual = null; }
-        const minha = ler(), acao = decidir(atual, minha, ident);
-        if (acao === 'devolver') localStorage.setItem('senha', JSON.stringify(minha));
-        else if (acao === 'adotar') gravar(atual);
-      }
-    } catch (_) {}
-    // Roda ANTES da montagem do Vue (o ouvinte do sistema é registrado depois): o limpar-senha-invalida já vê a senha certa.
-    document.addEventListener('DOMContentLoaded', () => { instalar(); reconciliar(); });
-  }
-  if (!instalar()) {
-    let n = 0;
-    const t = setInterval(() => { if (instalar() || ++n > 240) clearInterval(t); }, 250);
-  }
-  window.addEventListener('load', reconciliar);
-  window.addEventListener('pageshow', e => { if (e.persisted) reconciliar(); });   // volta pelo botão "voltar" (cache de página)
-
-  // R8: ouvinte do "Chamar" copiado SEM mudar a lógica; só se o bloco antigo ainda não registrou o dele.
-  if (!antigoJaInstalado) {
-    // Consultório/guichê: cada aba lê o local escolhido só quando abre. Aba aberta antes da troca
-    // chamava pelo consultório antigo (ex.: "Chamado por ... Consultório 1" com o médico no 4).
-    // Só no clique em "Chamar" (chamada NOVA) a aba passa a usar o último local escolhido neste
-    // navegador; nunca durante um atendimento (o sistema conclui a senha pelo local da aba).
-    // "Chamar novamente" fica de fora (repete no mesmo consultório) e local vazio ("Sair do local")
-    // não é copiado.
-    document.addEventListener('click', ev => {
-      const b = ev.target && ev.target.closest && ev.target.closest('button, a');
-      if (!b) return;
-      const rot = `${b.textContent || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('aria-label') || ''}`.replace(/\s+/g, ' ').trim();
-      if (!/^chamar\b/i.test(rot) || /novamente/i.test(rot)) return;
-      const st = pegarStore();
-      if (!st || !st.getters || typeof st.commit !== 'function') return;
-      let salvo = null;
-      try { salvo = JSON.parse(localStorage.getItem('localAtendimentoAtual') || 'null'); } catch (_) { salvo = null; }
-      if (!salvo || typeof salvo !== 'object') return;
-      const atual = st.getters.localAtendimentoAtual || {};
-      const novo = Object.assign({}, atual);
-      let mudou = false;
-      for (const [k, v] of Object.entries(salvo)) {
-        if (!v || v.id == null) continue;
-        if (String((atual[k] || {}).id ?? '') !== String(v.id)) { novo[k] = v; mudou = true; }
-      }
-      if (!mudou) return;
-      try { st.commit('GET_LOCAL_ATENDIMENTO_ATUAL', novo); console.info('[OM30] chamada pelo último local escolhido neste navegador'); } catch (_) {}
-    }, true);
-  }
-})();
-// ===== FIM OM30 SENHA POR ABA =====

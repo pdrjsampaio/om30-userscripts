@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.18
+// @version      3.1.20
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -33,6 +33,8 @@
     }
 
     /* OM30 - CONTROLE DE SALAS v3.1.14
+     * v3.1.20: sala Raio-X mostra a observação do médico (linha "OBS. RAIO-X (...)" da Conduta, gravada pelo Procedimentos PA 2.4.8) na lista e, ao abrir o paciente, no topo da tela e em "Anotações da Enfermagem" quando vazio.
+     * v3.1.19: sala Procedimentos de Enfermagem (sutura) com o filtro "Pediatria" (senhas PD/PP), igual à Medicação e aos Exames: Mostrar Clínico | Pediatria | Histórico; local com "Pediatria" no nome abre em Pediatria.
      * v3.1.16: retirada a baixa automática da medicação da 3.1.15 (ela é do script Baixa Rápida). Código igual ao da 3.1.14.
      * v3.1.14: Consulta de pacientes: lupa e botão Consultar alinhados com a caixa de pesquisa (a página aplicava margem e altura próprias nos campos).
      * v3.1.13: Consulta de pacientes com visual novo: campo "Consultar paciente por nome ou senha" com botão Consultar, resultado num painel logo abaixo do campo (fecha com Esc ou clicando fora), situação em etiqueta (Em atendimento, Chamado, Aguardando, Aguardando médico) e posição na fila. Textos de sistema, sem códigos técnicos.
@@ -5077,7 +5079,7 @@
         function grupoSala(salaKey, it) {
             const ped = /^P[DP]\d/i.test(limpo(it.senha));
             if (salaKey === 'medicacao') return ped ? 'Pediatria' : normalizar(it.grau_risco) === 'VERMELHO' ? 'Emergência' : 'Clínico';
-            if (salaKey === 'exames') return ped ? 'Pediatria' : 'Clínico';
+            if (salaKey === 'exames' || salaKey === 'enfermagem') return ped ? 'Pediatria' : 'Clínico';   // v3.1.19: Enfermagem (sutura)
             return '';
         }
         // Posição na sala: mesma ordem da lista do Controle de Salas (risco, depois chegada); conta
@@ -6714,7 +6716,8 @@
 
         function ehMedicacao(vm) { return /\/aplicacoes_medicamentos/.test(vm.url || ''); }
         // Salas com o filtro "Pediatria" (senhas PD e PP). var: a barra pode ser montada antes desta linha.
-        var SALAS_PEDIATRIA = new Set(['medicacao', 'exames']);
+        // v3.1.19: também Procedimentos de Enfermagem (sala de sutura).
+        var SALAS_PEDIATRIA = new Set(['medicacao', 'exames', 'enfermagem']);
         // Salas com a fila "Emergência" (senhas EM), separada do Clínico.
         var SALAS_EMERGENCIA = new Set(['medicacao']);
 
@@ -7114,12 +7117,33 @@
             }, 700);
         }
 
+        // v3.1.20: observação do médico para o Raio-X (lida da Conduta junto com os sinais vitais).
+        const OBS_RX_GRAVADA = new Map();
+        function obsRaioXDoItem(it) {
+            const pa = atendimentoPa(it);
+            const enc = idEncaminhamento(it && it.encaminhamento_id);
+            const raw = ((pa && ALERG.cache.get(pa)) || (enc && ALERG.porEncDados.get(enc)) || {})._v280;
+            return Array.isArray(raw && raw.obsRaioX) ? raw.obsRaioX : [];
+        }
+        function htmlObsRaioX(it, setor, id) {
+            if (!setor || setor.key !== 'raio_x') return '';
+            const obs = obsRaioXDoItem(it);
+            if (!obs.length) return '';
+            // A tela de edição deste Raio-X (aberta neste navegador) preenche "Anotações da Enfermagem".
+            const valor = JSON.stringify(obs);
+            if (id && OBS_RX_GRAVADA.get(id) !== valor) {
+                OBS_RX_GRAVADA.set(id, valor);
+                try { localStorage.setItem('om30:rx-obs:' + id, JSON.stringify({ obs, em: Date.now() })); } catch (_) {}
+            }
+            return obs.map(o => `<div class="cs-rx-obs" title="Observação do médico (${esc(o.exame)})" style="margin-top:4px;padding:3px 7px;border-radius:6px;background:#fff4d6;border:1px solid #f0c36d;color:#5c3b00;font-weight:700;">📝 ${esc(o.texto)}</div>`).join('');
+        }
         function htmlDetalhesSetor(it,setor) {
             const id=idGenerico(it,setor), c=DET.cache.get(`${setor.key}:${id}`);
-            if (!c) return '<span class="cs-med-nada">carregando…</span>';
-            if (c.erro) return '<span class="cs-med-nada">detalhe indisponível</span>';
-            if (!c.itens || !c.itens.length) return '<span class="cs-med-nada">sem detalhe</span>';
-            return c.itens.map(x=>`<div class="cs-med"><span class="cs-med-prod">${esc(x.descricao)}</span>${x.situacao && !/PENDENTE/i.test(x.situacao)?` <span class="cs-med-sit">${esc(x.situacao)}</span>`:''}</div>`).join('');
+            const obs=htmlObsRaioX(it,setor,id);
+            if (!c) return '<span class="cs-med-nada">carregando…</span>'+obs;
+            if (c.erro) return '<span class="cs-med-nada">detalhe indisponível</span>'+obs;
+            if (!c.itens || !c.itens.length) return '<span class="cs-med-nada">sem detalhe</span>'+obs;
+            return c.itens.map(x=>`<div class="cs-med"><span class="cs-med-prod">${esc(x.descricao)}</span>${x.situacao && !/PENDENTE/i.test(x.situacao)?` <span class="cs-med-sit">${esc(x.situacao)}</span>`:''}</div>`).join('')+obs;
         }
 
         function htmlCancelarSetor(it,setor){
@@ -7788,6 +7812,31 @@
             }
             return [];
         }
+        // v3.1.20: observação do Raio-X escrita pelo médico. O pedido de Raio-X não tem campo de texto no
+        // sistema; o Procedimentos PA (2.4.8) grava na Conduta da ficha uma linha marcada:
+        //   OBS. RAIO-X (RADIOGRAFIA DE TORNOZELO): TORNOZELO D
+        // Lida na mesma consulta do prontuário que já traz os sinais vitais (nenhuma requisição a mais).
+        function extrairObsRaioX(doc) {
+            const textos = [];
+            for (const el of doc?.querySelectorAll?.('textarea[name*="conduta"],textarea[id*="conduta"]') || []) textos.push(el.value || el.textContent || '');
+            const corpo = doc?.body?.cloneNode(true);
+            if (corpo) {
+                corpo.querySelectorAll('script,style,textarea,select,option').forEach(e => e.remove());
+                corpo.querySelectorAll('br').forEach(b => b.replaceWith('\n'));
+                corpo.querySelectorAll('p,div,li,td,th,tr,dd,dt,h1,h2,h3,h4,h5,h6,span').forEach(e => e.append('\n'));
+                textos.push(corpo.textContent || '');
+            }
+            const vistos = new Set(), saida = [];
+            for (const t of textos) {
+                for (const m of String(t).matchAll(/OBS\.\s*RAIO-X\s*\(([^)\n]{1,120})\)\s*:[ \t]*([^\n]{1,160})/gi)) {
+                    const exame = m[1].replace(/\s+/g, ' ').trim(), texto = m[2].replace(/\s+/g, ' ').trim();
+                    const k = (exame + '|' + texto).toUpperCase();
+                    if (!texto || vistos.has(k)) continue;
+                    vistos.add(k); saida.push({ exame, texto });
+                }
+            }
+            return saida.slice(0, 6);
+        }
         function a280InterpretarProntuario(doc) {
             const estruturada = a280ExtrairEstruturada(doc);
             const evolucao = a280ExtrairEvolucao(doc);
@@ -7841,6 +7890,7 @@
                 prontuarioId: r.url.match(/\/prontuarios\/(\d+)/i)?.[1] || '',
                 alergiaConsultaFeita: true,
                 sinaisVitais: extrairSinaisVitais(doc),
+                obsRaioX: extrairObsRaioX(doc),   // v3.1.20
             };
         }
         function a280ParaAtual(raw, extra = {}) {
@@ -10946,3 +10996,54 @@
   }
 })();
 // ===== FIM OM30 SENHA POR ABA =====
+
+// ===== v3.1.20: RAIO-X — observação do médico na tela de atendimento da sala =====
+// A lista do Controle de Salas (sala Raio-X) lê a observação que o médico escreveu na ficha
+// (linha "OBS. RAIO-X (...): ..." da Conduta, gravada pelo Procedimentos PA 2.4.8) e guarda neste
+// navegador por encaminhamento. Ao abrir o paciente, a observação aparece no topo e, se "Anotações da
+// Enfermagem" estiver vazio, já vem escrita lá (a sala pode apagar ou mudar). Nada é enviado sozinho.
+(() => {
+  'use strict';
+  const m = location.pathname.match(/^\/encaminhamentos_radiografias\/(\d+)\/edit\/?$/);
+  if (!m) return;
+  const id = m[1];
+  const sem = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+  let dado = null;
+  try { dado = JSON.parse(localStorage.getItem('om30:rx-obs:' + id) || 'null'); } catch (_) { dado = null; }
+  const obs = dado && Array.isArray(dado.obs) && Date.now() - Number(dado.em || 0) < 24 * 3600e3 ? dado.obs.filter(o => o && o.texto) : [];
+  if (!obs.length) return;
+  let tentativas = 0;
+  const aplicar = () => {
+    const tas = [...document.querySelectorAll('textarea[name^="encaminhamento_radiografia[aplicacoes_radiografias_attributes]"][name$="[observacao]"]')];
+    if (!tas.length) { if (++tentativas < 40) setTimeout(aplicar, 250); return; }
+    if (!document.getElementById('om30-rx-obs-topo')) {
+      const aviso = document.createElement('div');
+      aviso.id = 'om30-rx-obs-topo';
+      aviso.setAttribute('role', 'note');
+      aviso.style.cssText = 'margin:10px 0;padding:10px 14px;border-radius:10px;background:#fff4d6;border:1px solid #f0c36d;border-left:5px solid #d98e04;color:#5c3b00;font:600 15px/1.45 Segoe UI,Arial,sans-serif;';
+      aviso.textContent = 'Observação do médico: ' + obs.map(o => (obs.length > 1 ? o.exame + ': ' : '') + o.texto).join(' · ');
+      const form = tas[0].closest('form');
+      (form || document.body).insertBefore(aviso, form ? form.firstChild : document.body.firstChild);
+    }
+    for (const ta of tas) {
+      if (String(ta.value || '').trim()) continue;   // já tem anotação: não mexe
+      let texto = '';
+      if (tas.length === 1) texto = obs.map(o => o.texto).join(' · ');
+      else {
+        // Mais de um Raio-X no mesmo encaminhamento: casa pelo nome do exame no bloco da aplicação.
+        let bloco = ta.parentElement;
+        for (let i = 0; bloco && i < 8 && !/RADIOGRAF|RAIO/i.test(bloco.textContent || ''); i++) bloco = bloco.parentElement;
+        const nome = sem(bloco && bloco.textContent);
+        const o = obs.find(x => nome.includes(sem(x.exame)));
+        texto = o ? o.texto : '';
+      }
+      if (!texto) continue;
+      ta.value = 'Pedido do médico: ' + texto;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new Event('change', { bubbles: true }));
+      ta.dataset.om30ObsMedico = '1';
+    }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', aplicar);
+  else aplicar();
+})();

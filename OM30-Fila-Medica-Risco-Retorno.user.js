@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.14
+// @version      2.15.15
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -397,6 +397,11 @@
   const epocas = { origem: 0, presenca: 0 }, invalidadoEm = { origem: 0, presenca: 0 };
   const recuos = { origem: { falhas: 0, ate: 0 }, presenca: { falhas: 0, ate: 0 } };
   const LIMITE_HTTP = 300, CACHE_ORIGEM_MS = 20000, CACHE_PRESENCA_MS = 5000;
+  // v5.5: a aba Ausentes perguntava os 100 ausentes de uma vez a cada 20 s em cada PC (1,5 mi de linhas/dia).
+  // Local JÁ GRAVADO não muda: fica guardado por item 2 min. Quem ainda não tem registro (ausente
+  // recém-criado) continua sendo perguntado a cada 20 s, como antes. Atualizar/devolver usa forcar.
+  const ORIGEM_ACHADA_MS = 120000;
+  const origemPorItem = new Map();
   let canal = null;
   const chaveItem = x => x.tipo + '#' + x.id;
   const instanteServidor = valor => {
@@ -411,6 +416,7 @@
   function transmitir(mensagem) { try { canal?.postMessage(mensagem); } catch {} }
   function invalidar(classe, publicar = true) {
     epocas[classe]++; invalidadoEm[classe] = Date.now(); recuos[classe].ate = 0;
+    if (classe === 'origem') origemPorItem.clear();
     for (const [chave, registro] of leituras) if (registro.classe === classe) leituras.delete(chave);
     if (publicar) transmitir({ acao: 'invalidar', classe });
   }
@@ -529,15 +535,29 @@
     try { return await promessa; } finally { if (emLeitura.get(chave) === promessa) emLeitura.delete(chave); }
   }
   async function consultarTodos(classe, itens, forcar = false) {
-    const lista = normalizar(itens, classe === 'origem'), mapa = new Map();
+    const completa = normalizar(itens, classe === 'origem'), mapa = new Map();
     mapa.consultaOk = true;
     mapa.consultadosOk = new Set();
+    let lista = completa;
+    if (classe === 'origem') {
+      const agora = Date.now();
+      lista = [];
+      for (const item of completa) {
+        const k = chaveItem(item), c = origemPorItem.get(k);
+        if (!forcar && c && agora - c.em < ORIGEM_ACHADA_MS) { mapa.set(k, { ...c.valor }); mapa.consultadosOk.add(k); }
+        else lista.push(item);
+      }
+      while (origemPorItem.size > 2000) origemPorItem.delete(origemPorItem.keys().next().value);
+    }
     // O Worker divide o SQL. Aqui dividimos apenas conjuntos acima do contrato HTTP, sem omitir pacientes.
     for (let i = 0; i < lista.length; i += LIMITE_HTTP) {
       const parte = await consultarLote(classe, lista.slice(i, i + LIMITE_HTTP), forcar);
       if (!parte.consultaOk) mapa.consultaOk = false;
       else for (const item of lista.slice(i, i + LIMITE_HTTP)) mapa.consultadosOk.add(chaveItem(item));
-      for (const [k, v] of parte) mapa.set(k, v);
+      for (const [k, v] of parte) {
+        mapa.set(k, v);
+        if (classe === 'origem' && parte.consultaOk) origemPorItem.set(k, { valor: { ...v }, em: Date.now() });
+      }
     }
     return mapa;
   }
@@ -546,7 +566,18 @@
     diagnostico: () => { if (SETOR && !modelos.length) lerModelos(); const itens = todosItens(); return { ...stats, pendentes: lerPendentes().length, recusadosLocais: itens.filter(x => x.recusado).length, pendentesEmMemoria: reservaMemoria.size }; },
     reenviar: () => enviar(true),
     health: () => nativeFetch(API + '/health', { credentials: 'omit' }).then(r => r.json()),
-    origens: (itens, opcoes = {}) => consultarTodos('origem', itens, opcoes.forcar === true)
+    origens: (itens, opcoes = {}) => consultarTodos('origem', itens, opcoes.forcar === true),
+    // v5.5: ausência removida (devolvida) encerra o registro no D1. Sem isso o setor antigo
+    // continuava valendo e uma nova ausência sem registro herdava o local errado.
+    encerrar: async (eventId, atendimentoId, tipo, rota) => {
+      if (!/^[0-9a-f-]{36}$/i.test(String(eventId || '')) || !validId(String(atendimentoId || '')) || !validTipo(tipo)) return false;
+      try {
+        await postar('/v1/events/desfazer', { eventId, atendimentoId: String(atendimentoId), tipo,
+          acaoNativa: /^\/[A-Za-z0-9_\/.:-]{2,160}$/.test(rota || '') ? rota : '/ausentes/removida', observadoEm: new Date().toISOString() }, true);
+        invalidarOrigens();
+        return true;
+      } catch { return false; }
+    }
   };
   const marcacoes = new Map(), sequencias = new Map();
   function versaoPresenca(tag) {
@@ -1135,7 +1166,10 @@
       const itens = itensValidos(vm);
       const ativos = new Set(itens.map(it => it.atendimento_str));
       // Presença (uma consulta em lote ao D1).
-      if (api() && itens.length) {
+      // v5.5: presença ("Em atendimento por…") no D1 a cada 60 s (antes 20 s, em cada PC com a fila aberta:
+      // ~2,3 mi de linhas/dia). O "Chamado por" (Senha Simples) continua a cada ciclo de 20 s.
+      if (api() && itens.length && Date.now() - (ciclo.ultimaPresenca || 0) >= 60000) {
+        ciclo.ultimaPresenca = Date.now();
         const m = await api().lote(itens.map(it => { const [tipo, id] = it.atendimento_str.split('#'); return { id, tipo }; }));
         // Falha não é lista vazia: só conserva concessões com expiração real ainda válida.
         if (m.consultaOk === false) {
@@ -6498,6 +6532,12 @@
         z-index:2147483001 !important;
       }
 
+      /* v2.15.15: com aviso nativo aberto (swal2/bootstrap), nenhuma linha fica por cima dele. */
+      body:has(.swal2-container.swal2-in, .swal2-container.swal2-shown, .modal.in, .modal.show) #classificacao tr,
+      body:has(.swal2-container.swal2-in, .swal2-container.swal2-shown, .modal.in, .modal.show) #classificacao td {
+        z-index:auto !important;
+      }
+
       /* Padrão: menu abre para a esquerda da engrenagem, alinhado no topo do bloco. */
       #classificacao td[aria-colindex="9"] > .row.mx-auto > .dropdown-opcoes-atendimento .dropdown-menu.show {
         left:auto !important;
@@ -6551,6 +6591,11 @@
         overflow-x:auto !important;
         overflow-y:visible !important;
         -webkit-overflow-scrolling:touch;
+      }
+      /* v2.15.15: overflow-x:auto corta também em Y; com 1-2 pacientes o menu da engrenagem
+         virava barra de rolagem. Com o menu aberto a caixa não corta nada. */
+      #classificacao.om30-menu-acoes-aberto .table-responsive {
+        overflow:visible !important;
       }
 
       #classificacao .table-responsive > table,
@@ -7078,6 +7123,15 @@
 
   function aplicarMedFonte(vm = medVm, forcar = false) {
     if (!vm || !Array.isArray(vm.$data?.items)) return false;
+    // v2.15.15: com o "Deseja mesmo ausentar?" aberto, não mexe nas linhas (a linha é reaproveitada
+    // pela posição: reordenar agora faria o "Sim" ausentar outro paciente). Reaplica ao fechar.
+    let congelar = false;
+    try { congelar = ausentarAtivo() && !!document.querySelector('.swal2-container'); } catch (_) {}
+    if (congelar) {
+      clearTimeout(aplicarMedFonte._adiado);
+      aplicarMedFonte._adiado = setTimeout(() => aplicarMedFonte(vm, true), 1500);
+      return true;
+    }
     prepararColecaoMedica(vm);
     const termoPesquisa = lerPesquisaMedica(vm);
     const lista = ordenarFilaMedica(filtrarItensMedicos(medFonte, filtroSelecionado, termoPesquisa));
@@ -7290,7 +7344,130 @@
     } catch (_) { medWatchStop = null; }
   }
 
+  // ---------------------------------------------------------------------------
+  // v2.15.15: TRAVA DO "PACIENTE AUSENTE" NA FILA MÉDICA
+  // ---------------------------------------------------------------------------
+  // Caso real (23/11, PF0070): o médico chamava a CN0189 e o "Sim" do "Deseja mesmo ausentar o
+  // paciente?" ausentou OUTRO atendimento (de quem nem tinha passado pelo acolhimento). O botão
+  // nativo só lê o paciente quando o "Sim" é apertado: se a fila mudou nesse meio-tempo
+  // (linhas reaproveitadas pela posição / painel recarregado), vai o paciente errado.
+  // 1) No clique em "Paciente ausente" guardamos QUAL paciente estava ali.
+  // 2) Na hora do envio, se o atendimento for outro, o pedido é cancelado (ninguém é ausentado).
+  // 3) Quem não está na fila médica, ou não tem classificação de risco (não passou pelo
+  //    acolhimento; EM/PD/PP pulam o acolhimento), não pode ser ausentado por aqui.
+  // 4) Enquanto o aviso está aberto, a lista não é reordenada; o aviso mostra senha e nome.
+  let ausentarAlvo = null;
+  const ausentarAtivo = () => !!(ausentarAlvo && Date.now() - ausentarAlvo.em < 120000);
+  const pulaAcolhimento = senha => /^(EM|PD|PP)\d/i.test(clean(senha));
+  // A fila completa (medFonte/filaCache), não só a visão filtrada: o paciente do painel pode
+  // estar fora do filtro selecionado (ex.: Retorno) e continua sendo da fila médica.
+  const fontesFilaMedica = () => [medFonte, filaCache?.itens, visualItens, medVm?.$data?.items, acharVueFila()?.$data?.items]
+    .filter(f => Array.isArray(f) && f.length);
+  function itemPorAtendimento(str) {
+    for (const fonte of fontesFilaMedica()) {
+      const it = fonte.find(x => x?.atendimento_str === str);
+      if (it) return it;
+    }
+    return null;
+  }
+  function motivoBloqueioAusentar(str) {
+    if (!fontesFilaMedica().length) return '';   // fila ainda não carregada: não decide no escuro
+    const it = itemPorAtendimento(str);
+    if (!it) return 'Este paciente não está na fila médica desta tela (pode estar ainda no acolhimento ou em outra fila). Ausente pela tela onde ele está.';
+    if (!it.grau_risco_id && !pulaAcolhimento(it.senha)) return `${clean(it.senha) || 'Este paciente'} ainda não tem classificação de risco: não passou pelo acolhimento. Não ausente pela fila médica.`;
+    return '';
+  }
+  function alvoDoCliqueAusentar(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      for (let v = n.__vue__, i = 0; v && i < 5; v = v.$parent, i++) {
+        const p = v.$props || {};
+        if (!('baseAusenteUrl' in p)) continue;
+        if (typeof p.atendimentoStr === 'string' && p.atendimentoStr.includes('#')) return { str: p.atendimentoStr, origem: 'linha' };
+        const s = v.proximaSenha;
+        if (s && s.saude_atendimento_id && s.saude_atendimento_type) return { str: `${s.saude_atendimento_type}#${s.saude_atendimento_id}`, origem: 'painel' };
+      }
+    }
+    return null;
+  }
+  function avisoTravaAusentar(msg) {
+    let el = document.getElementById('om30-trava-ausentar');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'om30-trava-ausentar';
+      el.setAttribute('role', 'alert');
+      el.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483646;max-width:min(560px,calc(100vw - 32px));background:#fff6f3;border:1px solid #e8b7b3;border-left:5px solid #c0392b;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:12px 16px;color:#7a2018;font:600 14px/1.45 Segoe UI,Arial,sans-serif;';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    clearTimeout(el._t); el._t = setTimeout(() => el.remove(), 12000);
+  }
+  function mostrarPacienteNoAviso(str) {
+    const it = itemPorAtendimento(str);
+    if (!it) return;
+    const quem = [clean(it.senha), clean(it.nome_municipe)].filter(Boolean).join(' · ');
+    let n = 0;
+    const t = setInterval(() => {
+      const box = document.querySelector('.swal2-container .swal2-content, .swal2-container #swal2-content');
+      if (box && !box.querySelector('.om30-quem-ausentar')) {
+        const d = document.createElement('div');
+        d.className = 'om30-quem-ausentar';
+        d.style.cssText = 'margin-top:10px;padding:8px 10px;border-radius:8px;background:#f3f6fa;color:#1f2d3d;font-weight:700;font-size:16px;';
+        d.textContent = quem;
+        box.appendChild(d);
+      }
+      if (box || ++n > 40) clearInterval(t);
+    }, 50);
+  }
+  function instalarTravaAusentar() {
+    if (document.documentElement.dataset.om30TravaAusentar === '1') return;
+    document.documentElement.dataset.om30TravaAusentar = '1';
+    document.addEventListener('click', ev => {
+      if (!ehPaginaFila()) return;
+      const el = ev.target?.closest?.('a, button, li, [role="menuitem"]');
+      if (!el || !/^\s*(paciente\s+)?ausente\s*$/i.test(el.textContent || '')) return;
+      const alvo = alvoDoCliqueAusentar(el);
+      if (!alvo) return;
+      const motivo = motivoBloqueioAusentar(alvo.str);
+      if (motivo) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        ausentarAlvo = null;
+        avisoTravaAusentar(`Ausência bloqueada. ${motivo}`);
+        return;
+      }
+      ausentarAlvo = { ...alvo, em: Date.now() };
+      mostrarPacienteNoAviso(alvo.str);
+    }, true);
+    const instalarRequisicao = () => {
+      const p = (typeof saudeSimplesProxy !== 'undefined') ? saudeSimplesProxy : null; // eslint-disable-line no-undef
+      if (!p?.interceptors?.request?.use) return false;
+      if (p.__om30TravaAusentar) return true;
+      p.interceptors.request.use(cfg => {
+        let url;
+        try { url = new URL(cfg?.url || '', location.href); } catch { return cfg; }
+        if (String(cfg?.method || '').toUpperCase() !== 'PUT' || !/\/prontuarios\/paciente_ausente(?:\.json)?$/i.test(url.pathname)) return cfg;
+        const corpo = typeof cfg.data === 'string' ? new URLSearchParams(cfg.data) : null;
+        const ler = k => url.searchParams.get(k) || corpo?.get(k) || (cfg.data && typeof cfg.data === 'object' ? cfg.data[k] : '') || '';
+        const str = `${ler('prontuariavel_type')}#${ler('prontuariavel_id')}`;
+        const alvo = ausentarAtivo() ? ausentarAlvo : null;
+        let erro = '';
+        if (alvo && alvo.str !== str) erro = 'A fila mudou enquanto você confirmava. Ninguém foi ausentado. Feche este aviso e tente de novo.';
+        else if (!alvo) erro = motivoBloqueioAusentar(str) ? `Ausência bloqueada. ${motivoBloqueioAusentar(str)}` : '';
+        if (erro) {
+          avisoTravaAusentar(erro);
+          return Promise.reject(Object.assign(new Error(erro), { om30Bloqueado: true, response: { status: 409, data: { error: erro } } }));
+        }
+        ausentarAlvo = null;
+        return cfg;
+      });
+      try { Object.defineProperty(p, '__om30TravaAusentar', { value: true }); } catch { p.__om30TravaAusentar = true; }
+      return true;
+    };
+    if (!instalarRequisicao()) { let n = 0; const ti = setInterval(() => { if (instalarRequisicao() || ++n > 100) clearInterval(ti); }, 300); }
+  }
+
   function instalarProtecaoDropdownUltimaLinha() {
+    instalarTravaAusentar();
     if (document.documentElement.dataset.om30DropdownUltimaLinha === '1') return;
     document.documentElement.dataset.om30DropdownUltimaLinha = '1';
 
@@ -7320,7 +7497,9 @@
     }, true);
 
     document.addEventListener('click', ev => {
-      if (ev.target?.closest?.('#classificacao .dropdown-opcoes-atendimento')) return;
+      // v2.15.15: só o botão da engrenagem mantém a linha elevada; clicar num item (Paciente ausente)
+      // abre o aviso nativo, que ficava atrás da linha (z-index 99990 x 1060).
+      if (ev.target?.closest?.('#classificacao .dropdown-opcoes-atendimento > button.dropdown-toggle')) return;
       const raiz = document.querySelector('#classificacao');
       raiz?.classList.remove('om30-dropdown-ultima-aberto', 'om30-menu-acoes-aberto');
       document.querySelectorAll('#classificacao tr.om30-menu-aberto').forEach(r => r.classList.remove('om30-menu-aberto'));
@@ -9608,7 +9787,11 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     // Botão remover: bloqueado se a ausência é de outra fila
     const btn = tr.querySelector(SEL_REMOVER);
     if (btn) {
-      const bloquear = r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor);
+      // v2.15.15: na fila médica, remover só com o registro confirmando que a ausência foi
+      // feita aqui. Removido pela fila médica sem estar nela, o paciente some de todas as filas.
+      const bloquear = TELA === 'MEDICO'
+        ? !(r.fonte === 'D1' && podeRemoverAqui(r.origem, r.setor))
+        : (r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor));
       btn.classList.toggle('om30a-bloqueado', bloquear);
       if (bloquear) {
         if (btn.dataset.om30TituloOriginal === undefined) btn.dataset.om30TituloOriginal = btn.getAttribute('title') || '';
@@ -9782,7 +9965,7 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
       // Origem registrada no D1 no momento da ausência (coletor OM30 D1). Uma consulta em lote;
       // sem registro (ou sem rede) segue exatamente o caminho anterior.
       const consultaFalhou = () => Object.assign(new Map(), { consultaOk: false });
-      const origensD1 = window.OM30Ausencias?.origens ? await window.OM30Ausencias.origens(linhas.map(x => x.inf)).catch(consultaFalhou) : consultaFalhou();
+      const origensD1 = window.OM30Ausencias?.origens ? await window.OM30Ausencias.origens(linhas.map(x => x.inf), { forcar: forcar === true }).catch(consultaFalhou) : consultaFalhou();
 
       let feitos = 0;
       definirStatus(`Verificando 0/${linhas.length}`);
@@ -9902,8 +10085,27 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
     const tr = a.closest('tr');
     const origem = tr?.dataset.om30Origem;
 
-    // Sem evento D1 confirmado, o script não escolhe uma fila: preserva a ação nativa.
-    if (tr?.dataset.om30Fonte !== 'D1') return;
+    // v2.15.15: sem registro confirmado, a fila médica BLOQUEIA (antes liberava a remoção nativa).
+    // Paciente ausentado no acolhimento — ou que nem passou por ele — removido por aqui some de
+    // todas as filas. No acolhimento a remoção nativa devolve normal, então lá continua liberada.
+    if (tr?.dataset.om30Fonte !== 'D1') {
+      if (TELA !== 'MEDICO') return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      const verificando = !origem || origem === 'PENDENTE';
+      dialogo({
+        tipo: 'aviso',
+        titulo: 'Remoção bloqueada na fila médica',
+        subtitulo: verificando ? 'Ainda conferindo onde foi a ausência' : 'Local da ausência não confirmado',
+        texto: [
+          'Não dá para confirmar que este paciente foi ausentado na fila médica.',
+          'Se ele foi ausentado no acolhimento, ou ainda nem passou pelo acolhimento, removendo por aqui ele some de todas as filas.',
+          'Remova pela aba AUSENTES da tela do acolhimento. Se foi você que ausentou aqui, clique em Atualizar e tente de novo.'
+        ],
+        botoes: [{ rotulo: 'Entendi', valor: true, primario: true }]
+      });
+      return;
+    }
     if (origem && !['ACOLHIMENTO', 'MEDICO', 'EMERGENCIA', 'OUTROS'].includes(origem)) return;
     if (!origem) {
       ev.preventDefault();
@@ -9975,6 +10177,11 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
       definirStatus('Removendo ausência…');
       try {
         await removerAusenciaNativa(a.href);
+        // v2.15.15: ausência devolvida encerra o registro no D1 (antes ficava valendo para sempre).
+        try {
+          const rota = new URL(a.href, location.href).pathname.replace(/\/\d+(?=\/?$)/, '/:id');
+          if (registro?.eventoId) void window.OM30Ausencias?.encerrar?.(registro.eventoId, inf.id, inf.tipo, rota);
+        } catch (_) {}
       } catch (e) {
         await dialogo({
           tipo: 'erro',

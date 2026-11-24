@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.4.9
+// @version      2.4.10
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -376,6 +376,11 @@
   const epocas = { origem: 0, presenca: 0 }, invalidadoEm = { origem: 0, presenca: 0 };
   const recuos = { origem: { falhas: 0, ate: 0 }, presenca: { falhas: 0, ate: 0 } };
   const LIMITE_HTTP = 300, CACHE_ORIGEM_MS = 20000, CACHE_PRESENCA_MS = 5000;
+  // v5.5: a aba Ausentes perguntava os 100 ausentes de uma vez a cada 20 s em cada PC (1,5 mi de linhas/dia).
+  // Local JÁ GRAVADO não muda: fica guardado por item 2 min. Quem ainda não tem registro (ausente
+  // recém-criado) continua sendo perguntado a cada 20 s, como antes. Atualizar/devolver usa forcar.
+  const ORIGEM_ACHADA_MS = 120000;
+  const origemPorItem = new Map();
   let canal = null;
   const chaveItem = x => x.tipo + '#' + x.id;
   const instanteServidor = valor => {
@@ -390,6 +395,7 @@
   function transmitir(mensagem) { try { canal?.postMessage(mensagem); } catch {} }
   function invalidar(classe, publicar = true) {
     epocas[classe]++; invalidadoEm[classe] = Date.now(); recuos[classe].ate = 0;
+    if (classe === 'origem') origemPorItem.clear();
     for (const [chave, registro] of leituras) if (registro.classe === classe) leituras.delete(chave);
     if (publicar) transmitir({ acao: 'invalidar', classe });
   }
@@ -508,15 +514,29 @@
     try { return await promessa; } finally { if (emLeitura.get(chave) === promessa) emLeitura.delete(chave); }
   }
   async function consultarTodos(classe, itens, forcar = false) {
-    const lista = normalizar(itens, classe === 'origem'), mapa = new Map();
+    const completa = normalizar(itens, classe === 'origem'), mapa = new Map();
     mapa.consultaOk = true;
     mapa.consultadosOk = new Set();
+    let lista = completa;
+    if (classe === 'origem') {
+      const agora = Date.now();
+      lista = [];
+      for (const item of completa) {
+        const k = chaveItem(item), c = origemPorItem.get(k);
+        if (!forcar && c && agora - c.em < ORIGEM_ACHADA_MS) { mapa.set(k, { ...c.valor }); mapa.consultadosOk.add(k); }
+        else lista.push(item);
+      }
+      while (origemPorItem.size > 2000) origemPorItem.delete(origemPorItem.keys().next().value);
+    }
     // O Worker divide o SQL. Aqui dividimos apenas conjuntos acima do contrato HTTP, sem omitir pacientes.
     for (let i = 0; i < lista.length; i += LIMITE_HTTP) {
       const parte = await consultarLote(classe, lista.slice(i, i + LIMITE_HTTP), forcar);
       if (!parte.consultaOk) mapa.consultaOk = false;
       else for (const item of lista.slice(i, i + LIMITE_HTTP)) mapa.consultadosOk.add(chaveItem(item));
-      for (const [k, v] of parte) mapa.set(k, v);
+      for (const [k, v] of parte) {
+        mapa.set(k, v);
+        if (classe === 'origem' && parte.consultaOk) origemPorItem.set(k, { valor: { ...v }, em: Date.now() });
+      }
     }
     return mapa;
   }
@@ -525,7 +545,18 @@
     diagnostico: () => { if (SETOR && !modelos.length) lerModelos(); const itens = todosItens(); return { ...stats, pendentes: lerPendentes().length, recusadosLocais: itens.filter(x => x.recusado).length, pendentesEmMemoria: reservaMemoria.size }; },
     reenviar: () => enviar(true),
     health: () => nativeFetch(API + '/health', { credentials: 'omit' }).then(r => r.json()),
-    origens: (itens, opcoes = {}) => consultarTodos('origem', itens, opcoes.forcar === true)
+    origens: (itens, opcoes = {}) => consultarTodos('origem', itens, opcoes.forcar === true),
+    // v5.5: ausência removida (devolvida) encerra o registro no D1. Sem isso o setor antigo
+    // continuava valendo e uma nova ausência sem registro herdava o local errado.
+    encerrar: async (eventId, atendimentoId, tipo, rota) => {
+      if (!/^[0-9a-f-]{36}$/i.test(String(eventId || '')) || !validId(String(atendimentoId || '')) || !validTipo(tipo)) return false;
+      try {
+        await postar('/v1/events/desfazer', { eventId, atendimentoId: String(atendimentoId), tipo,
+          acaoNativa: /^\/[A-Za-z0-9_\/.:-]{2,160}$/.test(rota || '') ? rota : '/ausentes/removida', observadoEm: new Date().toISOString() }, true);
+        invalidarOrigens();
+        return true;
+      } catch { return false; }
+    }
   };
   const marcacoes = new Map(), sequencias = new Map();
   function versaoPresenca(tag) {
@@ -1114,7 +1145,10 @@
       const itens = itensValidos(vm);
       const ativos = new Set(itens.map(it => it.atendimento_str));
       // Presença (uma consulta em lote ao D1).
-      if (api() && itens.length) {
+      // v5.5: presença ("Em atendimento por…") no D1 a cada 60 s (antes 20 s, em cada PC com a fila aberta:
+      // ~2,3 mi de linhas/dia). O "Chamado por" (Senha Simples) continua a cada ciclo de 20 s.
+      if (api() && itens.length && Date.now() - (ciclo.ultimaPresenca || 0) >= 60000) {
+        ciclo.ultimaPresenca = Date.now();
         const m = await api().lote(itens.map(it => { const [tipo, id] = it.atendimento_str.split('#'); return { id, tipo }; }));
         // Falha não é lista vazia: só conserva concessões com expiração real ainda válida.
         if (m.consultaOk === false) {
@@ -3780,7 +3814,9 @@
     // Botão remover: bloqueado se a ausência é de outra fila
     const btn = tr.querySelector(SEL_REMOVER);
     if (btn) {
-      const bloquear = r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor);
+      // v2.4.10: no acolhimento a remoção nunca fica bloqueada: a remoção nativa daqui devolve o
+      // paciente normalmente, inclusive quem foi ausentado na fila médica.
+      const bloquear = TELA === 'ACOLHIMENTO' ? false : (r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor));
       btn.classList.toggle('om30a-bloqueado', bloquear);
       if (bloquear) {
         if (btn.dataset.om30TituloOriginal === undefined) btn.dataset.om30TituloOriginal = btn.getAttribute('title') || '';
@@ -3954,7 +3990,7 @@
       // Origem registrada no D1 no momento da ausência (coletor OM30 D1). Uma consulta em lote;
       // sem registro (ou sem rede) segue exatamente o caminho anterior.
       const consultaFalhou = () => Object.assign(new Map(), { consultaOk: false });
-      const origensD1 = window.OM30Ausencias?.origens ? await window.OM30Ausencias.origens(linhas.map(x => x.inf)).catch(consultaFalhou) : consultaFalhou();
+      const origensD1 = window.OM30Ausencias?.origens ? await window.OM30Ausencias.origens(linhas.map(x => x.inf), { forcar: forcar === true }).catch(consultaFalhou) : consultaFalhou();
 
       let feitos = 0;
       definirStatus(`Verificando 0/${linhas.length}`);
@@ -4087,6 +4123,41 @@
     const setor = tr.dataset.om30Setor || '';
     // Origem só deduzida (sem D1) e de outra fila: não bloqueia; remoção nativa, sem escolher fila.
     if (tr.dataset.om30Fonte !== 'D1' && !podeRemoverAqui(origem, setor)) return;
+    if (!podeRemoverAqui(origem, setor) && TELA === 'ACOLHIMENTO') {
+      // v2.4.10: antes bloqueava. Com registro errado (ex.: "fila médica" para quem nem passou pelo
+      // acolhimento) o paciente ficava preso: o acolhimento não podia remover e, pela fila médica,
+      // ele sumia. No acolhimento a remoção nativa devolve normal: confirma e remove.
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (removendo) return;
+      const onde = origem === 'MEDICO' ? 'na fila médica' : origem === 'EMERGENCIA' ? 'na emergência' : (setor ? `em ${setor}` : 'em outra fila');
+      const ok = await dialogo({
+        tipo: 'pergunta',
+        titulo: 'Remover a ausência pelo acolhimento?',
+        subtitulo: nomeDaLinha(tr),
+        texto: [`O registro diz que este paciente foi ausentado ${onde}.`, 'Removendo por aqui, o sistema devolve ele normalmente para a fila em que estava.'],
+        botoes: [{ rotulo: 'Cancelar', valor: false }, { rotulo: 'Remover ausência', valor: true, primario: true }]
+      });
+      if (!ok || removendo) return;
+      removendo = true;
+      try {
+        await removerAusenciaNativa(a.href);
+        const inf = infoLinha(tr);
+        const registro = inf?.id ? detalhes.get(inf.id) : null;
+        try { if (registro?.eventoId) await window.OM30Ausencias?.encerrar?.(registro.eventoId, inf.id, inf.tipo, '/ausentes/:id'); } catch (_) {}
+        location.reload();
+      } catch (e) {
+        await dialogo({
+          tipo: 'erro',
+          titulo: 'Não foi possível remover a ausência',
+          subtitulo: nomeDaLinha(tr),
+          texto: ['Nada foi alterado. Tente de novo em alguns segundos.', `Detalhe: ${descricaoErro(e)}`]
+        });
+      } finally {
+        removendo = false;
+      }
+      return;
+    }
     if (!podeRemoverAqui(origem, setor)) {
       ev.preventDefault();
       ev.stopImmediatePropagation();
@@ -4147,6 +4218,8 @@
       definirStatus('Removendo ausência…');
       try {
         await removerAusenciaNativa(a.href);
+        // v2.4.10: ausência devolvida encerra o registro no D1.
+        try { if (registro?.eventoId) void window.OM30Ausencias?.encerrar?.(registro.eventoId, inf.id, inf.tipo, '/ausentes/:id'); } catch (_) {}
       } catch (e) {
         await dialogo({
           tipo: 'erro',

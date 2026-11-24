@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.18
+// @version      3.1.19
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -33,6 +33,7 @@
     }
 
     /* OM30 - CONTROLE DE SALAS v3.1.14
+     * v3.1.19: sala Procedimentos de Enfermagem (sutura) com o filtro "Pediatria" (senhas PD/PP), igual à Medicação e aos Exames: Mostrar Clínico | Pediatria | Histórico; local com "Pediatria" no nome abre em Pediatria.
      * v3.1.16: retirada a baixa automática da medicação da 3.1.15 (ela é do script Baixa Rápida). Código igual ao da 3.1.14.
      * v3.1.14: Consulta de pacientes: lupa e botão Consultar alinhados com a caixa de pesquisa (a página aplicava margem e altura próprias nos campos).
      * v3.1.13: Consulta de pacientes com visual novo: campo "Consultar paciente por nome ou senha" com botão Consultar, resultado num painel logo abaixo do campo (fecha com Esc ou clicando fora), situação em etiqueta (Em atendimento, Chamado, Aguardando, Aguardando médico) e posição na fila. Textos de sistema, sem códigos técnicos.
@@ -5077,7 +5078,7 @@
         function grupoSala(salaKey, it) {
             const ped = /^P[DP]\d/i.test(limpo(it.senha));
             if (salaKey === 'medicacao') return ped ? 'Pediatria' : normalizar(it.grau_risco) === 'VERMELHO' ? 'Emergência' : 'Clínico';
-            if (salaKey === 'exames') return ped ? 'Pediatria' : 'Clínico';
+            if (salaKey === 'exames' || salaKey === 'enfermagem') return ped ? 'Pediatria' : 'Clínico';   // v3.1.19: Enfermagem (sutura)
             return '';
         }
         // Posição na sala: mesma ordem da lista do Controle de Salas (risco, depois chegada); conta
@@ -6714,7 +6715,8 @@
 
         function ehMedicacao(vm) { return /\/aplicacoes_medicamentos/.test(vm.url || ''); }
         // Salas com o filtro "Pediatria" (senhas PD e PP). var: a barra pode ser montada antes desta linha.
-        var SALAS_PEDIATRIA = new Set(['medicacao', 'exames']);
+        // v3.1.19: também Procedimentos de Enfermagem (sala de sutura).
+        var SALAS_PEDIATRIA = new Set(['medicacao', 'exames', 'enfermagem']);
         // Salas com a fila "Emergência" (senhas EM), separada do Clínico.
         var SALAS_EMERGENCIA = new Set(['medicacao']);
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.6
+// @version      2.4.7
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -759,6 +759,107 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     return getComputedStyle(row).display!=='none';
   }
 
+  // v2.4.7: CID do atendimento nos procedimentos pedidos (drenagem de abscesso, toracocentese,
+  // paracentese, glicemia capilar, Raio-X...). O pedido sai pela seção nativa PROCEDIMENTOS/CIDS e a
+  // linha só leva o CID que estiver no campo "CID" dela; o painel OM30 incluía sem CID. Na sala do
+  // Controle de Salas o CID aparece só como texto ("—") e, quando o procedimento exige CID, não havia
+  // onde colocar. Agora toda linha NOVA de pedido sem CID recebe um CID que o médico lançou no
+  // atendimento (CIDs da evolução), MAS só se o próprio sistema aceitar esse CID para o procedimento
+  // (mesma lista do campo "CID" da seção: /cids/cids_procedimentos.json com validar_cid_compativel).
+  // Ex.: drenagem de abscesso aceita "Abscesso cutâneo ... do tronco", não o genérico "Abscesso cutâneo".
+  // Sem CID compatível, nada é preenchido e o médico vê um aviso para escolher o CID. Linha já salva e
+  // linha com CID escolhido pelo médico não mudam.
+  function cidsDoAtendimento(){
+    const out=[];
+    for(const tr of qa('#prontuario_evolucao_clinica_cids .entity_table tr')){
+      if(!rowAtiva(tr)) continue;
+      const id=clean(q('input[id*="cid_id"]',tr)?.value);
+      if(!/^\d+$/.test(id)) continue;
+      out.push({id,texto:clean(q('input[id*="cid_token"]',tr)?.value)});
+    }
+    return out;
+  }
+  const cacheCidCompativel=new Map();
+  async function cidAceitoNoProcedimento(procId,cid){
+    const chave=procId+'|'+cid.id;
+    if(cacheCidCompativel.has(chave)) return cacheCidCompativel.get(chave);
+    const nome=clean(cid.texto.replace(/^[A-Z]\d{2}(?:\.?\d{1,2})?\s*[-–:]\s*/i,'')).replace(/[,;()]/g,' ');
+    const palavras=nome.split(/\s+/).filter(w=>w.length>=3);
+    const buscas=[...new Set([palavras.slice(0,3).join(' '),palavras.slice(0,2).join(' '),palavras[0]||''].filter(Boolean))];
+    let ok=false;
+    for(const termo of buscas){
+      try{
+        const r=await fetch(`/cids/cids_procedimentos.json?procedimento_id=${encodeURIComponent(procId)}&validar_cid_compativel_procedimento=true&q=${encodeURIComponent(termo)}`,{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json','X-Requested-With':'XMLHttpRequest'}});
+        if(!r.ok) continue;
+        const d=await r.json();
+        const lista=Array.isArray(d)?d:(d?.results||d?.data||[]);
+        if(lista.some(x=>String(x?.id)===String(cid.id))){ok=true;break;}
+      }catch(_){}
+    }
+    cacheCidCompativel.set(chave,ok);
+    return ok;
+  }
+  function avisoCidPedido(msg){
+    let el=q('#om30-pa-aviso-cid');
+    if(!el){
+      el=document.createElement('div');el.id='om30-pa-aviso-cid';el.setAttribute('role','alert');
+      el.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483001;max-width:min(600px,calc(100vw - 32px));background:#fff8e6;border:1px solid #f0c36d;border-left:5px solid #d98e04;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:11px 15px;color:#5c3b00;font:600 13px/1.45 Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+      document.body.appendChild(el);
+    }
+    el.textContent=msg;
+    clearTimeout(el._t);el._t=setTimeout(()=>el.remove(),15000);
+  }
+  const pedidosEmAnalise=new WeakSet();
+  async function preencherCidDoPedido(row){
+    if(!row||!rowAtiva(row)||pedidosEmAnalise.has(row)) return false;
+    const campoId=q('input[name*="[lancamentos_bpa_attributes]"][name$="[cid_id]"]',row);
+    if(!campoId||clean(campoId.value)) return false;
+    if(clean(q('input[name*="[lancamentos_bpa_attributes]"][name$="[id]"]',row)?.value)) return false; // pedido já salvo
+    const procId=clean(q('input[name*="[lancamentos_bpa_attributes]"][name$="[procedimento_id]"]',row)?.value);
+    const cids=cidsDoAtendimento();
+    if(!/^\d+$/.test(procId)||!cids.length) return false;
+    const chaveTentativa=procId+'|'+cids.map(c=>c.id).join(',');
+    if(row.dataset.om30CidTentado===chaveTentativa) return false;  // já tentou com esses mesmos CIDs
+    pedidosEmAnalise.add(row);
+    try{
+      for(const cid of cids){
+        if(!(await cidAceitoNoProcedimento(procId,cid))) continue;
+        if(clean(campoId.value)||!rowAtiva(row)) return false;   // médico escolheu outro CID nesse meio-tempo
+        campoId.value=cid.id;
+        const campoTexto=q('input[name*="[lancamentos_bpa_attributes]"][name$="[cid_token]"]',row);
+        if(campoTexto&&cid.texto&&(!clean(campoTexto.value)||/^[—-]$/.test(clean(campoTexto.value)))) campoTexto.value=cid.texto;
+        row.dataset.om30CidAtendimento='1';
+        return true;
+      }
+      row.dataset.om30CidTentado=chaveTentativa;
+      const nomeProc=parseCodigoNome(clean(q('input[name*="[lancamentos_bpa_attributes]"][name$="[procedimento_token]"]',row)?.value)).nome||'Este procedimento';
+      avisoCidPedido(`${nomeProc}: o CID do atendimento não é aceito para este procedimento, e a sala não vai conseguir finalizar sem CID. Remova o procedimento e inclua de novo pela seção PROCEDIMENTOS/CIDS escolhendo um CID compatível no campo "CID" (ex.: com a região do corpo).`);
+      return false;
+    }finally{pedidosEmAnalise.delete(row);}
+  }
+  async function preencherCidsDosPedidos(){
+    let n=0;
+    for(const r of qa('tr.prontuario-lancamento-bpa-row')) if(await preencherCidDoPedido(r)) n++;
+    if(n) console.info('[OM30 PA] CID do atendimento copiado para',n,'pedido(s) de procedimento.');
+    return n;
+  }
+  // Quando o médico lança o CID depois do procedimento (ou inclui o procedimento pela tela nativa),
+  // a cópia acontece assim que os dois existem.
+  (function vigiarCidsDosPedidos(){
+    let agendado=0;
+    const rodar=()=>{clearTimeout(agendado);agendado=setTimeout(()=>{preencherCidsDosPedidos().catch(e=>console.warn('[OM30 PA] CID dos pedidos:',e));},150);};
+    const ob=new MutationObserver(m=>{
+      if(m.some(x=>[...x.addedNodes].some(n=>n.nodeType===1&&(n.matches?.('tr')||n.querySelector?.('tr')))))rodar();
+    });
+    const ligar=()=>{
+      const alvo=document.body;
+      if(!alvo)return setTimeout(ligar,500);
+      ob.observe(alvo,{childList:true,subtree:true});
+      rodar();
+    };
+    ligar();
+  })();
+
   function codigoLinhaExame(row){
     if(!row) return '';
     const direto=digits(
@@ -971,6 +1072,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 
     row.dataset.om30Codigo=digits(cd).slice(0,10);
     row.dataset.om30Nome=nm;
+    try{await preencherCidDoPedido(row);}catch(_){} // v2.4.7: CID do atendimento no pedido (se o sistema aceitar)
 
     if(tokenTemCodigo(selector,cd)) tokenClear(selector);
     renderSelecionados?.();
@@ -6872,7 +6974,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.6', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.7', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

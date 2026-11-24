@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.16
+// @version      2.15.17
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -10272,6 +10272,13 @@ if (/^\/prontuarios(?:\/|$)/i.test(location.pathname)) {
   // R0: travas. A nova não depende da antiga; se a antiga já entrou, a nova entra mesmo assim (e não duplica o clique).
   if (window.__OM30_SENHA_POR_ABA_V2__) return;
   window.__OM30_SENHA_POR_ABA_V2__ = true;
+  // v2.15.17: DESLIGADO em 24/11. Esta memória de senha por aba (e o "Chamar" pelo último local) troca ou
+  // limpa a senha do navegador, que é a mesma para todas as abas, bem na hora do encaminhamento.
+  // Com ele as senhas saíam do acolhimento e chegavam ao médico como "Senha perdida". Volta o
+  // comportamento do sistema. As duas marcas ficam gravadas para a versão antiga, ainda presente em
+  // algum script não atualizado, também não se instalar nesta página.
+  window.__OM30_SENHA_POR_ABA__ = true;
+  return;
   const antigoJaInstalado = window.__OM30_SENHA_POR_ABA__ === true;
   window.__OM30_SENHA_POR_ABA__ = true;   // a antiga que carregar DEPOIS não se instala
 

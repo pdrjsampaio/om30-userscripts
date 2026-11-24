@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Rastreamento de Senhas | Minha Unidade
 // @namespace    https://om30.com.br/
-// @version      1.3.1
+// @version      1.3.2
 // @description  Rastreamento de senhas só da unidade logada, nas últimas 24 horas, com a situação de cada atendimento (aguardando com quantos na frente, chamado, em atendimento, finalizado, ausente) na fila médica e nas salas. A unidade é confirmada pelo número do atendimento no histórico do munícipe, com a ficha PDF como reserva.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Rastreamento-Senhas-Unidade.user.js
@@ -737,6 +737,20 @@
     sessaoExpirada = true;
     definirAviso('Sessão expirada. Recarregue a página e entre de novo.');
   }
+  // v1.3.2: se o sistema voltar a responder, sai do "sessão expirada" e relê tudo.
+  let retomando = false;
+  async function tentarRetomarSessao() {
+    if (retomando) return;
+    retomando = true;
+    try {
+      await lerJson(urlRastreamento(0, 1));
+      sessaoExpirada = false;
+      definirAviso('');
+      ultimaCompleta = 0;
+      await cicloCompleto();
+    } catch (_) { /* continua expirada; tenta no próximo ciclo */ }
+    finally { retomando = false; }
+  }
 
   const LUPA = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a949c' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E";
   const ICONE_UNIDADE = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l7-4 7 4v13"/><path d="M12 9v6M9 12h6"/></svg>';
@@ -1119,11 +1133,15 @@
     render();
     pedirUnidades();
 
-    if (!linhas.size || Date.now() - ultimaCompleta > RECARREGAR_TUDO_MS) cicloCompleto();
-    else cicloLeve();
+    // v1.3.2: abrir/F5 SEMPRE relê as 24 h inteiras. A lista salva só aparece enquanto carrega.
+    // Antes, com lista salva de menos de 15 min, só a 1ª página era lida: uma lista salva
+    // incompleta (ex.: 1 pessoa) ficava presa e o F5 não resolvia — só outro navegador.
+    cicloCompleto();
 
     setInterval(() => {
       if (document.hidden) return;
+      // Sessão "expirada" por uma resposta ruim isolada: testa de novo sozinho em vez de travar.
+      if (sessaoExpirada) { void tentarRetomarSessao(); return; }
       if (Date.now() - ultimaCompleta > RECARREGAR_TUDO_MS) cicloCompleto();
       else cicloLeve();
     }, ATUALIZAR_MS);

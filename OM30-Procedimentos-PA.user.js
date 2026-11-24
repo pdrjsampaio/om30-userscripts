@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.7
+// @version      2.4.8
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -847,7 +847,10 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   // a cópia acontece assim que os dois existem.
   (function vigiarCidsDosPedidos(){
     let agendado=0;
-    const rodar=()=>{clearTimeout(agendado);agendado=setTimeout(()=>{preencherCidsDosPedidos().catch(e=>console.warn('[OM30 PA] CID dos pedidos:',e));},150);};
+    const rodar=()=>{clearTimeout(agendado);agendado=setTimeout(()=>{
+      preencherCidsDosPedidos().catch(e=>console.warn('[OM30 PA] CID dos pedidos:',e));
+      try{camposObsRx();}catch(e){console.warn('[OM30 PA] observação do Raio-X:',e);} // v2.4.8
+    },150);};
     const ob=new MutationObserver(m=>{
       if(m.some(x=>[...x.addedNodes].some(n=>n.nodeType===1&&(n.matches?.('tr')||n.querySelector?.('tr')))))rodar();
     });
@@ -884,6 +887,77 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
       ''
     );
   }
+
+  // v2.4.8: observação do Raio-X (região: tornozelo, hálux, "arcos costais"...). O pedido de Raio-X
+  // (seção EXAMES) não tem campo de texto no sistema: só exame e interno/externo. O médico escreve num
+  // campo OM30 logo abaixo do Raio-X e o texto vai para a CONDUTA da ficha, numa linha marcada:
+  //   OBS. RAIO-X (RADIOGRAFIA DE TORNOZELO): TORNOZELO D
+  // O Controle de Salas lê essa linha e mostra na sala do Raio-X (e em "Anotações da Enfermagem").
+  // Só as linhas que começam com "OBS. RAIO-X (" são do script; o resto da conduta não é tocado.
+  const MARCA_OBS_RX='OBS. RAIO-X';
+  const reLinhaObsRx=/^\s*OBS\.\s*RAIO-X\s*\(([^)]*)\)\s*:\s*(.*)$/i;
+  function ehLinhaRaioX(row){
+    return /^0204/.test(codigoLinhaExame(row))||/RADIOGRAFIA|RAIO\s*-?\s*X/i.test(nomeLinhaExame(row));
+  }
+  function obsRxDaConduta(){
+    const mapa=new Map();
+    for(const l of String(q('#prontuario_conduta')?.value||'').split('\n')){
+      const m=l.match(reLinhaObsRx);
+      if(m) mapa.set(norm(m[1]),clean(m[2]));
+    }
+    return mapa;
+  }
+  // Só roda por ação do médico (digitar no campo / remover um Raio-X): nunca no carregamento, para
+  // não apagar linhas de um Raio-X que ainda não apareceu na tela.
+  function atualizarCondutaRx(){
+    const ta=q('#prontuario_conduta');
+    if(!ta) return false;
+    const novas=[];
+    for(const row of qa('tr.prontuario-exame-row')){
+      if(!rowAtiva(row)||!ehLinhaRaioX(row)) continue;
+      const v=clean(q('input.om30-rx-obs',row)?.value).replace(/[()]/g,' ');
+      if(v) novas.push(`${MARCA_OBS_RX} (${(nomeLinhaExame(row)||'RAIO-X').replace(/[()]/g,' ')}): ${v}`);
+    }
+    const resto=String(ta.value||'').split('\n').filter(l=>!reLinhaObsRx.test(l));
+    while(resto.length&&!clean(resto[resto.length-1])) resto.pop();
+    const valor=[...resto,...novas].join('\n');
+    if(valor!==ta.value){
+      ta.value=valor;
+      ta.dispatchEvent(new Event('input',{bubbles:true}));
+      ta.dispatchEvent(new Event('change',{bubbles:true}));
+    }
+    return true;
+  }
+  function campoObsRx(row){
+    if(!row||!rowAtiva(row)||!ehLinhaRaioX(row)||q('input.om30-rx-obs',row)) return;
+    const celula=q('input[name*="[exame_token_nome]"]',row)?.closest('td')||q('td:nth-child(2)',row)||q('td',row);
+    if(!celula) return;
+    const box=document.createElement('div');
+    box.className='om30-rx-obs-box';
+    box.style.cssText='margin-top:6px;';
+    const inp=document.createElement('input');
+    inp.type='text';inp.className='om30-rx-obs';inp.maxLength=120;
+    inp.placeholder='Região / observação do Raio-X (ex.: tornozelo D, arcos costais)';
+    inp.title='Vai para a Conduta da ficha e aparece na sala do Raio-X';
+    inp.style.cssText='width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid #f0c36d;border-radius:6px;background:#fffbea;font-size:13px;';
+    inp.value=obsRxDaConduta().get(norm(nomeLinhaExame(row)))||'';
+    inp.addEventListener('input',()=>{clearTimeout(inp._t);inp._t=setTimeout(atualizarCondutaRx,250);});
+    inp.addEventListener('change',atualizarCondutaRx);
+    // Enter num campo de texto enviaria o prontuário.
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter'||e.code==='NumpadEnter'){e.preventDefault();e.stopPropagation();atualizarCondutaRx();}});
+    box.appendChild(inp);
+    celula.appendChild(box);
+  }
+  function camposObsRx(){
+    if(!q('#prontuario_conduta')) return;
+    for(const row of qa('tr.prontuario-exame-row')) campoObsRx(row);
+  }
+  // Raio-X removido da lista: a linha dele sai da conduta.
+  document.addEventListener('click',e=>{
+    const tr=e.target?.closest?.('tr.prontuario-exame-row');
+    if(!tr||!q('input.om30-rx-obs',tr)||!e.target.closest('a,button')) return;
+    setTimeout(()=>{try{atualizarCondutaRx();}catch(_){}},400);
+  },true);
 
   function codigoLinhaProcedimento(row){
     if(!row) return '';
@@ -6974,7 +7048,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.7', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.8', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

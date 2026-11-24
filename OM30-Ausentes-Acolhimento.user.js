@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.4.11
+// @version      2.4.12
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -5316,6 +5316,13 @@
   // R0: travas. A nova não depende da antiga; se a antiga já entrou, a nova entra mesmo assim (e não duplica o clique).
   if (window.__OM30_SENHA_POR_ABA_V2__) return;
   window.__OM30_SENHA_POR_ABA_V2__ = true;
+  // v2.4.12: DESLIGADO em 24/11. Esta memória de senha por aba (e o "Chamar" pelo último local) troca ou
+  // limpa a senha do navegador, que é a mesma para todas as abas, bem na hora do encaminhamento.
+  // Com ele as senhas saíam do acolhimento e chegavam ao médico como "Senha perdida". Volta o
+  // comportamento do sistema. As duas marcas ficam gravadas para a versão antiga, ainda presente em
+  // algum script não atualizado, também não se instalar nesta página.
+  window.__OM30_SENHA_POR_ABA__ = true;
+  return;
   const antigoJaInstalado = window.__OM30_SENHA_POR_ABA__ === true;
   window.__OM30_SENHA_POR_ABA__ = true;   // a antiga que carregar DEPOIS não se instala
 

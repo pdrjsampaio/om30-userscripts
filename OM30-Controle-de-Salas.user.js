@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.17
+// @version      3.1.18
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -10670,6 +10670,13 @@
   // R0: travas. A nova não depende da antiga; se a antiga já entrou, a nova entra mesmo assim (e não duplica o clique).
   if (window.__OM30_SENHA_POR_ABA_V2__) return;
   window.__OM30_SENHA_POR_ABA_V2__ = true;
+  // v3.1.18: DESLIGADO em 24/11. Esta memória de senha por aba (e o "Chamar" pelo último local) troca ou
+  // limpa a senha do navegador, que é a mesma para todas as abas, bem na hora do encaminhamento.
+  // Com ele as senhas saíam do acolhimento e chegavam ao médico como "Senha perdida". Volta o
+  // comportamento do sistema. As duas marcas ficam gravadas para a versão antiga, ainda presente em
+  // algum script não atualizado, também não se instalar nesta página.
+  window.__OM30_SENHA_POR_ABA__ = true;
+  return;
   const antigoJaInstalado = window.__OM30_SENHA_POR_ABA__ === true;
   window.__OM30_SENHA_POR_ABA__ = true;   // a antiga que carregar DEPOIS não se instala
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.4.10
+// @version      2.4.11
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -3814,9 +3814,9 @@
     // Botão remover: bloqueado se a ausência é de outra fila
     const btn = tr.querySelector(SEL_REMOVER);
     if (btn) {
-      // v2.4.10: no acolhimento a remoção nunca fica bloqueada: a remoção nativa daqui devolve o
-      // paciente normalmente, inclusive quem foi ausentado na fila médica.
-      const bloquear = TELA === 'ACOLHIMENTO' ? false : (r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor));
+      // v2.4.11: volta ao comportamento da 2.4.9. A 2.4.10 liberava aqui quem foi ausentado na fila
+      // médica; a remoção pelo acolhimento não reativa a senha e o médico pegava "Senha perdida".
+      const bloquear = r.fonte === 'D1' && !podeRemoverAqui(r.origem, r.setor);
       btn.classList.toggle('om30a-bloqueado', bloquear);
       if (bloquear) {
         if (btn.dataset.om30TituloOriginal === undefined) btn.dataset.om30TituloOriginal = btn.getAttribute('title') || '';
@@ -4123,41 +4123,7 @@
     const setor = tr.dataset.om30Setor || '';
     // Origem só deduzida (sem D1) e de outra fila: não bloqueia; remoção nativa, sem escolher fila.
     if (tr.dataset.om30Fonte !== 'D1' && !podeRemoverAqui(origem, setor)) return;
-    if (!podeRemoverAqui(origem, setor) && TELA === 'ACOLHIMENTO') {
-      // v2.4.10: antes bloqueava. Com registro errado (ex.: "fila médica" para quem nem passou pelo
-      // acolhimento) o paciente ficava preso: o acolhimento não podia remover e, pela fila médica,
-      // ele sumia. No acolhimento a remoção nativa devolve normal: confirma e remove.
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      if (removendo) return;
-      const onde = origem === 'MEDICO' ? 'na fila médica' : origem === 'EMERGENCIA' ? 'na emergência' : (setor ? `em ${setor}` : 'em outra fila');
-      const ok = await dialogo({
-        tipo: 'pergunta',
-        titulo: 'Remover a ausência pelo acolhimento?',
-        subtitulo: nomeDaLinha(tr),
-        texto: [`O registro diz que este paciente foi ausentado ${onde}.`, 'Removendo por aqui, o sistema devolve ele normalmente para a fila em que estava.'],
-        botoes: [{ rotulo: 'Cancelar', valor: false }, { rotulo: 'Remover ausência', valor: true, primario: true }]
-      });
-      if (!ok || removendo) return;
-      removendo = true;
-      try {
-        await removerAusenciaNativa(a.href);
-        const inf = infoLinha(tr);
-        const registro = inf?.id ? detalhes.get(inf.id) : null;
-        try { if (registro?.eventoId) await window.OM30Ausencias?.encerrar?.(registro.eventoId, inf.id, inf.tipo, '/ausentes/:id'); } catch (_) {}
-        location.reload();
-      } catch (e) {
-        await dialogo({
-          tipo: 'erro',
-          titulo: 'Não foi possível remover a ausência',
-          subtitulo: nomeDaLinha(tr),
-          texto: ['Nada foi alterado. Tente de novo em alguns segundos.', `Detalhe: ${descricaoErro(e)}`]
-        });
-      } finally {
-        removendo = false;
-      }
-      return;
-    }
+    // v2.4.11: sai a remoção liberada da 2.4.10 (não reativava a senha). Volta o bloqueio da 2.4.9.
     if (!podeRemoverAqui(origem, setor)) {
       ev.preventDefault();
       ev.stopImmediatePropagation();

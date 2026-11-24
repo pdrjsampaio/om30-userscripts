@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.8
+// @version      2.4.9
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -783,7 +783,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
   async function cidAceitoNoProcedimento(procId,cid){
     const chave=procId+'|'+cid.id;
     if(cacheCidCompativel.has(chave)) return cacheCidCompativel.get(chave);
-    const nome=clean(cid.texto.replace(/^[A-Z]\d{2}(?:\.?\d{1,2})?\s*[-–:]\s*/i,'')).replace(/[,;()]/g,' ');
+    const nome=clean(cid.texto.replace(/^[A-Z]\d{2}(?:\.\d{1,2})?\s*[-–:]\s*/i,'')).replace(/[,;()]/g,' ');
     const palavras=nome.split(/\s+/).filter(w=>w.length>=3);
     const buscas=[...new Set([palavras.slice(0,3).join(' '),palavras.slice(0,2).join(' '),palavras[0]||''].filter(Boolean))];
     let ok=false;
@@ -888,9 +888,10 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     );
   }
 
-  // v2.4.8: observação do Raio-X (região: tornozelo, hálux, "arcos costais"...). O pedido de Raio-X
-  // (seção EXAMES) não tem campo de texto no sistema: só exame e interno/externo. O médico escreve num
-  // campo OM30 logo abaixo do Raio-X e o texto vai para a CONDUTA da ficha, numa linha marcada:
+  // v2.4.8 / v2.4.9: observação do Raio-X (região: tornozelo, hálux, "arcos costais"...). O pedido de Raio-X
+  // (seção EXAMES) não tem campo de texto no sistema: só exame e interno/externo. O médico escreve direto
+  // no card do Raio-X selecionado dentro do CONTROLE DE SALAS (#om30pa) — ou no campo logo abaixo da linha
+  // nativa — e o texto vai para a CONDUTA da ficha, numa linha marcada:
   //   OBS. RAIO-X (RADIOGRAFIA DE TORNOZELO): TORNOZELO D
   // O Controle de Salas lê essa linha e mostra na sala do Raio-X (e em "Anotações da Enfermagem").
   // Só as linhas que começam com "OBS. RAIO-X (" são do script; o resto da conduta não é tocado.
@@ -908,16 +909,24 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     }
     return mapa;
   }
+  function valorObsRxLinha(row){
+    if(!row) return '';
+    const inpNativo=q('input.om30-rx-obs',row);
+    if(inpNativo) return clean(inpNativo.value);
+    if(row.dataset?.om30RxObs!=null) return clean(row.dataset.om30RxObs);
+    const semParenteses=s=>clean(String(s||'').replace(/[()]/g,' '));
+    return obsRxDaConduta().get(norm(semParenteses(nomeLinhaExame(row))))||'';
+  }
   // Só roda por ação do médico (digitar no campo / remover um Raio-X): nunca no carregamento, para
   // não apagar linhas de um Raio-X que ainda não apareceu na tela.
   function atualizarCondutaRx(){
     const ta=q('#prontuario_conduta');
     if(!ta) return false;
     const novas=[];
+    const semParenteses=s=>clean(String(s||'').replace(/[()]/g,' '));
     for(const row of qa('tr.prontuario-exame-row')){
       if(!rowAtiva(row)||!ehLinhaRaioX(row)) continue;
-      const semParenteses=s=>clean(String(s||'').replace(/[()]/g,' '));
-      const v=semParenteses(q('input.om30-rx-obs',row)?.value);
+      const v=semParenteses(valorObsRxLinha(row));
       if(v) novas.push(`${MARCA_OBS_RX} (${semParenteses(nomeLinhaExame(row))||'RAIO-X'}): ${v}`);
     }
     const resto=String(ta.value||'').split('\n').filter(l=>!reLinhaObsRx.test(l));
@@ -929,6 +938,17 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
       ta.dispatchEvent(new Event('change',{bubbles:true}));
     }
     return true;
+  }
+  function definirObsRxLinha(row,texto,origemInp=null){
+    if(!row) return;
+    const v=String(texto??'');
+    row.dataset.om30RxObs=v;
+    const inpNativo=q('input.om30-rx-obs',row);
+    if(inpNativo&&inpNativo!==origemInp&&inpNativo.value!==v) inpNativo.value=v;
+    for(const inpPainel of qa('#om30pa input.om30-cs-rx-obs')){
+      if(inpPainel._om30Row===row&&inpPainel!==origemInp&&inpPainel.value!==v) inpPainel.value=v;
+    }
+    atualizarCondutaRx();
   }
   function campoObsRx(row){
     if(!row||!rowAtiva(row)||!ehLinhaRaioX(row)||q('input.om30-rx-obs',row)) return;
@@ -942,11 +962,13 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     inp.placeholder='Região / observação do Raio-X (ex.: tornozelo D, arcos costais)';
     inp.title='Vai para a Conduta da ficha e aparece na sala do Raio-X';
     inp.style.cssText='width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid #f0c36d;border-radius:6px;background:#fffbea;font-size:13px;';
-    inp.value=obsRxDaConduta().get(norm(nomeLinhaExame(row)))||'';
-    inp.addEventListener('input',()=>{clearTimeout(inp._t);inp._t=setTimeout(atualizarCondutaRx,250);});
-    inp.addEventListener('change',atualizarCondutaRx);
+    const semParenteses=s=>clean(String(s||'').replace(/[()]/g,' '));
+    inp.value=row.dataset?.om30RxObs??obsRxDaConduta().get(norm(semParenteses(nomeLinhaExame(row))))??'';
+    row.dataset.om30RxObs=inp.value;
+    inp.addEventListener('input',()=>{clearTimeout(inp._t);inp._t=setTimeout(()=>definirObsRxLinha(row,inp.value,inp),200);});
+    inp.addEventListener('change',()=>definirObsRxLinha(row,inp.value,inp));
     // Enter num campo de texto enviaria o prontuário.
-    inp.addEventListener('keydown',e=>{if(e.key==='Enter'||e.code==='NumpadEnter'){e.preventDefault();e.stopPropagation();atualizarCondutaRx();}});
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter'||e.code==='NumpadEnter'){e.preventDefault();e.stopPropagation();definirObsRxLinha(row,inp.value,inp);}});
     box.appendChild(inp);
     celula.appendChild(box);
   }
@@ -1148,9 +1170,9 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 
     row.dataset.om30Codigo=digits(cd).slice(0,10);
     row.dataset.om30Nome=nm;
-    try{await preencherCidDoPedido(row);}catch(_){} // v2.4.7: CID do atendimento no pedido (se o sistema aceitar)
 
     if(tokenTemCodigo(selector,cd)) tokenClear(selector);
+    try{await preencherCidDoPedido(row);}catch(_){} // v2.4.7: CID do atendimento no pedido (se o sistema aceitar)
     renderSelecionados?.();
     return {already:false,row};
   }
@@ -1838,23 +1860,56 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 
   function renderSelecionados(){
     if(!E?.sel) return;
+    // v2.4.9: não recriar a lista de selecionados enquanto o médico estiver digitando na observação do Raio-X dentro do Controle de Salas
+    if(document.activeElement?.classList?.contains('om30-cs-rx-obs') && E.sel.contains(document.activeElement)) return;
 
+    try{camposObsRx();}catch(_){}
     const xs=selecionadosNativos(tipo);
+    const ehAbaRx=tipo==='raiox';
 
     E.sel.innerHTML=
       '<div class="stitle"><span>Selecionados neste atendimento</span><span class="muted">'+xs.length+'</span></div>'+
       (xs.length
         ?'<div class="selected-list">'+xs.map((x,i)=>
-          '<div class="selected-item">'+
+          '<div class="selected-item" style="'+(ehAbaRx?'flex-wrap:wrap;':'')+'">'+
             '<div class="selected-mark">✓</div>'+
             '<div class="selected-main">'+
               (x.codigo?'<div class="selected-code">'+esc(x.codigo)+'</div>':'')+
               '<div class="selected-name">'+esc(x.nome||'Item selecionado')+'</div>'+
             '</div>'+
             '<button type="button" class="selected-remove" data-i="'+i+'" title="Remover dos selecionados" aria-label="Remover dos selecionados">×</button>'+
+            (ehAbaRx
+              ?'<div class="om30-cs-rx-obs-wrap" style="flex:1 0 100%;width:100%;margin-top:6px;padding-left:20px;box-sizing:border-box;">'+
+                 '<input type="text" class="om30-cs-rx-obs" data-i="'+i+'" maxlength="120" '+
+                   'placeholder="Região / observação do Raio-X (ex.: tornozelo D, arcos costais)" '+
+                   'title="Vai para a Conduta da ficha e aparece na sala do Raio-X no Controle de Salas" '+
+                   'value="'+esc(valorObsRxLinha(x.row))+'" '+
+                   'style="width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid #f0c36d;border-radius:6px;background:#fffbea;color:#333;font-size:11.5px;">'+
+               '</div>'
+              :'')+
           '</div>'
         ).join('')+'</div>'
         :'<div class="empty">Nenhum item selecionado nesta categoria.</div>');
+
+    if(ehAbaRx){
+      qa('input.om30-cs-rx-obs',E.sel).forEach(inp=>{
+        const item=xs[Number(inp.dataset.i)];
+        if(!item?.row) return;
+        inp._om30Row=item.row;
+        inp.addEventListener('input',()=>{
+          clearTimeout(inp._t);
+          inp._t=setTimeout(()=>definirObsRxLinha(item.row,inp.value,inp),180);
+        });
+        inp.addEventListener('change',()=>definirObsRxLinha(item.row,inp.value,inp));
+        inp.addEventListener('keydown',e=>{
+          if(e.key==='Enter'||e.code==='NumpadEnter'){
+            e.preventDefault();
+            e.stopPropagation();
+            definirObsRxLinha(item.row,inp.value,inp);
+          }
+        });
+      });
+    }
 
     qa('.selected-remove',E.sel).forEach(btn=>{
       btn.addEventListener('click',e=>{
@@ -1865,6 +1920,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
         if(!item?.row) return;
 
         if(removerLinhaNativa(item.row)){
+          if(ehAbaRx) setTimeout(()=>{try{atualizarCondutaRx();}catch(_){}},120);
           setTimeout(renderSelecionados,80);
         }else{
           status('Não foi possível remover este item com segurança.','err');
@@ -7050,7 +7106,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.8', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.9', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

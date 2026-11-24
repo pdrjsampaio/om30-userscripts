@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Procedimentos PA
 // @namespace    https://om30.com.br/
-// @version      2.4.6
+// @version      2.4.7
 // @description  Procedimentos PA + Clínico Porta/SADT + assinatura digital pela rota nativa com confirmação real em listar_assinaveis + proteção de saída + fluxo real do Controle de Salas.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Procedimentos-PA.user.js
@@ -759,6 +759,58 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
     return getComputedStyle(row).display!=='none';
   }
 
+  // v2.4.7: CID do atendimento nos procedimentos pedidos (drenagem de abscesso, toracocentese,
+  // paracentese, glicemia capilar, Raio-X...). O pedido sai pela seção nativa PROCEDIMENTOS/CIDS e a
+  // linha só leva o CID que estiver no campo "CID" dela; o painel OM30 incluía sem CID. Na sala do
+  // Controle de Salas o CID aparece só como texto ("—") e, quando o procedimento exige CID, não havia
+  // onde colocar. Agora toda linha NOVA de pedido sem CID recebe o 1º CID que o médico lançou no
+  // atendimento (CIDs da evolução), como o próprio sistema já faz no faturamento. Linha já salva e linha
+  // com CID escolhido pelo médico não mudam.
+  function cidDoAtendimento(){
+    for(const tr of qa('#prontuario_evolucao_clinica_cids .entity_table tr')){
+      if(!rowAtiva(tr)) continue;
+      const id=clean(q('input[id*="cid_id"]',tr)?.value);
+      if(!/^\d+$/.test(id)) continue;
+      return {id,texto:clean(q('input[id*="cid_token"]',tr)?.value)};
+    }
+    return null;
+  }
+  function preencherCidDoPedido(row){
+    if(!row||!rowAtiva(row)) return false;
+    const campoId=q('input[name*="[lancamentos_bpa_attributes]"][name$="[cid_id]"]',row);
+    if(!campoId||clean(campoId.value)) return false;
+    if(clean(q('input[name*="[lancamentos_bpa_attributes]"][name$="[id]"]',row)?.value)) return false; // pedido já salvo
+    const cid=cidDoAtendimento();
+    if(!cid) return false;
+    campoId.value=cid.id;
+    const campoTexto=q('input[name*="[lancamentos_bpa_attributes]"][name$="[cid_token]"]',row);
+    if(campoTexto&&cid.texto&&(!clean(campoTexto.value)||/^[—-]$/.test(clean(campoTexto.value)))) campoTexto.value=cid.texto;
+    row.dataset.om30CidAtendimento='1';
+    return true;
+  }
+  function preencherCidsDosPedidos(){
+    let n=0;
+    for(const r of qa('tr.prontuario-lancamento-bpa-row')) if(preencherCidDoPedido(r)) n++;
+    if(n) console.info('[OM30 PA] CID do atendimento copiado para',n,'pedido(s) de procedimento.');
+    return n;
+  }
+  // Quando o médico lança o CID depois do procedimento (ou inclui o procedimento pela tela nativa),
+  // a cópia acontece assim que os dois existem.
+  (function vigiarCidsDosPedidos(){
+    let agendado=0;
+    const rodar=()=>{clearTimeout(agendado);agendado=setTimeout(()=>{try{preencherCidsDosPedidos();}catch(e){console.warn('[OM30 PA] CID dos pedidos:',e);}},150);};
+    const ob=new MutationObserver(m=>{
+      if(m.some(x=>[...x.addedNodes].some(n=>n.nodeType===1&&(n.matches?.('tr')||n.querySelector?.('tr')))))rodar();
+    });
+    const ligar=()=>{
+      const alvo=document.body;
+      if(!alvo)return setTimeout(ligar,500);
+      ob.observe(alvo,{childList:true,subtree:true});
+      rodar();
+    };
+    ligar();
+  })();
+
   function codigoLinhaExame(row){
     if(!row) return '';
     const direto=digits(
@@ -971,6 +1023,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__)) {
 
     row.dataset.om30Codigo=digits(cd).slice(0,10);
     row.dataset.om30Nome=nm;
+    try{preencherCidDoPedido(row);}catch(_){} // v2.4.7: CID do atendimento no pedido
 
     if(tokenTemCodigo(selector,cd)) tokenClear(selector);
     renderSelecionados?.();
@@ -6872,7 +6925,7 @@ if (/^\/prontuarios\//.test(__OM30_PA_PATH__) || /^\/encaminhamentos_controle_sa
   const rota = location.pathname.match(/^\/prontuarios\/(new|\d+)(?:\/?|\/show\/?|\/edit\/?)$/);
   if (!rota || window.__OM30_PA_FLUXO_V229_TEST__) return;
   window.__OM30_PA_FLUXO_V229_TEST__ = true;
-  const V='2.4.6', novo=rota[1]==='new', id=novo?'':rota[1];
+  const V='2.4.7', novo=rota[1]==='new', id=novo?'':rota[1];
   const TAG='[OM30 PA Fluxo]';
   const q=(sel,raiz=document)=>raiz?.querySelector?.(sel)||null;
   const qa=(sel,raiz=document)=>[...(raiz?.querySelectorAll?.(sel)||[])];

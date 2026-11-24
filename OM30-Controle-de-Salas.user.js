@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.16
+// @version      3.1.17
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -352,11 +352,17 @@
         // e o instante mínimo para o corte fino feito aqui (24h).
         function periodoParams(periodo, agora) {
             const p = PERIODOS[periodo] || PERIODOS['24h'];
-            const ini = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - p.dias);
+            // v3.1.17: "Hoje" pedia ao sistema só encaminhamentos de HOJE. Quem foi encaminhado antes
+            // da meia-noite e ainda esperava sumia da fila na virada do dia (num PC em "Hoje" sumia,
+            // no outro em "24 horas" aparecia). Agora pede também ontem e a tela mostra hoje + quem
+            // ainda está Em Espera/Em Andamento (manterAtivos), em qualquer sala (inclusive Raio-X).
+            const ini = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - Math.max(1, p.dias));
+            const inicioHoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
             return {
                 dataInicial: isoDia(ini),
                 dataFinal: isoDia(agora),
-                minimo: p.horas ? new Date(agora.getTime() - p.horas * 3600e3) : null,
+                minimo: p.horas ? new Date(agora.getTime() - p.horas * 3600e3) : inicioHoje,
+                manterAtivos: true,
             };
         }
 
@@ -366,14 +372,15 @@
         function aplicarPeriodo(condicoes, periodo, agora) {
             const cond = Object.assign({}, condicoes);
             const filtroDataSistema = !!(cond.dataInicial || cond.dataFinal);
-            let minimo = null;
+            let minimo = null, manterAtivos = false;
             if (!filtroDataSistema) {
                 const p = periodoParams(periodo, agora);
                 cond.dataInicial = p.dataInicial;
                 cond.dataFinal = p.dataFinal;
                 minimo = p.minimo;
+                manterAtivos = !!p.manterAtivos;
             }
-            return { cond, minimo, filtroDataSistema };
+            return { cond, minimo, filtroDataSistema, manterAtivos };
         }
 
         // Chave canônica de parâmetros (ordem das chaves não importa; null/undefined
@@ -417,12 +424,14 @@
                 .map(x => x.it);
         }
 
-        function filtrar(itens, { minimo = null, soEspera = false } = {}) {
+        function filtrar(itens, { minimo = null, soEspera = false, manterAtivos = false } = {}) {
             return itens.filter(it => {
                 if (soEspera && it.status !== 'Em Espera') return false;
                 if (minimo) {
                     const d = dataHora(it);
-                    if (d && d < minimo) return false;
+                    // v3.1.17: paciente ainda Em Espera/Em Andamento nunca some por causa do período.
+                    const ativo = manterAtivos && (it.status === 'Em Espera' || it.status === 'Em Andamento');
+                    if (d && d < minimo && !ativo) return false;
                 }
                 return true;
             });
@@ -8971,7 +8980,7 @@
                 } catch (_) { return agora; }
             })();
             const inicioCarga = performance.now();
-            let cond, minimo, filtroDataSistema;
+            let cond, minimo, filtroDataSistema, manterAtivos = false;
             const condBase = Object.assign({}, vm.conditions || {});
             delete condBase.dataInicial;
             delete condBase.dataFinal;
@@ -8983,7 +8992,7 @@
                 minimo = null;
                 filtroDataSistema = false;
             } else {
-                ({ cond, minimo, filtroDataSistema } = N.aplicarPeriodo(condBase, cfg.periodo, agoraParede));
+                ({ cond, minimo, filtroDataSistema, manterAtivos } = N.aplicarPeriodo(condBase, cfg.periodo, agoraParede));
             }
             gravarJSON(CHAVE_ULTIMA_LISTA, vm.url);
 
@@ -9081,7 +9090,7 @@
                 CS.truncado = todos.length < CS.totalPeriodo;
                 const ativosBase = historico ? todos : todos.filter(it => (it.status === 'Em Espera' || it.status === 'Em Andamento') && filaPediatria(it) && filaSalaEx(it));
                 const ativos = comEmMed ? ativosBase.filter(filaEmMed) : ativosBase;
-                const filtrados = N.filtrar(ativos, { minimo, soEspera: false });
+                const filtrados = N.filtrar(ativos, { minimo, soEspera: false, manterAtivos: !historico && manterAtivos });
                 const lista = historico ? N.ordenarHistorico(filtrados) : N.ordenar(filtrados);
                 const classes = historico ? N.classesHistorico(lista) : N.classesLinhas(lista);
                 lista.forEach((it, i) => {
@@ -9935,10 +9944,13 @@
 
   const API = 'https://faturamentops.pages.dev';
   const VERSAO = '2.0.0';
-  const CICLO_MS = 3 * 60000, POR_CICLO = 15, MAX_ITENS = 30, MAX_LIDOS = 40;
-  const REVER_MS = 45 * 60000, REVER_POR_CICLO = 5;
+  // v3.1.17: ciclo de 10 min (antes 3). Cada PC com a lista aberta mandava a cada 3 min e o servidor
+  // relia a unidade inteira a cada envio (11,9 mi de linhas/dia no D1). Nada deixa de ser enviado:
+  // hoje e ontem continuam sendo relidos todo ciclo, e o lote por ciclo subiu para não formar fila.
+  const CICLO_MS = 10 * 60000, POR_CICLO = 40, MAX_ITENS = 30, MAX_LIDOS = 40;
+  const REVER_MS = 45 * 60000, REVER_POR_CICLO = 10;
   const STORE = 'om30:raiox-fat:v1:enviados', STORE_REV = 'om30:fat-salas:v1:revistos', STORE_FICHA = 'om30:fat-salas:v1:com-ficha';
-  const FICHA_POR_CICLO = 10; // reenvio dos pedidos mandados antes de existir o número da ficha
+  const FICHA_POR_CICLO = 20; // reenvio dos pedidos mandados antes de existir o número da ficha
   const GUARDA_MS = 4 * 86400000;
   const SALAS = [
     { sala: 'raio_x', endpoint: '/encaminhamentos_radiografias' },

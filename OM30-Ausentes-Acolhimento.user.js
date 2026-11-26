@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Ausentes Acolhimento e Fila Médica | Origem
 // @namespace    https://om30.com.br/
-// @version      2.4.12
+// @version      2.4.13
 // @description  Ausentes do acolhimento e da fila médica separados por origem (Acolhimento x Fila Médica x Outros), devolução da mesma senha ao remover a ausência e liberação de senha presa em outro profissional ao chamar.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Ausentes-Acolhimento.user.js
@@ -956,6 +956,7 @@
     return true;
   }
   function instalarAbaNova() {
+    return true;   // v2.4.13: ficha volta a abrir na MESMA aba, como o sistema (aba nova + fila aberta trocava a senha do navegador, que é a mesma para todas as abas: Senha perdida).
     // "Confirmar atendimento" do painel de chamada (mesmo que o sistema faz, mas em aba nova).
     const a = remendarMetodo('fila-chamada', 'atender', original => function () {
       if (this.criarRegistro || this.controleSala || !this.redirectUrl) return original.apply(this, arguments);

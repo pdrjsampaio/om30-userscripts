@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.17
+// @version      2.15.18
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -977,6 +977,7 @@
     return true;
   }
   function instalarAbaNova() {
+    return true;   // v2.15.18: ficha volta a abrir na MESMA aba, como o sistema (aba nova + fila aberta trocava a senha do navegador: Senha perdida).
     // "Confirmar atendimento" do painel de chamada (mesmo que o sistema faz, mas em aba nova).
     const a = remendarMetodo('fila-chamada', 'atender', original => function () {
       if (this.criarRegistro || this.controleSala || !this.redirectUrl) return original.apply(this, arguments);
@@ -1533,7 +1534,9 @@
   // nativa (prontuario_com_retorno), além das RT. O fluxo RT de 36h e o contexto
   // de retorno continuam usando só itemEhRetorno (senha RT).
   function itemNaFilaRetorno(item) {
-    return itemEhRetorno(item) || itemEhRetornoNativo(item);
+    // v2.15.18 (pedido do dono, 26/11): o filtro Retorno é SÓ o retorno do dia (tag nativa). A senha RT fica na
+    // fila normal (cores pelo risco), mas continua mostrando de quem foi o atendimento anterior (itemEhRetorno).
+    return itemEhRetornoNativo(item);
   }
 
   function riscoItem(item) {
@@ -7371,6 +7374,7 @@
     return null;
   }
   function motivoBloqueioAusentar(str) {
+    return '';   // v2.15.18: o médico volta a poder ausentar qualquer paciente da fila (pedido do dono, 26/11). Fica só a trava de paciente errado (fila mudou com o aviso aberto).
     if (!fontesFilaMedica().length) return '';   // fila ainda não carregada: não decide no escuro
     const it = itemPorAtendimento(str);
     if (!it) return 'Este paciente não está na fila médica desta tela (pode estar ainda no acolhimento ou em outra fila). Ausente pela tela onde ele está.';

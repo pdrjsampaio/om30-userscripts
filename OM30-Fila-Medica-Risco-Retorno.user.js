@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Fila Médica | Risco + Retorno
 // @namespace    https://om30.com.br/
-// @version      2.15.18
+// @version      2.15.19
 // @description  Fila médica contínua no padrão Controle de Salas: coleção nativa completa, filtros estáveis, tempo de espera, ações e retorno médico RT de 36h + profissional do Retorno nativo.
 // @author       Pedro Sampaio - Samp
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Fila-Medica-Risco-Retorno.user.js
@@ -2642,6 +2642,7 @@
   function om30RtNomeProfissional(valor) {
   const txt=clean(valor);
   if(!txt||txt.length>180||/\d|[:<>]/.test(txt))return '';
+  if(!/\p{L}/u.test(txt))return '';   // v2.15.19: o histórico traz "—" quando não há profissional; não é nome.
   if(/^(?:ESPECIALIDADE|DATA|HORA|UNIDADE|SELECIONE)\b/i.test(txt))return '';
   if(/^(?:M[EÉ]DIC[OA]|PROFISSIONAL|ESPECIALIDADE|DATA|HORA|UNIDADE|N[AÃ]O INFORMADO|N[AÃ]O LOCALIZADO|SEM PROFISSIONAL|SELECIONE)(?:\s*[-:]|$)/i.test(txt))return '';
   return txt;
@@ -2712,7 +2713,9 @@
   function om30RtNormalizarNascimento(value) {
   const raw=om30RtTextoPlano(value),digits=raw.replace(/\D/g,'');
   let d,m,y;
-  if((m=raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/))){d=+m[1];m=+m[2];y=+m[3];}
+  // v2.15.19: antes era d=+m[1];m=+m[2];y=+m[3] — depois de m virar número, m[3] dava undefined (ano NaN) e TODA
+  // data dd/mm/aaaa voltava vazia: o histórico do RT ficava "sem data" e a fila dizia "não foi possível concluir".
+  if((m=raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/))){d=+m[1];y=+m[3];m=+m[2];}
   else if((m=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/))){y=+m[1];d=+m[3];m=+m[2];}
   else if(/^\d{8}$/.test(digits)){d=+digits.slice(0,2);m=+digits.slice(2,4);y=+digits.slice(4);}
   else return '';
@@ -2892,106 +2895,117 @@
 }
 
   async function om30RtResolver(atendimentoStr,refMs,item=null,row=null) {
-  // 1) Histórico oficial do munícipe (data, hora, profissional, especialidade e unidade numa só consulta).
-  // 2) Se não der para ler o histórico inteiro: fluxo da 2.14.15 (tabela do prontuário + abrir cada prontuário).
+  // Histórico oficial do munícipe (data, hora, profissional, especialidade e unidade numa só consulta).
+  // Não há mais fallback pela ficha nova (/prontuarios/new): abrir /new ou /edit em segundo plano pode
+  // deixar o paciente "Em Andamento". Se o histórico não fechar, o resultado é 'incompleto' com o motivo.
   const atendimento=parseAtendimento(atendimentoStr);
   if(!atendimento||!(refMs>0))return {status:'incompleto',motivo:'referencia',registro:null};
-  let direto=null;
-  try{direto=await om30RtResolverHistorico(atendimento,refMs,item,row);}catch{direto=null;}
-  if(direto&&direto.status!=='incompleto')return direto;
-  const pagina=await om30RtResolverPagina(atendimentoStr,refMs);
-  if(pagina.status==='incompleto'&&direto)pagina.motivo=pagina.motivo||direto.motivo;
-  return pagina;
+  try{return await om30RtResolverHistorico(atendimento,refMs,item,row);}
+  catch(e){return {status:'incompleto',motivo:/Sess[aã]o/i.test(String(e?.message||''))?'sessao':'consulta',registro:null};}
+}
+
+  function om30RtMunicipeDaConsulta(doc,atendimento) {
+  // Consulta do atendimento PA (/atendimentos_pas/N, só leitura): o botão "Editar Munícipe" leva a /municipes/<id>/edit.
+  const idsPagina=new Set([...doc.querySelectorAll('a[href*="/atendimentos_pas/"]')].map(a=>(String(a.getAttribute('href')||'').match(/\/atendimentos_pas\/(\d+)/)||[])[1]).filter(Boolean));
+  if(idsPagina.size&&!idsPagina.has(String(atendimento.id)))return {erro:'contexto',id:''};
+  const ids=new Set([...doc.querySelectorAll('a[href*="/municipes/"]')].map(a=>(String(a.getAttribute('href')||'').match(/\/municipes\/(\d+)(?:\/edit)?\/?(?:[?#]|$)/)||[])[1]).filter(Boolean));
+  return ids.size===1?{erro:'',id:[...ids][0]}:{erro:'',id:''};
 }
 
   async function om30RtResolverHistorico(atendimento,refMs,item,row) {
   const empty=motivo=>({status:'incompleto',motivo,registro:null});
-  const doc=await om30RtDocumento('/prontuarios/new?prontuariavel_id='+encodeURIComponent(atendimento.id)+'&prontuariavel_type='+encodeURIComponent(atendimento.tipo));
-  const returnedId=clean(doc.querySelector('#prontuario_prontuariavel_id, input[name="prontuario[prontuariavel_id]"]')?.value);
-  if(returnedId&&returnedId!==atendimento.id)return empty('contexto');
-  const unidadeAtual=extrairUnidadesDocumento(doc);
-  const nomesUnidade=[...new Set([...(unidadeAtual.nomes||[]),clean(document.querySelector('a[href*="trocar_unidade_saude"]')?.textContent)].filter(Boolean))];
+  // Só a CONSULTA do atendimento (leitura). A senha RT é da Urgência e Emergência (AtendimentoPa).
+  if(atendimento.tipo!=='AtendimentoPa')return empty('tipo_atendimento');
+  const doc=await om30RtDocumento('/atendimentos_pas/'+encodeURIComponent(atendimento.id));
+  const daConsulta=om30RtMunicipeDaConsulta(doc,atendimento);
+  if(daConsulta.erro)return empty(daConsulta.erro);
+  const unidadeTopo=a=>clean(a?.textContent);
+  const nomesUnidade=[...new Set([unidadeTopo(doc.querySelector('a[href*="trocar_unidade_saude"]')),unidadeTopo(document.querySelector('a[href*="trocar_unidade_saude"]'))].filter(Boolean))];
   if(!nomesUnidade.length)return empty('unidade');
-  const municipeId=await om30RtBuscarIdMunicipe(om30RtIdentidadeFila(item,row,doc));
+  const unidadeAtual={ids:[],nomes:nomesUnidade};
+  const municipeId=daConsulta.id||await om30RtBuscarIdMunicipe(om30RtIdentidadeFila(item,row,doc));
   if(!municipeId)return empty('identidade');
   const hist=await om30RtHistoricoMunicipe(municipeId,refMs);
   if(hist.status!=='completo')return empty(hist.motivo||'historico');
-  const validos=[];let duvida=0;
+  const candidatos=[];let duvida=0;
   for(const r of hist.registros){
     if(atendimento.tipo==='AtendimentoPa'&&r.atendimentoPaId===atendimento.id)continue;   // o próprio RT
     if(!r.timestamp){duvida=Math.max(duvida,refMs);continue;}
     // Regra validada: só conta atendimento ANTES da chegada do RT e dentro de 36h.
     if(r.timestamp>=refMs||!dentroDaJanelaRetorno(r.timestamp,refMs))continue;
-    if(!r.especialidade||!r.unidadeTexto||!r.profissional){duvida=Math.max(duvida,r.timestamp);continue;}
+    if(!r.especialidade||!r.unidadeTexto){duvida=Math.max(duvida,r.timestamp);continue;}
     if(!ehEspecialidadeMedica(r.especialidade)||!om30RtMesmaUnidadeNome(nomesUnidade,r.unidadeTexto))continue;
-    validos.push({...r,dataAgendada:r.data,horaAgendada:r.hora,timestampAgendado:r.timestamp,
+    candidatos.push({...r,municipeId:String(municipeId),dataAgendada:r.data,horaAgendada:r.hora,timestampAgendado:r.timestamp,
       unidade:{ids:[],nomes:[r.unidadeTexto]},unidadeAtual,_fonteProntuario:'historico_municipe'});
   }
-  validos.sort((a,b)=>b.timestamp-a.timestamp);
-  const registro=validos[0]||null;
-  // Linha sem dados suficientes que pode ser mais recente que a escolhida: não afirma nada.
-  if(duvida&&(!registro||duvida>registro.timestamp))return empty('linha_historico');
-  return {status:registro?'encontrado':'nao_localizado',motivo:'',registro,total:hist.registros.length,verificados:hist.registros.length,fonte:'historico_municipe'};
+  candidatos.sort((a,b)=>b.timestamp-a.timestamp);
+  // Linha sem dados suficientes que pode ser mais recente que as outras: não afirma nada.
+  if(duvida&&(!candidatos.length||duvida>candidatos[0].timestamp))return empty('linha_historico');
+  // 2.15.19: no histórico, o Atendimento PA muitas vezes vem com Profissional "—" (captura: 12 de 30 linhas).
+  // O nome do médico e o resumo vêm do prontuário (/prontuarios/N, só leitura) ligado ao MESMO atendimento.
+  // Sem prontuário ligado ao atendimento = o médico não registrou → não conta como atendimento anterior.
+  for(const c of candidatos.slice(0,4)){
+    let p;
+    try{p=await om30RtProntuarioDoAtendimentoPa(c);}catch{p={status:'erro'};}
+    if(p.status!=='ok'){
+      if(c.profissional)return {status:'encontrado',motivo:'',registro:c,total:hist.registros.length,verificados:hist.registros.length,fonte:'historico_municipe'};
+      return empty('prontuario');
+    }
+    if(!p.achado){if(c.profissional)return {status:'encontrado',motivo:'',registro:c,total:hist.registros.length,verificados:hist.registros.length,fonte:'historico_municipe'};continue;}
+    const profissional=c.profissional||om30RtNomeProfissional(p.achado.profissional);
+    if(!profissional)return empty('prontuario');
+    const registro={...c,profissional,prontuarioId:p.achado.prontuarioId,_docProntuario:p.achado.doc,_fonteProntuario:p.achado.url};
+    return {status:'encontrado',motivo:'',registro,total:hist.registros.length,verificados:hist.registros.length,fonte:'historico_municipe'};
+  }
+  if(candidatos.length>4)return empty('historico_parcial');
+  return {status:'nao_localizado',motivo:'',registro:null,total:hist.registros.length,verificados:hist.registros.length,fonte:'historico_municipe'};
 }
 
-  async function om30RtResolverPagina(atendimentoStr,refMs) {
-  const atendimento=parseAtendimento(atendimentoStr);
-  const empty=(status,motivo)=>({status,motivo,registro:null});
-  if(!atendimento||!(refMs>0))return empty('incompleto','referencia');
-  let doc;
-  try{doc=await om30RtDocumento('/prontuarios/new?prontuariavel_id='+encodeURIComponent(atendimento.id)+'&prontuariavel_type='+encodeURIComponent(atendimento.tipo));}
-  catch{return empty('incompleto','consulta');}
-  const returnedId=clean(doc.querySelector('#prontuario_prontuariavel_id, input[name="prontuario[prontuariavel_id]"]')?.value);
-  const returnedType=clean(doc.querySelector('#prontuario_prontuariavel_type, input[name="prontuario[prontuariavel_type]"]')?.value);
-  if((returnedId&&returnedId!==atendimento.id)||(returnedType&&returnedType!==atendimento.tipo))return empty('incompleto','contexto');
-  const unidadeAtual=extrairUnidadesDocumento(doc);
-  if(!unidadeIdentificada(unidadeAtual))return empty('incompleto','unidade');
-  const tabelas=acharTabelaHistorico(doc);
-  if(!tabelas.length)return empty('incompleto','historico');
-  const candidates=coletarHistoricoMedico(doc).filter(r=>!om30RtRegistroAtual(r,atendimento,doc));
-  // Prefixo é apenas prioridade. Nenhum número/formato exclui um prontuário.
-  candidates.sort((a,b)=>Number(candidatoRapidoMesmaUnidade36h(b,unidadeAtual,refMs))-Number(candidatoRapidoMesmaUnidade36h(a,unidadeAtual,refMs))||b.timestampAgendado-a.timestampAgendado);
-  const signature=candidates.map(om30RtChaveRegistro).join(';')+'|'+JSON.stringify(unidadeAtual);
-  const key=atendimentoStr+'|'+refMs;
-  let progress=om30RtProgresso.get(key);
-  if(!progress||progress.signature!==signature||progress.until<Date.now())progress={signature,checked:new Map(),tried:new Map(),until:Date.now()+180000};
-  om30RtProgresso.set(key,progress);
-  if(om30RtProgresso.size>100)om30RtProgresso.delete(om30RtProgresso.keys().next().value);
-  const pending=candidates.filter(r=>!progress.checked.has(om30RtChaveRegistro(r)));
-  pending.sort((a,b)=>(progress.tried.get(om30RtChaveRegistro(a))||0)-(progress.tried.get(om30RtChaveRegistro(b))||0));
-  // Avança em blocos de 24; itens inconclusivos são tentados de novo após o cache curto.
-  const batch=pending.slice(0,24);
-  let cursor=0;
-  await Promise.all(Array.from({length:Math.min(3,batch.length)},async()=>{
-    while(cursor<batch.length){
-      const source=batch[cursor++],rid=om30RtChaveRegistro(source);
-      progress.tried.set(rid,(progress.tried.get(rid)||0)+1);
-      try{
-        const loaded=await carregarProntuarioAnterior(source);
-        if(!loaded?.meta?.timestamp)continue;
-        const meta=loaded.meta;
-        if(meta.timestamp>=refMs||!dentroDaJanelaRetorno(meta.timestamp,refMs)){progress.checked.set(rid,{excluded:true});continue;}
-        let unit=meta.unidade,relation=om30RtCompararUnidade(unidadeAtual,unit);
-        if(relation!=='igual'){
-          const detail=await carregarUnidadeAtendimentoHistorico(source);
-          if(unidadeIdentificada(detail)){unit=detail;relation=om30RtCompararUnidade(unidadeAtual,unit);}
-        }
-        if(relation==='diferente'){progress.checked.set(rid,{excluded:true});continue;}
-        if(relation!=='igual')continue;
-        const specialty=meta.especialidade||source.especialidade;
-        if(specialty&&!ehEspecialidadeMedica(specialty)){progress.checked.set(rid,{excluded:true});continue;}
-        if(!ehEspecialidadeMedica(specialty))continue;
-        const profissional=om30RtNomeProfissional(meta.profissional)||om30RtNomeProfissional(source.profissional);
-        if(!profissional)continue;
-        progress.checked.set(rid,{record:{...source,...meta,profissional,especialidade:specialty,unidade:unit,unidadeAtual,_docProntuario:loaded.doc,_fonteProntuario:loaded.url}});
-      }catch{/* mantém pendente; não converte erro em ausência de atendimento */}
-    }
-  }));
-  const records=[...progress.checked.values()].filter(v=>v.record).map(v=>v.record).sort((a,b)=>b.timestamp-a.timestamp);
-  const registro=records[0]||null;
-  const paginado=tabelas.some(table=>table.parentElement?.querySelector('.pagination a[href], a[rel="next"][href]'));
-  const complete=progress.checked.size===candidates.length&&!paginado;
-  return {status:complete?(registro?'encontrado':'nao_localizado'):'incompleto',motivo:!complete?'historico_parcial':'',registro,total:candidates.length,verificados:progress.checked.size};
+  async function om30RtProntuarioDoAtendimentoPa(registro) {
+  // A consulta do atendimento PA (/atendimentos_pas/N) só tem o cadastro; a evolução fica na CONSULTA do
+  // prontuário (/prontuarios/N, só leitura). Lista "Prontuários eletrônicos" da Consulta de Prontuários:
+  // Data | Munícipe | Unidade Saúde | Profissional | Ação (/prontuarios/N). Só aceita o prontuário cuja
+  // consulta aponta para o mesmo atendimento (<limpar-senha-invalida atendimento-id=...>).
+  const paId=clean(registro?.atendimentoPaId),municipeId=clean(registro?.municipeId);
+  const data=om30RtNormalizarData(registro?.data||registro?.dataAgendada);
+  // Retorno: {status:'ok', achado:{prontuarioId,doc,url,profissional}|null} ou {status:'erro'} (não afirmar nada).
+  if(!/^\d+$/.test(paId)||!/^\d+$/.test(municipeId)||!data)return {status:'erro'};
+  const base=dataHoraParaMs(data,'12:00');
+  if(!base)return {status:'erro'};
+  const dataBr=ms=>{const d=new Date(ms);return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;};
+  const dia2=dataBr(base+24*60*60*1000);
+  const erros={municipe_id:[],unidade_saude_id:[],profissional_id:[],data_inicio:[],data_fim:[],data_padronizada:[],tipo:[]};
+  // Datas em branco, igual à tela do sistema (captura); a data é conferida aqui, linha a linha. Ordem: mais recente primeiro.
+  const filtro={municipe_id:municipeId,unidade_saude_id:'',profissional_id:'',data_inicio:'',data_fim:'',data_padronizada:'',tipo:[''],validation_context:null,errors:erros};
+  const q=new URLSearchParams({filtro:JSON.stringify(filtro),sEcho:'1',iColumns:'5',sColumns:'',iDisplayStart:'0',iDisplayLength:'100',
+    sSearch:'',bRegex:'false',iSortingCols:'1',iSortCol_0:'0',sSortDir_0:'desc'});
+  for(let i=0;i<5;i++){q.set('mDataProp_'+i,String(i));q.set('sSearch_'+i,'');q.set('bRegex_'+i,'false');q.set('bSearchable_'+i,'true');q.set('bSortable_'+i,i<4?'true':'false');}
+  const r=await om30RtResposta('/prontuarios/prontuarios_eletronicos.json?'+q,{headers:{Accept:'application/json','X-Requested-With':'XMLHttpRequest'}});
+  let j;try{j=JSON.parse(await r.text());}catch{return {status:'erro'};}
+  if(!Array.isArray(j?.aaData))return {status:'erro'};
+  const rows=j.aaData;
+  const nomeProf=norm(registro?.profissional),unidades=(registro?.unidade?.nomes||[]).filter(Boolean);
+  const candidatos=[];
+  for(const row of rows){
+    if(!Array.isArray(row)||row.length<5)continue;
+    const id=(String(row[4]??'').match(/\/prontuarios\/(\d+)/)||[])[1];
+    const dataLinha=om30RtNormalizarData(row[0]);
+    if(!id||(dataLinha!==data&&dataLinha!==dia2))continue;
+    // Profissional, unidade e data só ordenam as tentativas; quem decide é o vínculo na consulta do prontuário.
+    const prioridade=(nomeProf&&norm(om30RtTextoPlano(row[3]))===nomeProf?4:0)+(unidades.length&&om30RtMesmaUnidadeNome(unidades,om30RtTextoPlano(row[2]))?2:0)+(dataLinha===data?1:0);
+    candidatos.push({id,prioridade,profissional:om30RtTextoPlano(row[3])});
+  }
+  candidatos.sort((a,b)=>b.prioridade-a.prioridade||Number(b.id)-Number(a.id));
+  let falhou=false;
+  for(const c of candidatos.slice(0,6)){
+    const url='/prontuarios/'+encodeURIComponent(c.id);
+    let doc;try{doc=await om30RtDocumento(url);}catch{falhou=true;continue;}
+    const vinculo=doc.querySelector('limpar-senha-invalida[atendimento-id]');
+    const tipo=clean(vinculo?.getAttribute('atendimento-type'));
+    if(clean(vinculo?.getAttribute('atendimento-id'))===paId&&(!tipo||tipo==='AtendimentoPa'))return {status:'ok',achado:{prontuarioId:c.id,doc,url,profissional:c.profissional}};
+  }
+  // Só diz "não tem prontuário" quando leu todas as opções do dia sem erro.
+  return falhou||candidatos.length>6?{status:'erro'}:{status:'ok',achado:null};
 }
   function buscarResultadoHistoricoAnterior(atendimentoStr,referenciaMs,item=null,row=null) {
   const refMs=Number(referenciaMs)||0,key=atendimentoStr+'|'+refMs;
@@ -2999,7 +3013,7 @@
 }
 
   function om30RtSnapshot(anterior) {
-  const keys=['prontuarioNumero','prontuarioId','atendimentoId','dataNivel','href','dataAgendada','horaAgendada','data','hora','profissional','especialidade'];
+  const keys=['prontuarioNumero','prontuarioId','atendimentoId','atendimentoPaId','municipeId','dataNivel','href','dataAgendada','horaAgendada','data','hora','profissional','especialidade'];
   const snapshot=Object.fromEntries(keys.map(key=>[key,clean(anterior[key])]));
   return {...snapshot,unidade:{ids:(anterior.unidade?.ids||[]).map(String),nomes:(anterior.unidade?.nomes||[]).map(String)},timestampAgendado:Number(anterior.timestampAgendado)||0,timestamp:Number(anterior.timestamp)||0};
 }
@@ -3274,12 +3288,13 @@
 
     const enriquecido = {
       ...registro,
-      data: meta.data || '',
-      hora: meta.hora || '',
+      // v2.15.19: se a leitura do prontuário não trouxer data/hora, fica o que a fila já mostrou.
+      data: meta.data || registro.data || '',
+      hora: meta.hora || registro.hora || '',
       profissional: meta.profissional || registro.profissional,
       especialidade: meta.especialidade || registro.especialidade,
       unidade: meta.unidade || registro.unidade || { ids: [], nomes: [] },
-      timestamp: meta.timestamp || 0,
+      timestamp: meta.timestamp || Number(registro.timestamp) || 0,
       _docProntuario: carregado?.doc || null,
       _fonteProntuario: carregado?.url || ''
     };

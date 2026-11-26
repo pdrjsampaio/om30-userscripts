@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Controle de Salas
 // @namespace    om30-guaruja
-// @version      3.1.20
+// @version      3.1.21
 // @updateURL    https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @downloadURL  https://raw.githubusercontent.com/pdrjsampaio/om30-userscripts/main/OM30-Controle-de-Salas.user.js
 // @description  Controle de Salas OM30: fila, histórico, risco, dados do munícipe, medicação, alergia, cancelamento, pendências e presença Cloudflare.
@@ -33,6 +33,7 @@
     }
 
     /* OM30 - CONTROLE DE SALAS v3.1.14
+     * v3.1.21: "Confirmar atendimento" das salas volta a abrir na mesma aba, como o sistema (aba nova + fila aberta trocava a senha do navegador: Senha perdida).
      * v3.1.20: sala Raio-X mostra a observação do médico (linha "OBS. RAIO-X (...)" da Conduta, gravada pelo Procedimentos PA 2.4.8) na lista e, ao abrir o paciente, no topo da tela e em "Anotações da Enfermagem" quando vazio.
      * v3.1.19: sala Procedimentos de Enfermagem (sutura) com o filtro "Pediatria" (senhas PD/PP), igual à Medicação e aos Exames: Mostrar Clínico | Pediatria | Histórico; local com "Pediatria" no nome abre em Pediatria.
      * v3.1.16: retirada a baixa automática da medicação da 3.1.15 (ela é do script Baixa Rápida). Código igual ao da 3.1.14.
@@ -289,7 +290,7 @@
     // na aba original e não precisa carregar de novo a cada atendimento; a aba do
     // atendimento fecha sozinha quando o sistema volta para a lista (depois de salvar
     // ou de sair do atendimento). Se o navegador bloquear a aba, abre na mesma.
-    const ABRIR_ATENDIMENTO_EM_NOVA_ABA = true;
+    const ABRIR_ATENDIMENTO_EM_NOVA_ABA = false;   // v3.1.21: ficha volta a abrir na MESMA aba, como o sistema (aba nova + fila aberta trocava a senha do navegador, que é a mesma para todas as abas: Senha perdida)
 
     // CPF e CNS aparecem sozinhos (sem clicar) quando o paciente tem medicação
     // controlada (lista da Anvisa, abaixo no núcleo) ou uma destas, de alto custo.

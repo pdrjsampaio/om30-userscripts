@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OM30 - Rastro de Senhas
 // @namespace    https://github.com/pdrjsampaio/om30-userscripts
-// @version      1.2.0
-// @description  Diagnóstico temporário da "Senha perdida": só observa o caminho de cada senha (Senha Simples, senha guardada no navegador, cargas de página, abas novas) e envia ao Cloudflare. Não altera nada. Desliga sozinho em ATIVO_ATE.
+// @version      1.2.1
+// @description  Diagnóstico temporário da "Senha perdida": só observa o caminho de cada senha (Senha Simples, senha guardada no navegador, cargas de página, abas novas) e envia ao Cloudflare. Não altera nada. Fica ligado até ser desativado no Tampermonkey (ATIVO_ATE vazio).
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/*
 // @run-at       document-start
@@ -21,16 +21,17 @@
 // de senha, nomes de guichê/local/profissional e textos curtos de erro do Senha Simples.
 (() => {
   'use strict';
-  const VERSAO = '1.2.0';
-  // Até quando o rastro fica ligado (horário de Brasília). Depois disso o script não instala nada.
-  const ATIVO_ATE = '2026-11-28T23:59:00-03:00';
+  const VERSAO = '1.2.1';
+  // Até quando o rastro fica ligado (horário de Brasília). Vazio = sem data: fica ligado até ser desativado no
+  // Tampermonkey (1.2.1, pedido do dono em 27/11). Com data, depois dela o script não instala nada.
+  const ATIVO_ATE = '';
   // Endereço do Worker: trocar <conta> pelo subdomínio workers.dev da conta Cloudflare.
   const API = 'https://om30-rastro.om30-pedro.workers.dev';
   // Chave de envio: o MESMO texto gravado no secret CLIENT_KEY do Worker. Enquanto estiver com o
   // valor de exemplo (ou o API com <conta>), os eventos ficam só na fila local e nada é enviado.
   const CHAVE = 'xGVd2RRY51MvVzFCcx1brrpw4zMd9N8m';
 
-  const FIM = Date.parse(ATIVO_ATE);
+  const FIM = ATIVO_ATE ? Date.parse(ATIVO_ATE) : Infinity;
   const ativo = () => { try { return Date.now() < FIM; } catch (_) { return false; } };
   try { if (window.__OM30_RASTRO_SENHAS__) return; } catch (_) { return; }
   if (!ativo()) return;
@@ -678,19 +679,38 @@
   // 1.2.0: janela/aviso que diz para ONDE a senha foi ou que o atendimento terminou (ex.: pop-up ao finalizar no
   // acolhimento, "encaminhado para...", aviso "Salvar sem retorno médico?" do Procedimentos PA).
   const AVISO_FLUXO = /encaminh|finaliz|conclu[ií]|retorn|destino|fila d|enviad[oa] para|direcionad|sala d|raio|alta|ausent|devolvid|cancelad/i;
-  function registrarMensagem(origem, texto, ehAviso) {
+  // 1.2.1: TODA janela/aviso (pop-up) é gravada — com o DONO: "sistema" ou o script OM30 que a abriu.
+  // Texto de página comum (fora de janela) só entra se for erro de senha.
+  function registrarMensagem(origem, texto, ehAviso, dono) {
     const t = limpo(texto);
     if (!t || t.length > 600) return;
     const erro = ERRO_SENHA.test(t);
-    if (!erro && !(ehAviso && AVISO_FLUXO.test(t))) return;
+    if (!erro && !ehAviso) return;
     const msg = txt(semNomes(t), 300);
     const agora = Date.now();
     if (vistosTela.get(msg) > agora - 10000) return;   // o mesmo aviso repetido em 10 s conta uma vez
     vistosTela.set(msg, agora);
     if (vistosTela.size > 50) vistosTela.delete(vistosTela.keys().next().value);
-    const det = 'onde=' + origem + (ultimoClique && agora - ultimoClique.t < 15000 ? ' ; clique=' + ultimoClique.rotulo + ' (' + (agora - ultimoClique.t) + 'ms antes)' : '');
+    const det = 'de=' + (dono || 'sistema') + ' ; onde=' + origem + (ultimoClique && agora - ultimoClique.t < 15000 ? ' ; clique=' + ultimoClique.rotulo + ' (' + (agora - ultimoClique.t) + 'ms antes)' : '');
     if (erro) evento('MENSAGEM_TELA', { erro: msg, detalhe: txt(det, 400) });
     else evento('AVISO_TELA', { detalhe: txt('texto=' + msg + ' ; ' + det, 400) });
+  }
+  // Dono de uma janela do DOM: script OM30 se ela (ou quem a contém) tem "om30" no id/classe.
+  function donoDoNo(no) {
+    try {
+      const el = (no.matches && no.matches('[id*="om30" i], [class*="om30" i]')) ? no : (no.closest && no.closest('[id*="om30" i], [class*="om30" i]'));
+      if (!el) return 'sistema';
+      const marca = String(el.id || el.className || '').match(/om30[\w-]*/i);
+      return 'OM30' + (marca ? ' (' + txt(marca[0], 40) + ')' : '');
+    } catch (_) { return 'sistema'; }
+  }
+  // Dono pela pilha de quem chamou (alert/confirm/Swal): script OM30 que aparecer nela, senão sistema.
+  let ultimoSwal = 0;   // a janela gravada pela chamada não é gravada de novo quando aparece na tela
+  const donoPelaPilha = () => (/OM30[^<]*/.exec(origemPilha()) || [])[0] || 'sistema';
+  function textoSwal(args) {
+    const a = args && args[0];
+    if (a && typeof a === 'object') return [a.title, a.titleText, a.text, a.html].filter(v => typeof v === 'string').join(' — ').replace(/<[^>]+>/g, ' ');
+    return [...(args || [])].filter(v => typeof v === 'string').slice(0, 3).join(' — ').replace(/<[^>]+>/g, ' ');
   }
   const SEL_AVISO = '.swal2-container, .swal2-popup, .toast, .toast-message, .noty_bar, .alert, [role="dialog"], [role="alertdialog"], [role="alert"], [aria-modal="true"], .modal, .ui-dialog, [id*="warning"], [class*="warning"]';
   function ehNoDeAviso(no) {
@@ -703,23 +723,47 @@
           for (const m of lista) for (const no of m.addedNodes) {
             if (!no || no.nodeType !== 1) continue;
             const aviso = ehNoDeAviso(no);
+            if (aviso && Date.now() - ultimoSwal < 3000 && /swal2/.test(String(no.className || '') + ' ' + String(no.id || ''))) continue;
             if (no.id && /^om30/i.test(no.id) && !aviso) continue;   // painéis dos scripts OM30 ficam de fora (avisos deles não)
             const t = no.innerText || no.textContent || '';
-            if (t && t.length <= 600) registrarMensagem(dicaElemento(no), t, aviso);
+            if (t && t.length <= 600) registrarMensagem(dicaElemento(no), t, aviso, donoDoNo(no));
           }
         } catch (_) {}
       });
       obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
-      setTimeout(() => { try { obs.disconnect(); } catch (_) {} }, Math.max(0, FIM - Date.now()));
+      // Só com data marcada (setTimeout com espera maior que ~24,8 dias dispararia na hora).
+      if (Number.isFinite(FIM) && FIM - Date.now() < 2147483647) setTimeout(() => { try { obs.disconnect(); } catch (_) {} }, Math.max(0, FIM - Date.now()));
     } catch (_) {}
     // alert/confirm: chama o original com os mesmos argumentos e devolve o mesmo resultado.
     for (const nome of ['alert', 'confirm']) {
       try {
         const orig = window[nome];
         if (typeof orig !== 'function') continue;
-        window[nome] = function (msg) { try { registrarMensagem('janela_' + nome, msg, true); } catch (_) {} return orig.apply(this, arguments); };
+        window[nome] = function (msg) { try { registrarMensagem('janela_' + nome, msg, true, donoPelaPilha()); } catch (_) {} return orig.apply(this, arguments); };
       } catch (_) {}
     }
+    // Janelas do SweetAlert (Swal.fire / swal), usadas pelo sistema e por scripts: grava ANTES de a janela aparecer,
+    // com o dono pela pilha. Chama o original com os mesmos argumentos e devolve o mesmo resultado.
+    const embrulharSwal = () => {
+      try {
+        const S = window.Swal;
+        if (S && typeof S.fire === 'function' && !S.fire.__om30Rastro) {
+          const orig = S.fire;
+          const novo = function () { try { ultimoSwal = Date.now(); registrarMensagem('swal', textoSwal(arguments), true, donoPelaPilha()); } catch (_) {} return orig.apply(this, arguments); };
+          novo.__om30Rastro = true;
+          S.fire = novo;
+        }
+        const s1 = window.swal;
+        if (typeof s1 === 'function' && !s1.__om30Rastro) {
+          const novo1 = function () { try { ultimoSwal = Date.now(); registrarMensagem('swal', textoSwal(arguments), true, donoPelaPilha()); } catch (_) {} return s1.apply(this, arguments); };
+          Object.assign(novo1, s1);
+          novo1.__om30Rastro = true;
+          window.swal = novo1;
+        }
+      } catch (_) {}
+    };
+    embrulharSwal();
+    try { setTimeout(embrulharSwal, 2000); } catch (_) {}
   }
 
   // ---------- (e) abertura de aba nova e marca window.name ----------

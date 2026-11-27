@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         OM30 - Rastro de Senhas
 // @namespace    https://github.com/pdrjsampaio/om30-userscripts
-// @version      1.2.1
+// @version      1.2.2
 // @description  Diagnóstico temporário da "Senha perdida": só observa o caminho de cada senha (Senha Simples, senha guardada no navegador, cargas de página, abas novas) e envia ao Cloudflare. Não altera nada. Fica ligado até ser desativado no Tampermonkey (ATIVO_ATE vazio).
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/*
+// @match        https://v3guaruja.saudesimples.net/*
 // @run-at       document-start
 // @grant        none
 // @inject-into  page
@@ -21,7 +22,7 @@
 // de senha, nomes de guichê/local/profissional e textos curtos de erro do Senha Simples.
 (() => {
   'use strict';
-  const VERSAO = '1.2.1';
+  const VERSAO = '1.2.2';
   // Até quando o rastro fica ligado (horário de Brasília). Vazio = sem data: fica ligado até ser desativado no
   // Tampermonkey (1.2.1, pedido do dono em 27/11). Com data, depois dela o script não instala nada.
   const ATIVO_ATE = '';
@@ -121,6 +122,8 @@
     if (/^\/encaminhamentos_radiografias(\/|$)/.test(p)) return 'SALA_RAIOX';
     if (/^\/encaminhamentos_gessos_imobilizacoes(\/|$)/.test(p)) return 'SALA_GESSO';
     if (/^\/(atendimentos_pas|recepcoes|municipes)(\/|$)/.test(p)) return 'RECEPCAO';
+    // 1.2.2: recepção nova (v3guaruja): cadastro do atendimento, paciente sem identificação, retroativo.
+    if (/^\/urgencia_emergencia\/(atendimentos|paciente_sem_identificacoes|atendimentos_retroativos)(\/|$)/.test(p)) return 'RECEPCAO';
     return 'OUTRA';
   }
   const TELA = (() => { try { return telaDe(location.pathname); } catch (_) { return 'OUTRA'; } })();

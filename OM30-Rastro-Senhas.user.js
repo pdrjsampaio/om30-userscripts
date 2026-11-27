@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OM30 - Rastro de Senhas
 // @namespace    https://github.com/pdrjsampaio/om30-userscripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  Diagnóstico temporário da "Senha perdida": só observa o caminho de cada senha (Senha Simples, senha guardada no navegador, cargas de página, abas novas) e envia ao Cloudflare. Não altera nada. Desliga sozinho em ATIVO_ATE.
 // @author       OM30
 // @match        https://guaruja.saudesimples.net/*
@@ -21,7 +21,7 @@
 // de senha, nomes de guichê/local/profissional e textos curtos de erro do Senha Simples.
 (() => {
   'use strict';
-  const VERSAO = '1.1.0';
+  const VERSAO = '1.2.0';
   // Até quando o rastro fica ligado (horário de Brasília). Depois disso o script não instala nada.
   const ATIVO_ATE = '2026-11-28T23:59:00-03:00';
   // Endereço do Worker: trocar <conta> pelo subdomínio workers.dev da conta Cloudflare.
@@ -40,7 +40,7 @@
     PC: 'om30-rastro-pc', FILA: 'om30-rastro-fila', TRAVA: 'om30-rastro-envio', CTX: 'om30-rastro-ctx',
     ABA: 'om30-rastro-aba', VINC: 'om30-rastro-vinculos', RECUP: 'om30-rastro-recuperar',
   };
-  const MAX_FILA = 500, MAX_LOTE = 200, MAX_BYTES = 56000, CICLO_MS = 10000;
+  const MAX_FILA = 500, MAX_LOTE = 200, MAX_BYTES = 56000, CICLO_MS = 10000, RESUMO_RECUP_MS = 5 * 60 * 1000;
   const ID_OK = /^\d{1,14}$/, TIPO_OK = /^[A-Z][A-Za-z]{2,40}$/;
 
   // ---------- originais (capturados em document-start, antes de qualquer outro script) ----------
@@ -260,6 +260,20 @@
     if (pref && loc[pref] && loc[pref].nome) return txt(loc[pref].nome, 120);
     return txt(nomesLocal(loc), 120);
   }
+  // 1.2.0: todas as salas do Controle de Salas usam /aplicacoes_medicamentos; a sala de verdade é o local escolhido
+  // (ex.: "controle_de_salas_raio_x:SALA DE RAIO X"). Sem isso, o Raio-X aparecia como Sala de Medicação.
+  function telaDaSala(tela, g) {
+    if (tela !== 'SALA_MEDICACAO') return tela;
+    const salas = [...new Set([...String(g || '').matchAll(/controle_de_salas_([a-z_]+)/g)].map(m => m[1]))];
+    if (salas.length !== 1) return tela;   // nenhuma ou mais de uma sala no local: não adivinha
+    const k = salas[0];
+    if (/raio|radiograf/.test(k)) return 'SALA_RAIOX';
+    if (/exame|coleta/.test(k)) return 'SALA_EXAMES';
+    if (/enferm|procedimento/.test(k)) return 'SALA_ENFERMAGEM';
+    if (/gesso|imobiliz/.test(k)) return 'SALA_GESSO';
+    if (/repouso/.test(k)) return 'SALA_REPOUSO';
+    return tela;
+  }
   function guiche(st) {
     let loc = null;
     try { loc = st && st.getters ? st.getters.localAtendimentoAtual : null; } catch (_) { loc = null; }
@@ -336,10 +350,11 @@
       let pagina = '';
       if (Object.prototype.hasOwnProperty.call(x, 'pagina_atendimento')) pagina = x.pagina_atendimento || '';
       else { const ident = identidade(!domPronto); pagina = (ident && ident.a) || ''; }
+      const g = guiche(st);
       const e = {
         uid: novoId(), em: new Date().toISOString(), pc: PC, aba: ABA, carga: CARGA,
-        url: urlLimpa(location.href), tela: TELA, profissional: ctx.profissional, unidade: ctx.unidade,
-        guiche: guiche(st), acao, ls_senha: ls ? ls.cod : '', ls_senha_id: ls ? ls.id : '',
+        url: urlLimpa(location.href), tela: telaDaSala(TELA, g), profissional: ctx.profissional, unidade: ctx.unidade,
+        guiche: g, acao, ls_senha: ls ? ls.cod : '', ls_senha_id: ls ? ls.id : '',
         pagina_atendimento: pagina, versoes: versoes(), divergente: 0,
       };
       for (const k of Object.keys(x)) { const v = x[k]; if (v !== undefined && v !== null && v !== '') e[k] = v; }
@@ -473,6 +488,20 @@
     gravar(SS, K.RECUP, JSON.stringify(recup));
     return true;
   }
+  // 1.2.0: contagem das checagens feitas pelos scripts OM30 (sem paciente, sem senha: só script e resultado).
+  const contRecup = new Map();
+  let contRecupDesde = Date.now();
+  function contarRecuperarOm30(chave) { contRecup.set(chave, (contRecup.get(chave) || 0) + 1); }
+  function resumirRecuperarOm30(forcar) {
+    if (!contRecup.size) { contRecupDesde = Date.now(); return; }
+    if (!forcar && Date.now() - contRecupDesde < RESUMO_RECUP_MS) return;
+    const partes = [...contRecup.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => k + '=' + n);
+    const total = [...contRecup.values()].reduce((a, b) => a + b, 0);
+    contRecup.clear();
+    const seg = Math.round((Date.now() - contRecupDesde) / 1000);
+    contRecupDesde = Date.now();
+    evento('RECUPERAR_SCRIPTS', { metodo: 'GET', rota: 'filas/:id/recuperar_senha_saude_atendimento', pagina_atendimento: '', detalhe: txt('total=' + total + ' em ' + seg + 's ; ' + partes.join(' ; '), 400) });
+  }
   const inicio = new WeakMap();
   const origemPedido = new WeakMap();
   function observarApi(resp, erro) {
@@ -487,6 +516,13 @@
     const data = res ? res.data : null;
     const pedido = atendDe(cfg.params) || atendDe(corpoObj(cfg));
     const s = data && typeof data === 'object' ? resumo(data) : null;
+    // 1.2.0: a checagem de senha feita pelos scripts OM30 (origem dos ausentes: ~99% do volume em 26/11) vira só
+    // contagem por script e resultado, enviada a cada 5 min. A checagem feita pelo sistema continua como evento.
+    const orig = origemPedido.get(cfg);
+    if (info.acao === 'RECUPERAR' && orig && /OM30/.test(orig) && (status === 200 || status === 404 || status === 410 || status === 422)) {
+      contarRecuperarOm30(((/OM30[^<]*/.exec(orig) || [])[0] || 'OM30') + ' ' + status);
+      return;
+    }
     if (info.acao === 'RECUPERAR') {
       const sig = [status, s ? s.id : '', s ? s.chamado_em : '', s ? s.confirmado_em : '', data && data.ja_chamada ? 1 : 0].join('|');
       if (!mudouRecuperar(info.local_id + '|' + pedido, sig)) return;
@@ -508,7 +544,6 @@
     const t0 = inicio.get(cfg);
     if (t0) det.push('ms=' + (Date.now() - t0));
     // 1.1.0: quem fez o pedido (sistema ou script OM30, pela pilha na saída) e o último botão clicado antes dele.
-    const orig = origemPedido.get(cfg);
     // A biblioteca do pedido fica no código do sistema: se houver script OM30 em QUALQUER ponto da pilha, foi ele.
     if (orig) det.push('origem=' + ((/OM30[^<]*/.exec(orig) || [])[0] || 'sistema') + ' ; pilha=' + orig);
     const ck = ultimoClique && t0 && t0 - ultimoClique.t >= 0 && t0 - ultimoClique.t < 15000 ? ultimoClique : null;
@@ -569,12 +604,20 @@
         if (!ativo() || !ev.isTrusted) return;
         const el = ev.target && ev.target.closest ? ev.target.closest('button, a, input[type="button"], input[type="submit"], [role="button"], .btn') : null;
         if (!el) return;
-        const rotulo = rotuloBotao(el);
+        let rotulo = rotuloBotao(el);
+        // 1.2.0: botão de AVISO/janela (do sistema ou de script OM30): grava o texto do botão, qualquer que seja
+        // (ex.: "Continuar sem retorno", "Voltar e marcar retorno"). Texto de aviso não tem nome de paciente; mesmo
+        // assim passa pelo filtro de nomes.
+        const emAviso = !!(el.closest && el.closest('.swal2-container, .swal2-popup, [role="dialog"], [aria-modal="true"], .modal, .ui-dialog, [id*="warning"], [class*="warning"], [id^="om30"][id*="backdrop"]'));
+        if (!rotulo && emAviso) {
+          const t = semNomes(limpo(el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title')) || '') || limpo(el.innerText || el.textContent || ''));
+          rotulo = t && t.length <= 60 ? txt(norm(t), 60) : '';
+        }
         if (!rotulo) return;
         const om30 = !!(el.closest && el.closest('[id^="om30"], [class*="om30"], [id*="OM30"]'));
         ultimoClique = { t: Date.now(), rotulo, om30 };
         const href = el.tagName === 'A' ? urlLimpa(el.getAttribute('href') || '') : '';
-        evento('CLIQUE', { detalhe: txt('botao=' + rotulo + (om30 ? ' ; botao_om30' : ' ; botao_sistema') + ' ; el=' + dicaElemento(el) + (href ? ' ; href=' + href : ''), 400) });
+        evento('CLIQUE', { detalhe: txt('botao=' + rotulo + (om30 ? ' ; botao_om30' : ' ; botao_sistema') + (emAviso ? ' ; em_aviso' : '') + ' ; el=' + dicaElemento(el) + (href ? ' ; href=' + href : ''), 400) });
       } catch (_) {}
     }, true);
     document.addEventListener('submit', ev => {
@@ -584,23 +627,74 @@
         if (!f || f.tagName !== 'FORM') return;
         const quem = ev.submitter ? rotuloBotao(ev.submitter) : '';
         const acao = urlLimpa(f.getAttribute('action') || location.href);
+        // 1.2.0: quem disparou (pessoa ou script, com a pilha) e o estado das caixas/ordens importantes NA HORA do envio.
+        const porScript = !ev.isTrusted || (ultimoClique ? Date.now() - ultimoClique.t > 600 : true);
+        const orig = porScript ? origemPilha() : '';
         evento('FORM_ENVIO', { metodo: String(f.getAttribute('method') || 'get').toUpperCase().slice(0, 8), rota: txt(acao, 160),
-          detalhe: txt('form=' + dicaElemento(f) + (quem ? ' ; botao=' + quem : '') + (f.getAttribute('data-remote') ? ' ; remoto' : ''), 400) });
+          detalhe: txt('form=' + dicaElemento(f) + (quem ? ' ; botao=' + quem : '') + (f.getAttribute('data-remote') ? ' ; remoto' : '') +
+            (porScript ? ' ; sem_clique_proprio' + (orig ? ' ; origem=' + orig : '') : '') + estadoCampos(f), 400) });
       } catch (_) {}
     }, true);
+    // 1.2.0: caixa de marcar, opção e seleção mudadas (pela pessoa ou por script). Só nome do campo + estado/valor curto.
+    document.addEventListener('change', ev => {
+      try {
+        if (!ativo()) return;
+        const el = ev.target;
+        if (!el || !el.tagName) return;
+        const tipo = String(el.type || '').toLowerCase();
+        const nome = nomeCampo(el);
+        if (!nome) return;
+        let valor = '';
+        if (tipo === 'checkbox' || tipo === 'radio') valor = el.checked ? 'MARCADO' : 'DESMARCADO';
+        else if (el.tagName === 'SELECT' && CAMPOS_SELECAO.test(nome)) valor = valorSeguro(el.value);
+        else return;
+        const pessoa = !!ev.isTrusted;
+        evento('CAMPO', { detalhe: txt('campo=' + nome + ' ; ' + valor + ' ; por=' + (pessoa ? 'pessoa' : 'script ; origem=' + origemPilha()) + ' ; el=' + dicaElemento(el), 400) });
+      } catch (_) {}
+    }, true);
+  }
+  const CAMPOS_SELECAO = /salas?_ordem|ordem|destino|sala|encaminh|retorn|tipo_atendimento|risco|especialidade/i;
+  const CAMPOS_ESTADO = /retorn|encaminh|alta|obito|urgen|confirm/i;
+  function nomeCampo(el) {
+    const n = String(el.getAttribute && el.getAttribute('name') || el.id || '').replace(/^.*\[([^\]]+)\]\[?\]?$/, '$1').replace(/\[\]$/, '');
+    return /^[\w.-]{1,60}$/.test(n) ? n : '';
+  }
+  const valorSeguro = v => { const t = limpo(v); return /^[\w#.:-]{1,40}$/.test(t) ? t : (t ? '?' : ''); };
+  function estadoCampos(f) {
+    try {
+      const partes = [];
+      for (const el of f.querySelectorAll('input[type="checkbox"], input[type="radio"]')) {
+        const n = nomeCampo(el);
+        if (n && CAMPOS_ESTADO.test(n) && (el.type === 'checkbox' || el.checked)) partes.push(n + '=' + (el.checked ? 1 : 0) + (el.type === 'radio' ? ':' + valorSeguro(el.value) : ''));
+      }
+      const ordens = [...f.querySelectorAll('select')].filter(s => /salas?_ordem/i.test(String(s.getAttribute('name') || ''))).map(s => valorSeguro(s.value)).filter(Boolean);
+      if (ordens.length) partes.push('ordem=' + ordens.join(','));
+      return partes.length ? ' ; campos: ' + partes.join(' ') : '';
+    } catch (_) { return ''; }
   }
   // Mensagem de erro de senha que aparece na tela (aviso do sistema, caixa, alerta do navegador).
   const ERRO_SENHA = /senha[\s\S]{0,80}(perdid|n[aã]o (foi )?encontrad|inv[aá]lid|j[aá] (foi )?chamad|outro atendimento|n[aã]o pertence|n[aã]o vinculad|erro)|(perdid|n[aã]o (foi )?encontrad)[\s\S]{0,40}senha/i;
   const vistosTela = new Map();
-  function registrarMensagem(origem, texto) {
+  // 1.2.0: janela/aviso que diz para ONDE a senha foi ou que o atendimento terminou (ex.: pop-up ao finalizar no
+  // acolhimento, "encaminhado para...", aviso "Salvar sem retorno médico?" do Procedimentos PA).
+  const AVISO_FLUXO = /encaminh|finaliz|conclu[ií]|retorn|destino|fila d|enviad[oa] para|direcionad|sala d|raio|alta|ausent|devolvid|cancelad/i;
+  function registrarMensagem(origem, texto, ehAviso) {
     const t = limpo(texto);
-    if (!t || t.length > 600 || !ERRO_SENHA.test(t)) return;
+    if (!t || t.length > 600) return;
+    const erro = ERRO_SENHA.test(t);
+    if (!erro && !(ehAviso && AVISO_FLUXO.test(t))) return;
     const msg = txt(semNomes(t), 300);
     const agora = Date.now();
     if (vistosTela.get(msg) > agora - 10000) return;   // o mesmo aviso repetido em 10 s conta uma vez
     vistosTela.set(msg, agora);
     if (vistosTela.size > 50) vistosTela.delete(vistosTela.keys().next().value);
-    evento('MENSAGEM_TELA', { erro: msg, detalhe: txt('onde=' + origem + (ultimoClique && agora - ultimoClique.t < 15000 ? ' ; clique=' + ultimoClique.rotulo + ' (' + (agora - ultimoClique.t) + 'ms antes)' : ''), 400) });
+    const det = 'onde=' + origem + (ultimoClique && agora - ultimoClique.t < 15000 ? ' ; clique=' + ultimoClique.rotulo + ' (' + (agora - ultimoClique.t) + 'ms antes)' : '');
+    if (erro) evento('MENSAGEM_TELA', { erro: msg, detalhe: txt(det, 400) });
+    else evento('AVISO_TELA', { detalhe: txt('texto=' + msg + ' ; ' + det, 400) });
+  }
+  const SEL_AVISO = '.swal2-container, .swal2-popup, .toast, .toast-message, .noty_bar, .alert, [role="dialog"], [role="alertdialog"], [role="alert"], [aria-modal="true"], .modal, .ui-dialog, [id*="warning"], [class*="warning"]';
+  function ehNoDeAviso(no) {
+    try { return !!((no.matches && no.matches(SEL_AVISO)) || (no.closest && no.closest(SEL_AVISO)) || (no.querySelector && no.querySelector(SEL_AVISO))); } catch (_) { return false; }
   }
   function instalarMensagens() {
     try {
@@ -608,9 +702,10 @@
         try {
           for (const m of lista) for (const no of m.addedNodes) {
             if (!no || no.nodeType !== 1) continue;
-            if (no.id && /^om30/i.test(no.id)) continue;   // painéis dos scripts OM30 ficam de fora
+            const aviso = ehNoDeAviso(no);
+            if (no.id && /^om30/i.test(no.id) && !aviso) continue;   // painéis dos scripts OM30 ficam de fora (avisos deles não)
             const t = no.innerText || no.textContent || '';
-            if (t && t.length <= 600) registrarMensagem(dicaElemento(no), t);
+            if (t && t.length <= 600) registrarMensagem(dicaElemento(no), t, aviso);
           }
         } catch (_) {}
       });
@@ -622,7 +717,7 @@
       try {
         const orig = window[nome];
         if (typeof orig !== 'function') continue;
-        window[nome] = function (msg) { try { registrarMensagem('janela_' + nome, msg); } catch (_) {} return orig.apply(this, arguments); };
+        window[nome] = function (msg) { try { registrarMensagem('janela_' + nome, msg, true); } catch (_) {} return orig.apply(this, arguments); };
       } catch (_) {}
     }
   }
@@ -811,8 +906,8 @@
   } catch (_) {}
   try {
     setTimeout(() => { enviar('inicio'); }, 3000);
-    const ciclo = setInterval(() => { if (!ativo()) { clearInterval(ciclo); return; } enviar('ciclo'); }, CICLO_MS);
-    window.addEventListener('pagehide', () => { enviar('saida'); });
+    const ciclo = setInterval(() => { if (!ativo()) { clearInterval(ciclo); return; } try { resumirRecuperarOm30(false); } catch (_) {} enviar('ciclo'); }, CICLO_MS);
+    window.addEventListener('pagehide', () => { try { resumirRecuperarOm30(true); } catch (_) {} enviar('saida'); });
     document.addEventListener('visibilitychange', () => { try { if (document.visibilityState === 'hidden') enviar('oculta'); } catch (_) {} });
   } catch (_) {}
 })();
